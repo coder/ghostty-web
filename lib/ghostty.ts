@@ -15,6 +15,9 @@ import {
   type KittyKeyFlags,
 } from './types';
 
+// Re-export types for convenience
+export { SgrAttributeTag, type SgrAttribute, type RGBColor };
+
 /**
  * Main Ghostty WASM wrapper class
  */
@@ -49,11 +52,21 @@ export class Ghostty {
   }
 
   /**
-   * Load Ghostty WASM from URL
+   * Load Ghostty WASM from URL or file path
    */
-  static async load(wasmUrl: string): Promise<Ghostty> {
-    const response = await fetch(wasmUrl);
-    const wasmBytes = await response.arrayBuffer();
+  static async load(wasmPath: string): Promise<Ghostty> {
+    let wasmBytes: ArrayBuffer;
+    
+    // Try loading as file first (for Node/Bun environments)
+    try {
+      const fs = await import('fs/promises');
+      const buffer = await fs.readFile(wasmPath);
+      wasmBytes = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    } catch (e) {
+      // Fall back to fetch (for browser environments)
+      const response = await fetch(wasmPath);
+      wasmBytes = await response.arrayBuffer();
+    }
 
     const wasmModule = await WebAssembly.instantiate(wasmBytes, {
       env: {

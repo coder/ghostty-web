@@ -441,7 +441,7 @@ export class ScreenBuffer {
         }
         break;
       
-      case 1: // Erase from start of line to cursor
+      case 1: // Erase from start of line to cursor (inclusive)
         for (let x = 0; x <= this.cursor.x; x++) {
           this.lines[y][x] = { ...emptyCell };
         }
