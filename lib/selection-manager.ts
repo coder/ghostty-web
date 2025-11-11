@@ -47,6 +47,9 @@ export class SelectionManager {
   // Event emitter
   private selectionChangedEmitter = new EventEmitter<void>();
   
+  // Store bound event handlers for cleanup
+  private boundMouseUpHandler: ((e: MouseEvent) => void) | null = null;
+  
   constructor(
     terminal: Terminal,
     renderer: CanvasRenderer,
@@ -179,7 +182,14 @@ export class SelectionManager {
    */
   dispose(): void {
     this.selectionChangedEmitter.dispose();
-    // Event listeners will be cleaned up when canvas is removed from DOM
+    
+    // Clean up document event listener
+    if (this.boundMouseUpHandler) {
+      document.removeEventListener('mouseup', this.boundMouseUpHandler);
+      this.boundMouseUpHandler = null;
+    }
+    
+    // Canvas event listeners will be cleaned up when canvas is removed from DOM
   }
   
   // ==========================================================================
@@ -195,6 +205,8 @@ export class SelectionManager {
     // Mouse down - start selection or clear existing
     canvas.addEventListener('mousedown', (e: MouseEvent) => {
       if (e.button === 0) { // Left click only
+        console.log('[Selection] 🖱️  mousedown - starting selection');
+        
         // CRITICAL: Focus the terminal so it can receive keyboard input
         // The canvas doesn't have tabindex, but the parent container does
         if (canvas.parentElement) {
@@ -213,6 +225,7 @@ export class SelectionManager {
         this.selectionStart = cell;
         this.selectionEnd = cell;
         this.isSelecting = true;
+        console.log('[Selection] ✅ isSelecting = true');
       }
     });
     
@@ -225,10 +238,22 @@ export class SelectionManager {
       }
     });
     
-    // Mouse up - finish selection and copy
-    canvas.addEventListener('mouseup', (e: MouseEvent) => {
+    // Mouse leave - stop selecting if mouse leaves canvas while dragging
+    canvas.addEventListener('mouseleave', (e: MouseEvent) => {
       if (this.isSelecting) {
+        console.log('[Selection] ⚠️  mouseleave while selecting - but keeping selection active');
+        // DON'T clear isSelecting here - allow dragging outside canvas
+        // The document mouseup handler will catch the release
+      }
+    });
+    
+    // CRITICAL FIX: Listen for mouseup on DOCUMENT, not just canvas
+    // This catches mouseup events that happen outside the canvas (common during drag)
+    this.boundMouseUpHandler = (e: MouseEvent) => {
+      if (this.isSelecting) {
+        console.log('[Selection] 🖱️  mouseup - stopping selection');
         this.isSelecting = false;
+        console.log('[Selection] ✅ isSelecting = false');
         
         const text = this.getSelection();
         if (text) {
@@ -236,7 +261,8 @@ export class SelectionManager {
           this.selectionChangedEmitter.fire();
         }
       }
-    });
+    };
+    document.addEventListener('mouseup', this.boundMouseUpHandler);
     
     // Double-click - select word
     canvas.addEventListener('dblclick', (e: MouseEvent) => {

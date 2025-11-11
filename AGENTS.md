@@ -560,3 +560,9 @@ bun test -t "test name pattern"
 5. **Iterate quickly:**
    - Vite has hot reload - save file, browser auto-updates
    - Keep console open to catch errors immediately
+
+6. **DO NOT commit summary markdown files:**
+   - Never commit `BUGFIX-*.md`, `SUMMARY-*.md`, or similar documentation files
+   - These are for immediate context only, not permanent documentation
+   - Add them to `.gitignore` if creating them frequently
+   - Commit messages should be comprehensive instead
