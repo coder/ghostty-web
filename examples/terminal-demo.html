@@ -72,8 +72,11 @@
       background: #1e1e1e;
       border-radius: 8px;
       padding: 10px;
-      min-height: 500px;
-      overflow: auto;
+      height: 500px;              /* Fixed height instead of min-height */
+      width: 100%;                /* Take full width of parent */
+      overflow: hidden;           /* Changed from auto to hidden */
+      position: relative;         /* For proper canvas positioning */
+      box-sizing: border-box;     /* Include padding in dimensions */
     }
 
     .controls {
@@ -286,7 +289,8 @@
             <input type="number" id="cols" value="80" min="20" max="200" placeholder="Columns">
             <input type="number" id="rows" value="24" min="10" max="60" placeholder="Rows">
           </div>
-          <button onclick="resizeTerminal()" style="width: 100%;">Resize</button>
+          <button onclick="resizeTerminal()" style="width: 100%; margin-bottom: 10px;">Manual Resize</button>
+          <button onclick="fitToContainer()" style="width: 100%;">🔄 Fit to Container</button>
         </div>
 
         <!-- Stats -->
@@ -332,10 +336,11 @@
   </div>
 
   <script type="module">
-    import { Terminal } from '../lib/index.ts';
+    import { Terminal, FitAddon } from '../lib/index.ts';
 
     // Global terminal instance
     window.term = null;
+    window.fitAddon = null;
     let dataEventCount = 0;
     let bellEventCount = 0;
     let resizeEventCount = 0;
@@ -395,6 +400,20 @@
         logEvent('INFO', 'Opening terminal in container...');
         const container = document.getElementById('terminal-container');
         await term.open(container);
+
+        // Load FitAddon
+        logEvent('INFO', 'Loading FitAddon...');
+        const fitAddon = new FitAddon();
+        term.loadAddon(fitAddon);
+        window.fitAddon = fitAddon;
+        
+        // Initial fit to container
+        fitAddon.fit();
+        logEvent('SUCCESS', `FitAddon fitted terminal to ${term.cols}×${term.rows}`);
+        
+        // Auto-fit on window resize
+        fitAddon.observeResize();
+        logEvent('INFO', 'FitAddon observing container resize');
 
         // Store globally
         window.term = term;
@@ -564,6 +583,22 @@
       } else {
         alert('Invalid dimensions. Cols: 20-200, Rows: 10-60');
       }
+    };
+
+    window.fitToContainer = () => {
+      if (!window.fitAddon) return;
+      logEvent('TEST', 'Fitting terminal to container');
+      
+      // Get proposed dimensions
+      const dims = window.fitAddon.proposeDimensions();
+      if (dims) {
+        logEvent('INFO', `Proposed dimensions: ${dims.cols}×${dims.rows}`);
+      }
+      
+      // Fit the terminal
+      window.fitAddon.fit();
+      logEvent('SUCCESS', `Terminal fitted to ${window.term.cols}×${window.term.rows}`);
+      showStatus(`✅ Terminal fitted to ${window.term.cols}×${window.term.rows}`, 'success');
     };
 
     // Initialize on load
