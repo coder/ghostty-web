@@ -164,6 +164,7 @@ export class InputHandler {
   private onBellCallback: () => void;
   private keydownListener: ((e: KeyboardEvent) => void) | null = null;
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
+  private pasteListener: ((e: ClipboardEvent) => void) | null = null;
   private isDisposed = false;
 
   /**
@@ -207,6 +208,9 @@ export class InputHandler {
     
     this.keydownListener = this.handleKeyDown.bind(this);
     this.container.addEventListener('keydown', this.keydownListener);
+    
+    this.pasteListener = this.handlePaste.bind(this);
+    this.container.addEventListener('paste', this.pasteListener);
   }
 
   /**
@@ -259,6 +263,13 @@ export class InputHandler {
    */
   private handleKeyDown(event: KeyboardEvent): void {
     if (this.isDisposed) return;
+
+    // Allow Ctrl+V and Cmd+V to trigger paste event (don't preventDefault)
+    if ((event.ctrlKey || event.metaKey) && event.code === 'KeyV') {
+      // Let the browser's native paste event fire
+      console.log('[InputHandler] ⌨️  Ctrl/Cmd+V detected, allowing paste event');
+      return;
+    }
 
     // For printable characters without modifiers, send the character directly
     // This handles: a-z, A-Z (with shift), 0-9, punctuation, etc.
@@ -411,6 +422,39 @@ export class InputHandler {
   }
 
   /**
+   * Handle paste event from clipboard
+   * @param event - ClipboardEvent
+   */
+  private handlePaste(event: ClipboardEvent): void {
+    if (this.isDisposed) return;
+
+    // Prevent default paste behavior
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Get clipboard data
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) {
+      console.warn('No clipboard data available');
+      return;
+    }
+
+    // Get text from clipboard
+    const text = clipboardData.getData('text/plain');
+    if (!text) {
+      console.warn('No text in clipboard');
+      return;
+    }
+
+    console.log('[InputHandler] 📋 Pasting text:', text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+
+    // Send the text to the terminal
+    // Note: For bracketed paste mode, we would wrap this in \x1b[200~ ... \x1b[201~
+    // but for now, send raw text
+    this.onDataCallback(text);
+  }
+
+  /**
    * Dispose the InputHandler and remove event listeners
    */
   dispose(): void {
@@ -424,6 +468,11 @@ export class InputHandler {
     if (this.keypressListener) {
       this.container.removeEventListener('keypress', this.keypressListener);
       this.keypressListener = null;
+    }
+
+    if (this.pasteListener) {
+      this.container.removeEventListener('paste', this.pasteListener);
+      this.pasteListener = null;
     }
 
     this.isDisposed = true;

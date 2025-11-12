@@ -20,9 +20,19 @@ interface MockKeyboardEvent {
   stopPropagation: () => void;
 }
 
+interface MockClipboardEvent {
+  type: string;
+  clipboardData: {
+    getData: (format: string) => string;
+    setData: (format: string, data: string) => void;
+  } | null;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}
+
 interface MockHTMLElement {
-  addEventListener: (event: string, handler: (e: MockKeyboardEvent) => void) => void;
-  removeEventListener: (event: string, handler: (e: MockKeyboardEvent) => void) => void;
+  addEventListener: (event: string, handler: (e: any) => void) => void;
+  removeEventListener: (event: string, handler: (e: any) => void) => void;
 }
 
 // Helper to create mock keyboard event
@@ -44,27 +54,54 @@ function createKeyEvent(
   };
 }
 
+// Helper to create mock clipboard event
+function createClipboardEvent(
+  text: string | null
+): MockClipboardEvent {
+  const data = new Map<string, string>();
+  if (text !== null) {
+    data.set('text/plain', text);
+  }
+  
+  return {
+    type: 'paste',
+    clipboardData: text !== null ? {
+      getData: (format: string) => data.get(format) || '',
+      setData: (format: string, value: string) => { data.set(format, value); },
+    } : null,
+    preventDefault: mock(() => {}),
+    stopPropagation: mock(() => {}),
+  };
+}
+
 // Helper to create mock container
 function createMockContainer(): MockHTMLElement & { 
-  _listeners: Map<string, ((e: MockKeyboardEvent) => void)[]> 
+  _listeners: Map<string, ((e: any) => void)[]>;
+  dispatchEvent: (event: any) => void;
 } {
-  const listeners = new Map<string, ((e: MockKeyboardEvent) => void)[]>();
+  const listeners = new Map<string, ((e: any) => void)[]>();
   
   return {
     _listeners: listeners,
-    addEventListener(event: string, handler: (e: MockKeyboardEvent) => void) {
+    addEventListener(event: string, handler: (e: any) => void) {
       if (!listeners.has(event)) {
         listeners.set(event, []);
       }
       listeners.get(event)!.push(handler);
     },
-    removeEventListener(event: string, handler: (e: MockKeyboardEvent) => void) {
+    removeEventListener(event: string, handler: (e: any) => void) {
       const handlers = listeners.get(event);
       if (handlers) {
         const index = handlers.indexOf(handler);
         if (index >= 0) {
           handlers.splice(index, 1);
         }
+      }
+    },
+    dispatchEvent(event: any) {
+      const handlers = listeners.get(event.type) || [];
+      for (const handler of handlers) {
+        handler(event);
       }
     },
   };
@@ -608,6 +645,100 @@ describe('InputHandler', () => {
       expect(dataReceived.length).toBe(1);
       // Alt+A often produces ESC a or similar
       expect(dataReceived[0].length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Clipboard Operations', () => {
+    test('handles paste event', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => { bellCalled = true; }
+      );
+
+      const pasteText = 'Hello, World!';
+      const pasteEvent = createClipboardEvent(pasteText);
+      
+      container.dispatchEvent(pasteEvent);
+      
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe(pasteText);
+    });
+
+    test('handles multi-line paste', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => { bellCalled = true; }
+      );
+
+      const pasteText = 'Line 1\nLine 2\nLine 3';
+      const pasteEvent = createClipboardEvent(pasteText);
+      
+      container.dispatchEvent(pasteEvent);
+      
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe(pasteText);
+    });
+
+    test('ignores paste with no clipboard data', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => { bellCalled = true; }
+      );
+
+      const pasteEvent = createClipboardEvent(null);
+      
+      container.dispatchEvent(pasteEvent);
+      
+      expect(dataReceived.length).toBe(0);
+    });
+
+    test('ignores paste with empty text', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => { bellCalled = true; }
+      );
+
+      const pasteEvent = createClipboardEvent('');
+      
+      container.dispatchEvent(pasteEvent);
+      
+      expect(dataReceived.length).toBe(0);
+    });
+
+    test('allows Ctrl+V to trigger paste', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => { bellCalled = true; }
+      );
+
+      // Ctrl+V should NOT call onData callback (lets paste event handle it)
+      simulateKey(container, createKeyEvent('KeyV', 'v', { ctrl: true }));
+      
+      expect(dataReceived.length).toBe(0);
+    });
+
+    test('allows Cmd+V to trigger paste', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => { bellCalled = true; }
+      );
+
+      // Cmd+V should NOT call onData callback (lets paste event handle it)
+      simulateKey(container, createKeyEvent('KeyV', 'v', { meta: true }));
+      
+      expect(dataReceived.length).toBe(0);
     });
   });
 });
