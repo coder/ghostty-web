@@ -137,7 +137,7 @@ ws.onmessage = (event) => {
 };
 ```
 
-**Full API Documentation:** [docs/API.md](docs/API.md)
+See [AGENTS.md](AGENTS.md) for development guide and code patterns.
 
 ## Why This Approach?
 
@@ -256,9 +256,7 @@ bun run build           # Build distribution
 
 ## Documentation
 
-- **[API Documentation](docs/API.md)** - Complete API reference
-- **[AGENTS.md](AGENTS.md)** - Implementation guide for developers
-- **[roadmap.md](roadmap.md)** - Project roadmap and task breakdown
+- **[AGENTS.md](AGENTS.md)** - Development guide for AI agents and developers
 
 ## Links
 
