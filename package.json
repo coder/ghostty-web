@@ -1,23 +1,70 @@
 {
-  "name": "ghostty-wasm",
-  "version": "1.0.0",
+  "name": "@coder/ghostty-web",
+  "version": "0.1.0",
+  "description": "Web-based terminal emulator using Ghostty's VT100 parser via WebAssembly",
   "type": "module",
+  "main": "./dist/ghostty-web.umd.cjs",
+  "module": "./dist/ghostty-web.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/ghostty-web.js",
+      "require": "./dist/ghostty-web.umd.cjs"
+    },
+    "./ghostty-vt.wasm": "./ghostty-vt.wasm"
+  },
+  "files": [
+    "dist",
+    "ghostty-vt.wasm",
+    "README.md",
+    "INSTALL.md"
+  ],
+  "keywords": [
+    "terminal",
+    "terminal-emulator",
+    "ghostty",
+    "web",
+    "xterm",
+    "vt100",
+    "wasm",
+    "webassembly",
+    "ansi",
+    "tty"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coder/ghostty-web.git",
+    "directory": "packaging"
+  },
+  "bugs": "https://github.com/coder/ghostty-web/issues",
+  "homepage": "https://github.com/coder/ghostty-web#readme",
+  "license": "AGPL-3.0",
+  "author": "Coder",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite --port 8000",
-    "build": "vite build",
+    "build": "bun run clean && bun run build:lib && bun run build:wasm-copy",
+    "build:lib": "vite build",
+    "build:wasm-copy": "cp ghostty-vt.wasm dist/",
+    "clean": "rm -rf dist",
     "preview": "vite preview",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "fmt": "prettier --check .",
     "fmt:fix": "prettier --write .",
     "lint": "biome check .",
-    "lint:fix": "biome check --write ."
+    "lint:fix": "biome check --write .",
+    "prepublishOnly": "bun run test && bun run build"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.3.2",
     "prettier": "^3.3.3",
     "typescript": "^5.9.3",
-    "vite": "^4.5.0"
+    "vite": "^4.5.0",
+    "vite-plugin-dts": "^4.5.4"
   }
 }

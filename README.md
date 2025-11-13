@@ -1,28 +1,41 @@
-# Ghostty WASM Terminal
+# Ghostty Web
 
-A terminal emulator that integrates [Ghostty's](https://github.com/ghostty-org/ghostty) VT100 parser via WebAssembly.
+A web-based terminal emulator that integrates [Ghostty's](https://github.com/ghostty-org/ghostty) VT100 parser via WebAssembly.
 
-## What This Is
+## Installation
 
-This repository provides a **foundation for building web-based terminals** using Ghostty's production-tested VT100 parser compiled to WebAssembly.
-
-**What's implemented:**
-
-- ✅ Full terminal emulator with screen buffer, VT parser, canvas renderer
-- ✅ TypeScript wrapper for libghostty-vt WASM API
-- ✅ SGR parser (ANSI colors, 256-color, RGB true color)
-- ✅ Key encoder (keyboard events → escape sequences)
-- ✅ FitAddon for responsive terminal sizing
-- ✅ Interactive demos (file browser, color showcase)
-- ✅ xterm.js-compatible API
-
-**MVP Complete!** See demos below.
+```bash
+npm install @coder/ghostty-web
+```
 
 ## Quick Start
 
-### Run the Terminal
+```typescript
+import { Terminal } from '@coder/ghostty-web';
 
-**Shell Terminal** (requires server)
+const term = new Terminal({ cols: 80, rows: 24 });
+await term.open(document.getElementById('terminal'));
+term.write('Hello, World!\r\n');
+```
+
+See [INSTALL.md](./INSTALL.md) for complete usage guide.
+
+## Features
+
+- ✅ Full xterm.js-compatible API
+- ✅ Production-tested VT100 parser (via Ghostty)
+- ✅ ANSI colors (16, 256, RGB true color)
+- ✅ Canvas rendering at 60 FPS
+- ✅ Scrollback buffer
+- ✅ Text selection & clipboard
+- ✅ FitAddon for responsive sizing
+- ✅ TypeScript declarations included
+
+## Development & Demos
+
+### Shell Terminal Demo
+
+**Requires server**
 
 ```bash
 # Terminal 1: Start PTY shell server
