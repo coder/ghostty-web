@@ -1,0 +1,82 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for OIDC trusted publishing
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          submodules: recursive
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: 0.15.2
+
+      - name: Validate tag matches package.json version
+        run: |
+          # Extract version from package.json
+          PKG_VERSION=$(jq -r .version package.json)
+          
+          # Extract version from git tag (strip 'v' prefix)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          
+          echo "Package version: $PKG_VERSION"
+          echo "Tag version: $TAG_VERSION"
+          
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Error: Version mismatch!"
+            echo "   package.json version: $PKG_VERSION"
+            echo "   Git tag version: $TAG_VERSION"
+            echo ""
+            echo "Please ensure the git tag matches the version in package.json"
+            exit 1
+          fi
+          
+          echo "✅ Version validation passed: $PKG_VERSION"
+
+      - name: Build WASM
+        run: ./scripts/build-wasm.sh
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Check formatting
+        run: bun run fmt
+
+      - name: Run linter
+        run: bun run lint
+
+      - name: Check types
+        run: bun run typecheck
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build library
+        run: bun run build
+
+      - name: Setup Node.js with npm 11+ (for trusted publishing)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm (with OIDC trusted publishing)
+        run: npm publish --provenance --access public
