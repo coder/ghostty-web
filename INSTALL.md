@@ -21,8 +21,8 @@ const term = new Terminal({
   cursorBlink: true,
   theme: {
     background: '#1e1e1e',
-    foreground: '#d4d4d4'
-  }
+    foreground: '#d4d4d4',
+  },
 });
 
 // Mount to DOM
@@ -33,7 +33,7 @@ term.write('Hello, World!\r\n');
 term.write('\x1b[1;32mGreen text\x1b[0m\r\n');
 
 // Handle user input
-term.onData(data => {
+term.onData((data) => {
   console.log('User typed:', data);
   // Send to backend, echo, etc.
 });
@@ -66,7 +66,7 @@ await term.open(document.getElementById('terminal'));
 const ws = new WebSocket('ws://localhost:3001/ws');
 
 // Send user input to backend
-term.onData(data => {
+term.onData((data) => {
   ws.send(JSON.stringify({ type: 'input', data }));
 });
 
@@ -89,7 +89,7 @@ Vite handles WASM automatically. No extra config needed:
 // vite.config.js
 export default {
   // WASM works out of the box
-}
+};
 ```
 
 ### Webpack
@@ -103,11 +103,11 @@ module.exports = {
     rules: [
       {
         test: /\.wasm$/,
-        type: 'asset/resource'
-      }
-    ]
-  }
-}
+        type: 'asset/resource',
+      },
+    ],
+  },
+};
 ```
 
 ### Manual Import (Advanced)
@@ -129,13 +129,13 @@ import { Terminal, ITerminalOptions, ITheme } from '@coder/ghostty-web';
 const options: ITerminalOptions = {
   cols: 80,
   rows: 24,
-  cursorBlink: true
+  cursorBlink: true,
 };
 
 const theme: ITheme = {
   background: '#1e1e1e',
   foreground: '#d4d4d4',
-  cursor: '#ffffff'
+  cursor: '#ffffff',
 };
 ```
 
