@@ -12,7 +12,7 @@ export interface ITerminalOptions {
   fontSize?: number; // Default: 15
   fontFamily?: string; // Default: 'monospace'
   allowTransparency?: boolean;
-  wasmPath?: string; // Default: '../ghostty-vt.wasm' (relative to examples/)
+  wasmPath?: string; // Optional: custom WASM path (auto-detected by default)
 }
 
 export interface ITheme {

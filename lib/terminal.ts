@@ -79,7 +79,7 @@ export class Terminal implements ITerminalCore {
       fontSize: options.fontSize ?? 15,
       fontFamily: options.fontFamily ?? 'monospace',
       allowTransparency: options.allowTransparency ?? false,
-      wasmPath: options.wasmPath ?? '../ghostty-vt.wasm',
+      wasmPath: options.wasmPath, // Optional - Ghostty.load() handles defaults
     };
 
     this.cols = this.options.cols;

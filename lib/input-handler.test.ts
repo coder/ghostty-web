@@ -129,8 +129,8 @@ describe('InputHandler', () => {
 
   beforeAll(async () => {
     // Load WASM once for all tests (expensive operation)
-    const wasmPath = new URL('../ghostty-vt.wasm', import.meta.url).href;
-    ghostty = await Ghostty.load(wasmPath);
+    // wasmPath is now optional - auto-detected
+    ghostty = await Ghostty.load();
   });
 
   beforeEach(() => {

@@ -21,7 +21,7 @@ echo "✓ Found Zig $ZIG_VERSION"
 GHOSTTY_DIR="/tmp/ghostty-for-wasm"
 if [ ! -d "$GHOSTTY_DIR" ]; then
     echo "📦 Cloning Ghostty..."
-    git clone --depth=1 https://github.com/ghostty-org/ghostty.git "$GHOSTTY_DIR"
+    git clone --depth=1 https://github.com/coder/ghostty.git "$GHOSTTY_DIR"
 else
     echo "📦 Updating Ghostty..."
     cd "$GHOSTTY_DIR"

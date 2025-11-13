@@ -55,40 +55,65 @@ export class Ghostty {
 
   /**
    * Load Ghostty WASM from URL or file path
+   * If no path is provided, attempts to load from common default locations
    */
-  static async load(wasmPath: string): Promise<Ghostty> {
-    let wasmBytes: ArrayBuffer;
+  static async load(wasmPath?: string): Promise<Ghostty> {
+    // Default WASM paths to try (in order)
+    const defaultPaths = [
+      // When published as npm package
+      new URL('../ghostty-vt.wasm', import.meta.url).href,
+      // When used from CDN or local dev
+      './ghostty-vt.wasm',
+      '/ghostty-vt.wasm',
+    ];
 
-    // Try loading as file first (for Node/Bun environments)
-    try {
-      const fs = await import('fs/promises');
-      const buffer = await fs.readFile(wasmPath);
-      wasmBytes = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-    } catch (e) {
-      // Fall back to fetch (for browser environments)
-      const response = await fetch(wasmPath);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
-      }
-      wasmBytes = await response.arrayBuffer();
-      if (wasmBytes.byteLength === 0) {
-        throw new Error(`WASM file is empty (0 bytes). Check path: ${wasmPath}`);
+    const pathsToTry = wasmPath ? [wasmPath] : defaultPaths;
+    let lastError: Error | null = null;
+
+    for (const path of pathsToTry) {
+      try {
+        let wasmBytes: ArrayBuffer;
+
+        // Try loading as file first (for Node/Bun environments)
+        try {
+          const fs = await import('fs/promises');
+          const buffer = await fs.readFile(path);
+          wasmBytes = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+        } catch (e) {
+          // Fall back to fetch (for browser environments)
+          const response = await fetch(path);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
+          }
+          wasmBytes = await response.arrayBuffer();
+          if (wasmBytes.byteLength === 0) {
+            throw new Error(`WASM file is empty (0 bytes). Check path: ${path}`);
+          }
+        }
+
+        // Successfully loaded, instantiate and return
+        const wasmModule = await WebAssembly.instantiate(wasmBytes, {
+          env: {
+            // Stub out C runtime functions (not used by libghostty-vt)
+          },
+        });
+
+        return new Ghostty(wasmModule.instance);
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        // Try next path
+        continue;
       }
     }
 
-    const wasmModule = await WebAssembly.instantiate(wasmBytes, {
-      env: {
-        log: (ptr: number, len: number) => {
-          const instance = (wasmModule as any).instance;
-          const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, len);
-          const text = new TextDecoder().decode(bytes);
-          console.log('[ghostty-wasm]', text);
-        },
-      },
-    });
-
-    return new Ghostty(wasmModule.instance);
+    // All paths failed
+    throw new Error(
+      `Failed to load ghostty-vt.wasm. Tried paths: ${pathsToTry.join(', ')}. ` +
+      `Last error: ${lastError?.message}. ` +
+      `You can specify a custom path with: new Terminal({ wasmPath: './path/to/ghostty-vt.wasm' })`
+    );
   }
+
 }
 
 /**
