@@ -12,7 +12,7 @@ export default defineConfig({
       exclude: ['lib/**/*.test.ts'],
       rollupTypes: true, // Bundle all .d.ts into single file
       copyDtsFiles: false, // Don't copy individual .d.ts files
-    })
+    }),
   ],
   build: {
     lib: {
@@ -21,14 +21,14 @@ export default defineConfig({
       fileName: (format) => {
         return format === 'es' ? 'ghostty-web.js' : 'ghostty-web.umd.cjs';
       },
-      formats: ['es', 'umd']
+      formats: ['es', 'umd'],
     },
     rollupOptions: {
       external: [], // No external dependencies
       output: {
         assetFileNames: 'assets/[name][extname]',
-        globals: {}
-      }
-    }
+        globals: {},
+      },
+    },
   },
 });
