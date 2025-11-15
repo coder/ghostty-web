@@ -449,7 +449,7 @@ describe('Terminal', () => {
   });
 });
 
-describe('Terminal > paste()', () => {
+describe('paste()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -509,7 +509,7 @@ describe('Terminal > paste()', () => {
   });
 });
 
-describe('Terminal > blur()', () => {
+describe('blur()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -565,7 +565,7 @@ describe('Terminal > blur()', () => {
   });
 });
 
-describe('Terminal > input()', () => {
+describe('input()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -650,7 +650,7 @@ describe('Terminal > input()', () => {
   });
 });
 
-describe('Terminal > select()', () => {
+describe('select()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -715,7 +715,7 @@ describe('Terminal > select()', () => {
   });
 });
 
-describe('Terminal > selectLines()', () => {
+describe('selectLines()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -784,7 +784,7 @@ describe('Terminal > selectLines()', () => {
   });
 });
 
-describe('Terminal > getSelectionPosition()', () => {
+describe('getSelectionPosition()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -845,7 +845,7 @@ describe('Terminal > getSelectionPosition()', () => {
   });
 });
 
-describe('Terminal > onKey event', () => {
+describe('onKey event', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -897,7 +897,7 @@ describe('Terminal > onKey event', () => {
   });
 });
 
-describe('Terminal > onTitleChange event', () => {
+describe('onTitleChange event', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -982,7 +982,7 @@ describe('Terminal > onTitleChange event', () => {
   });
 });
 
-describe('Terminal > attachCustomKeyEventHandler()', () => {
+describe('attachCustomKeyEventHandler()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -1025,7 +1025,7 @@ describe('Terminal > attachCustomKeyEventHandler()', () => {
   });
 });
 
-describe('Terminal > Options', () => {
+describe('Terminal Options', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
