@@ -181,7 +181,7 @@ export class SelectionManager {
    */
   selectLines(start: number, end: number): void {
     const dims = this.wasmTerm.getDimensions();
-    
+
     // Clamp to valid row ranges
     start = Math.max(0, Math.min(start, dims.rows - 1));
     end = Math.max(0, Math.min(end, dims.rows - 1));
@@ -201,7 +201,9 @@ export class SelectionManager {
    * Get selection position as buffer range
    * xterm.js compatible API
    */
-  getSelectionPosition(): { start: { x: number; y: number }; end: { x: number; y: number } } | undefined {
+  getSelectionPosition():
+    | { start: { x: number; y: number }; end: { x: number; y: number } }
+    | undefined {
     const coords = this.normalizeSelection();
     if (!coords) return undefined;
 
@@ -295,7 +297,7 @@ export class SelectionManager {
       if (this.isSelecting) {
         // Save previous selection state before updating
         this.previousSelection = this.normalizeSelection();
-        
+
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         this.selectionEnd = cell;
         this.requestRender();

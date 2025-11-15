@@ -293,9 +293,11 @@
           <button class="test-button" id="btn-customHandler">🔧 Toggle Custom Handler</button>
         </div>
         <div>
-          <strong style="display: block; margin-bottom: 8px;">Event Log (onKey, onTitleChange):</strong>
+          <strong style="display: block; margin-bottom: 8px"
+            >Event Log (onKey, onTitleChange):</strong
+          >
           <div class="event-log" id="event-log">
-            <div style="opacity: 0.5; text-align: center;">Events will appear here...</div>
+            <div style="opacity: 0.5; text-align: center">Events will appear here...</div>
           </div>
           <button class="clear-log" id="btn-clear-log">Clear Log</button>
         </div>
@@ -633,19 +635,19 @@
         const eventLog = document.getElementById('event-log');
         const eventDiv = document.createElement('div');
         eventDiv.className = 'event';
-        
+
         const timestamp = new Date().toLocaleTimeString();
         const dataStr = typeof data === 'object' ? JSON.stringify(data) : String(data);
-        
+
         eventDiv.innerHTML = `
           <span style="opacity: 0.6;">[${timestamp}]</span> 
           <span class="event-type">${type}:</span> 
           <span class="event-data">${dataStr}</span>
         `;
-        
+
         eventLog.appendChild(eventDiv);
         eventLog.scrollTop = eventLog.scrollHeight;
-        
+
         // Keep only last 50 events
         while (eventLog.children.length > 50) {
           eventLog.removeChild(eventLog.firstChild);
@@ -686,7 +688,10 @@
           const cursor = term.wasmTerm.getCursor();
           const startRow = Math.max(0, cursor.y - 1);
           term.select(0, startRow, 30);
-          logEvent('Action', `Called select(0, ${startRow}, 30) - selects 30 chars from row ${startRow}`);
+          logEvent(
+            'Action',
+            `Called select(0, ${startRow}, 30) - selects 30 chars from row ${startRow}`
+          );
         });
 
         document.getElementById('btn-selectLines').addEventListener('click', () => {
@@ -701,8 +706,10 @@
         document.getElementById('btn-getSelectionPos').addEventListener('click', () => {
           const pos = term.getSelectionPosition();
           if (pos) {
-            logEvent('getSelectionPosition', 
-              `start=(${pos.start.x},${pos.start.y}) end=(${pos.end.x},${pos.end.y})`);
+            logEvent(
+              'getSelectionPosition',
+              `start=(${pos.start.x},${pos.start.y}) end=(${pos.end.x},${pos.end.y})`
+            );
           } else {
             logEvent('getSelectionPosition', 'No selection');
           }
@@ -717,7 +724,7 @@
 
         document.getElementById('btn-customHandler').addEventListener('click', () => {
           customHandlerEnabled = !customHandlerEnabled;
-          
+
           if (customHandlerEnabled) {
             // Custom handler that blocks Ctrl+K
             term.attachCustomKeyEventHandler((event) => {
@@ -728,16 +735,18 @@
               return false; // Allow default handling
             });
             logEvent('Action', 'Custom handler enabled (blocks Ctrl+K)');
-            document.getElementById('btn-customHandler').style.background = 'rgba(33, 150, 243, 0.8)';
+            document.getElementById('btn-customHandler').style.background =
+              'rgba(33, 150, 243, 0.8)';
           } else {
             term.attachCustomKeyEventHandler(undefined);
             logEvent('Action', 'Custom handler disabled');
-            document.getElementById('btn-customHandler').style.background = 'rgba(76, 175, 80, 0.8)';
+            document.getElementById('btn-customHandler').style.background =
+              'rgba(76, 175, 80, 0.8)';
           }
         });
 
         document.getElementById('btn-clear-log').addEventListener('click', () => {
-          document.getElementById('event-log').innerHTML = 
+          document.getElementById('event-log').innerHTML =
             '<div style="opacity: 0.5; text-align: center;">Log cleared</div>';
         });
 

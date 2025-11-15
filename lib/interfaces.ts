@@ -13,7 +13,7 @@ export interface ITerminalOptions {
   fontFamily?: string; // Default: 'monospace'
   allowTransparency?: boolean;
   wasmPath?: string; // Optional: custom WASM path (auto-detected by default)
-  
+
   // Phase 1 additions
   convertEol?: boolean; // Convert \n to \r\n (default: false)
   disableStdin?: boolean; // Disable keyboard input (default: false)

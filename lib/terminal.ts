@@ -271,7 +271,7 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Input data into terminal (as if typed by user)
-   * 
+   *
    * @param data - Data to input
    * @param wasUserInput - If true, triggers onData event (default: false for compat with some apps)
    */
@@ -445,7 +445,9 @@ export class Terminal implements ITerminalCore {
    * Attach a custom keyboard event handler
    * Returns true to prevent default handling
    */
-  public attachCustomKeyEventHandler(customKeyEventHandler: (event: KeyboardEvent) => boolean): void {
+  public attachCustomKeyEventHandler(
+    customKeyEventHandler: (event: KeyboardEvent) => boolean
+  ): void {
     this.customKeyEventHandler = customKeyEventHandler;
     // Update input handler if already created
     if (this.inputHandler) {
