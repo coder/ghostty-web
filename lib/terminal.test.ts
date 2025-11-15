@@ -449,11 +449,7 @@ describe('Terminal', () => {
   });
 });
 
-// =============================================================================
-// Phase 1 Features Tests
-// =============================================================================
-
-describe('Terminal > Phase 1 Features', () => {
+describe('Terminal > paste()', () => {
   let container: HTMLElement | null = null;
 
   beforeEach(() => {
@@ -470,7 +466,7 @@ describe('Terminal > Phase 1 Features', () => {
     }
   });
 
-  describe('paste()', () => {
+  describe('Basic functionality', () => {
     test('should fire onData event with pasted text', async () => {
       if (!container) return;
       const term = new Terminal({ cols: 80, rows: 24 });
@@ -511,8 +507,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('blur()', () => {
+describe('Terminal > blur()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should not throw when terminal is open', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -549,8 +563,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('input()', () => {
+describe('Terminal > input()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should write data to terminal', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -616,8 +648,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('select()', () => {
+describe('Terminal > select()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should create selection', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -663,8 +713,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('selectLines()', () => {
+describe('Terminal > selectLines()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should select entire lines', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -714,8 +782,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('getSelectionPosition()', () => {
+describe('Terminal > getSelectionPosition()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should return null when no selection', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -757,8 +843,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('onKey event', () => {
+describe('Terminal > onKey event', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should exist', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -791,8 +895,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('onTitleChange event', () => {
+describe('Terminal > onTitleChange event', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should exist', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -858,8 +980,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('attachCustomKeyEventHandler()', () => {
+describe('Terminal > attachCustomKeyEventHandler()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
     test('should accept a custom handler', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -883,8 +1023,26 @@ describe('Terminal > Phase 1 Features', () => {
       term.dispose();
     });
   });
+});
 
-  describe('Options', () => {
+describe('Terminal > Options', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('convertEol and disableStdin', () => {
     test('convertEol option should convert newlines', async () => {
       const term = new Terminal({ cols: 80, rows: 24, convertEol: true });
       // Using shared container from beforeEach

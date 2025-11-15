@@ -170,7 +170,7 @@
         }
       }
 
-      /* Phase 1 Feature Panel */
+      /* Feature Panel */
       .feature-panel {
         background: rgba(255, 255, 255, 0.1);
         backdrop-filter: blur(10px);
@@ -281,7 +281,7 @@
       </div>
 
       <div class="feature-panel">
-        <h3>🎯 Phase 1 Features - xterm.js API Parity</h3>
+        <h3>🎯 xterm.js API Features</h3>
         <div class="button-grid">
           <button class="test-button" id="btn-paste">📋 Test paste()</button>
           <button class="test-button" id="btn-blur">👁️ Test blur()</button>
@@ -624,7 +624,7 @@
       // - Ctrl+C / Cmd+C to copy (via browser context menu)
 
       // =========================================================================
-      // Phase 1 Features - Event Logging & Handlers
+      // Event Logging & Handlers
       // =========================================================================
 
       let customHandlerEnabled = false;
@@ -652,7 +652,7 @@
         }
       }
 
-      function setupPhase1Events() {
+      function setupEventHandlers() {
         // Event: onKey - fires on every keypress
         term.onKey((e) => {
           logEvent('onKey', `key="${e.key}" ctrl=${e.domEvent.ctrlKey} alt=${e.domEvent.altKey}`);
@@ -817,8 +817,8 @@
           // Text selection is now built-in - no need to enable it!
           // You can use term.getSelection(), term.selectAll(), etc.
 
-          // Phase 1: Hook up new event listeners
-          setupPhase1Events();
+          // Hook up event listeners and test buttons
+          setupEventHandlers();
 
           // Connect to WebSocket server
           connect();
