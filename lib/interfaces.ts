@@ -13,6 +13,10 @@ export interface ITerminalOptions {
   fontFamily?: string; // Default: 'monospace'
   allowTransparency?: boolean;
   wasmPath?: string; // Optional: custom WASM path (auto-detected by default)
+  
+  // Phase 1 additions
+  convertEol?: boolean; // Convert \n to \r\n (default: false)
+  disableStdin?: boolean; // Disable keyboard input (default: false)
 }
 
 export interface ITheme {
@@ -58,4 +62,20 @@ export interface ITerminalCore {
   rows: number;
   element?: HTMLElement;
   textarea?: HTMLTextAreaElement;
+}
+
+/**
+ * Buffer range for selection coordinates
+ */
+export interface IBufferRange {
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+}
+
+/**
+ * Keyboard event with key and DOM event
+ */
+export interface IKeyEvent {
+  key: string;
+  domEvent: KeyboardEvent;
 }

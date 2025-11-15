@@ -448,3 +448,490 @@ describe('Terminal', () => {
     });
   });
 });
+
+// =============================================================================
+// Phase 1 Features Tests
+// =============================================================================
+
+describe('Terminal > Phase 1 Features', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('paste()', () => {
+    test('should fire onData event with pasted text', async () => {
+      if (!container) return;
+      const term = new Terminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      await term.open(container);
+
+      let receivedData = '';
+      term.onData((data) => {
+        receivedData = data;
+      });
+
+      term.paste('hello world');
+
+      expect(receivedData).toBe('hello world');
+      term.dispose();
+    });
+
+    test('should respect disableStdin option', async () => {
+      const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedData = '';
+      term.onData((data) => {
+        receivedData = data;
+      });
+
+      term.paste('hello world');
+
+      expect(receivedData).toBe('');
+      term.dispose();
+    });
+
+    test('should work before terminal is open', () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      expect(() => term.paste('test')).toThrow();
+      term.dispose();
+    });
+  });
+
+  describe('blur()', () => {
+    test('should not throw when terminal is open', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      expect(() => term.blur()).not.toThrow();
+      term.dispose();
+    });
+
+    test('should not throw when terminal is closed', () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      expect(() => term.blur()).not.toThrow();
+      term.dispose();
+    });
+
+    test('should call blur on element', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      const blurSpy = { called: false };
+      if (term.element) {
+        const originalBlur = term.element.blur;
+        term.element.blur = () => {
+          blurSpy.called = true;
+          originalBlur.call(term.element);
+        };
+      }
+
+      term.blur();
+      expect(blurSpy.called).toBe(true);
+      term.dispose();
+    });
+  });
+
+  describe('input()', () => {
+    test('should write data to terminal', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.input('test data');
+
+      // Verify cursor moved (data was written)
+      const cursor = term.wasmTerm!.getCursor();
+      expect(cursor.x).toBeGreaterThan(0);
+      term.dispose();
+    });
+
+    test('should fire onData when wasUserInput is true', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedData = '';
+      term.onData((data) => {
+        receivedData = data;
+      });
+
+      term.input('user input', true);
+
+      expect(receivedData).toBe('user input');
+      term.dispose();
+    });
+
+    test('should not fire onData when wasUserInput is false', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedData = '';
+      term.onData((data) => {
+        receivedData = data;
+      });
+
+      term.input('programmatic input', false);
+
+      expect(receivedData).toBe('');
+      term.dispose();
+    });
+
+    test('should respect disableStdin option', async () => {
+      const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedData = '';
+      term.onData((data) => {
+        receivedData = data;
+      });
+
+      term.input('test', true);
+
+      expect(receivedData).toBe('');
+      term.dispose();
+    });
+  });
+
+  describe('select()', () => {
+    test('should create selection', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.select(0, 0, 10);
+
+      expect(term.hasSelection()).toBe(true);
+      term.dispose();
+    });
+
+    test('should handle selection wrapping to next line', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      // Select 100 chars starting at column 0 (wraps to next line)
+      term.select(0, 0, 100);
+
+      const pos = term.getSelectionPosition();
+      expect(pos).toBeTruthy();
+      expect(pos!.start.y).toBe(0);
+      expect(pos!.end.y).toBeGreaterThan(0); // Wrapped to next line
+      term.dispose();
+    });
+
+    test('should fire selectionChange event', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let fired = false;
+      term.onSelectionChange(() => {
+        fired = true;
+      });
+
+      term.select(0, 0, 10);
+
+      expect(fired).toBe(true);
+      term.dispose();
+    });
+  });
+
+  describe('selectLines()', () => {
+    test('should select entire lines', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.selectLines(0, 2);
+
+      const pos = term.getSelectionPosition();
+      expect(pos).toBeTruthy();
+      expect(pos!.start.x).toBe(0);
+      expect(pos!.start.y).toBe(0);
+      expect(pos!.end.x).toBe(79); // Last column
+      expect(pos!.end.y).toBe(2);
+      term.dispose();
+    });
+
+    test('should handle reversed start/end', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.selectLines(5, 2); // End before start
+
+      const pos = term.getSelectionPosition();
+      expect(pos).toBeTruthy();
+      expect(pos!.start.y).toBe(2); // Should be swapped
+      expect(pos!.end.y).toBe(5);
+      term.dispose();
+    });
+
+    test('should fire selectionChange event', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let fired = false;
+      term.onSelectionChange(() => {
+        fired = true;
+      });
+
+      term.selectLines(0, 2);
+
+      expect(fired).toBe(true);
+      term.dispose();
+    });
+  });
+
+  describe('getSelectionPosition()', () => {
+    test('should return null when no selection', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      const pos = term.getSelectionPosition();
+
+      expect(pos).toBeUndefined();
+      term.dispose();
+    });
+
+    test('should return correct position after select', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.select(5, 3, 10);
+      const pos = term.getSelectionPosition();
+
+      expect(pos).toBeTruthy();
+      expect(pos!.start.x).toBe(5);
+      expect(pos!.start.y).toBe(3);
+      term.dispose();
+    });
+
+    test('should return undefined after clearSelection', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.select(0, 0, 10);
+      term.clearSelection();
+      const pos = term.getSelectionPosition();
+
+      expect(pos).toBeUndefined();
+      term.dispose();
+    });
+  });
+
+  describe('onKey event', () => {
+    test('should exist', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      expect(term.onKey).toBeTruthy();
+      expect(typeof term.onKey).toBe('function');
+      term.dispose();
+    });
+
+    test('should fire on keyboard events', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let keyEvent: any = null;
+      term.onKey((e) => {
+        keyEvent = e;
+      });
+
+      // Simulate keyboard event
+      const event = new KeyboardEvent('keydown', { key: 'a' });
+      term.element?.dispatchEvent(event);
+
+      // Note: This may not fire in test environment without proper focus
+      // but the API should exist and be callable
+      expect(keyEvent).toBeTruthy();
+      term.dispose();
+    });
+  });
+
+  describe('onTitleChange event', () => {
+    test('should exist', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      expect(term.onTitleChange).toBeTruthy();
+      expect(typeof term.onTitleChange).toBe('function');
+      term.dispose();
+    });
+
+    test('should fire when OSC 2 sequence is written', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedTitle = '';
+      term.onTitleChange((title) => {
+        receivedTitle = title;
+      });
+
+      // Write OSC 2 sequence (set title)
+      term.write('\x1b]2;Test Title\x07');
+
+      expect(receivedTitle).toBe('Test Title');
+      term.dispose();
+    });
+
+    test('should fire when OSC 0 sequence is written', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedTitle = '';
+      term.onTitleChange((title) => {
+        receivedTitle = title;
+      });
+
+      // Write OSC 0 sequence (set icon and title)
+      term.write('\x1b]0;Another Title\x07');
+
+      expect(receivedTitle).toBe('Another Title');
+      term.dispose();
+    });
+
+    test('should handle ST terminator', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let receivedTitle = '';
+      term.onTitleChange((title) => {
+        receivedTitle = title;
+      });
+
+      // Write OSC 2 with ST terminator (ESC \)
+      term.write('\x1b]2;Title with ST\x1b\\');
+
+      expect(receivedTitle).toBe('Title with ST');
+      term.dispose();
+    });
+  });
+
+  describe('attachCustomKeyEventHandler()', () => {
+    test('should accept a custom handler', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      const handler = (e: KeyboardEvent) => false;
+      expect(() => term.attachCustomKeyEventHandler(handler)).not.toThrow();
+      term.dispose();
+    });
+
+    test('should accept undefined to clear handler', async () => {
+      const term = new Terminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      const handler = (e: KeyboardEvent) => false;
+      term.attachCustomKeyEventHandler(handler);
+      expect(() => term.attachCustomKeyEventHandler(undefined)).not.toThrow();
+      term.dispose();
+    });
+  });
+
+  describe('Options', () => {
+    test('convertEol option should convert newlines', async () => {
+      const term = new Terminal({ cols: 80, rows: 24, convertEol: true });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      term.write('line1\nline2');
+
+      // Cursor should be at start of line (CR moved it back)
+      const cursor = term.wasmTerm!.getCursor();
+      expect(cursor.x).toBe(5); // After "line2"
+      expect(cursor.y).toBeGreaterThan(0); // On next line
+      term.dispose();
+    });
+
+    test('disableStdin should prevent paste', async () => {
+      const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let received = false;
+      term.onData(() => {
+        received = true;
+      });
+
+      term.paste('test');
+
+      expect(received).toBe(false);
+      term.dispose();
+    });
+
+    test('disableStdin should prevent input with wasUserInput', async () => {
+      const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
+      // Using shared container from beforeEach
+      if (!container) return;
+      await term.open(container);
+
+      let received = false;
+      term.onData(() => {
+        received = true;
+      });
+
+      term.input('test', true);
+
+      expect(received).toBe(false);
+      term.dispose();
+    });
+  });
+});

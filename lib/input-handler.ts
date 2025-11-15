@@ -15,6 +15,7 @@
 
 import type { Ghostty } from './ghostty';
 import type { KeyEncoder } from './ghostty';
+import type { IKeyEvent } from './interfaces';
 import { Key, KeyAction, Mods } from './types';
 
 /**
@@ -162,6 +163,8 @@ export class InputHandler {
   private container: HTMLElement;
   private onDataCallback: (data: string) => void;
   private onBellCallback: () => void;
+  private onKeyCallback?: (keyEvent: IKeyEvent) => void;
+  private customKeyEventHandler?: (event: KeyboardEvent) => boolean;
   private keydownListener: ((e: KeyboardEvent) => void) | null = null;
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
   private pasteListener: ((e: ClipboardEvent) => void) | null = null;
@@ -173,20 +176,33 @@ export class InputHandler {
    * @param container - DOM element to attach listeners to
    * @param onData - Callback for terminal data (escape sequences to send to PTY)
    * @param onBell - Callback for bell/beep event
+   * @param onKey - Optional callback for raw key events
+   * @param customKeyEventHandler - Optional custom key event handler
    */
   constructor(
     ghostty: Ghostty,
     container: HTMLElement,
     onData: (data: string) => void,
-    onBell: () => void
+    onBell: () => void,
+    onKey?: (keyEvent: IKeyEvent) => void,
+    customKeyEventHandler?: (event: KeyboardEvent) => boolean
   ) {
     this.encoder = ghostty.createKeyEncoder();
     this.container = container;
     this.onDataCallback = onData;
     this.onBellCallback = onBell;
+    this.onKeyCallback = onKey;
+    this.customKeyEventHandler = customKeyEventHandler;
 
     // Attach event listeners
     this.attach();
+  }
+
+  /**
+   * Set custom key event handler (for runtime updates)
+   */
+  setCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
+    this.customKeyEventHandler = handler;
   }
 
   /**
@@ -266,6 +282,21 @@ export class InputHandler {
    */
   private handleKeyDown(event: KeyboardEvent): void {
     if (this.isDisposed) return;
+
+    // Emit onKey event first (before any processing)
+    if (this.onKeyCallback) {
+      this.onKeyCallback({ key: event.key, domEvent: event });
+    }
+
+    // Check custom key event handler
+    if (this.customKeyEventHandler) {
+      const handled = this.customKeyEventHandler(event);
+      if (handled) {
+        // Custom handler consumed the event
+        event.preventDefault();
+        return;
+      }
+    }
 
     // Allow Ctrl+V and Cmd+V to trigger paste event (don't preventDefault)
     if ((event.ctrlKey || event.metaKey) && event.code === 'KeyV') {

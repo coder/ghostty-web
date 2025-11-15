@@ -260,15 +260,11 @@ export class CanvasRenderer {
     }
 
     // Check if we need to redraw selection-related lines
-    // Only force redraws when actively selecting or clearing selection
     const hasSelection = this.selectionManager && this.selectionManager.hasSelection();
-    const isActivelySelecting =
-      this.selectionManager && this.selectionManager.isActivelySelecting();
     const selectionRows = new Set<number>();
 
-    // Mark selection rows for redraw ONLY when actively selecting (mouse is down)
-    // This prevents slowdown when just typing with a static selection
-    if (hasSelection && isActivelySelecting) {
+    // Mark current selection rows for redraw (includes programmatic selections)
+    if (hasSelection) {
       const coords = this.selectionManager!.getSelectionCoords();
       if (coords) {
         for (let row = coords.startRow; row <= coords.endRow; row++) {

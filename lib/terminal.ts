@@ -16,8 +16,10 @@ import { EventEmitter } from './event-emitter';
 import { Ghostty, type GhosttyTerminal } from './ghostty';
 import { InputHandler } from './input-handler';
 import type {
+  IBufferRange,
   IDisposable,
   IEvent,
+  IKeyEvent,
   ITerminalAddon,
   ITerminalCore,
   ITerminalOptions,
@@ -54,12 +56,16 @@ export class Terminal implements ITerminalCore {
   private resizeEmitter = new EventEmitter<{ cols: number; rows: number }>();
   private bellEmitter = new EventEmitter<void>();
   private selectionChangeEmitter = new EventEmitter<void>();
+  private keyEmitter = new EventEmitter<IKeyEvent>();
+  private titleChangeEmitter = new EventEmitter<string>();
 
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
   public readonly onResize: IEvent<{ cols: number; rows: number }> = this.resizeEmitter.event;
   public readonly onBell: IEvent<void> = this.bellEmitter.event;
   public readonly onSelectionChange: IEvent<void> = this.selectionChangeEmitter.event;
+  public readonly onKey: IEvent<IKeyEvent> = this.keyEmitter.event;
+  public readonly onTitleChange: IEvent<string> = this.titleChangeEmitter.event;
 
   // Lifecycle state
   private isOpen = false;
@@ -68,6 +74,12 @@ export class Terminal implements ITerminalCore {
 
   // Addons
   private addons: ITerminalAddon[] = [];
+
+  // Phase 1: Custom event handlers
+  private customKeyEventHandler?: (event: KeyboardEvent) => boolean;
+
+  // Phase 1: Title tracking
+  private currentTitle: string = '';
 
   constructor(options: ITerminalOptions = {}) {
     // Set default options
@@ -81,6 +93,8 @@ export class Terminal implements ITerminalCore {
       fontSize: options.fontSize ?? 15,
       fontFamily: options.fontFamily ?? 'monospace',
       allowTransparency: options.allowTransparency ?? false,
+      convertEol: options.convertEol ?? false,
+      disableStdin: options.disableStdin ?? false,
       wasmPath: options.wasmPath, // Optional - Ghostty.load() handles defaults
     };
 
@@ -107,6 +121,11 @@ export class Terminal implements ITerminalCore {
     try {
       // Store parent element
       this.element = parent;
+
+      // Make parent focusable if it isn't already
+      if (!parent.hasAttribute('tabindex')) {
+        parent.setAttribute('tabindex', '0');
+      }
 
       // Load Ghostty WASM
       this.ghostty = await Ghostty.load(this.options.wasmPath);
@@ -136,13 +155,22 @@ export class Terminal implements ITerminalCore {
         this.ghostty,
         parent,
         (data: string) => {
+          // Check if stdin is disabled
+          if (this.options.disableStdin) {
+            return;
+          }
           // Input handler fires data events
           this.dataEmitter.fire(data);
         },
         () => {
           // Input handler can also fire bell
           this.bellEmitter.fire();
-        }
+        },
+        (keyEvent: IKeyEvent) => {
+          // Forward key events
+          this.keyEmitter.fire(keyEvent);
+        },
+        this.customKeyEventHandler
       );
 
       // Create selection manager
@@ -177,8 +205,13 @@ export class Terminal implements ITerminalCore {
   /**
    * Write data to terminal
    */
-  write(data: string | Uint8Array): void {
+  write(data: string | Uint8Array, callback?: () => void): void {
     this.assertOpen();
+
+    // Handle convertEol option
+    if (this.options.convertEol && typeof data === 'string') {
+      data = data.replace(/\n/g, '\r\n');
+    }
 
     // Clear selection when writing new data (standard terminal behavior)
     if (this.selectionManager?.hasSelection()) {
@@ -188,14 +221,75 @@ export class Terminal implements ITerminalCore {
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
 
+    // Check for title changes (OSC 0, 1, 2 sequences)
+    // This is a simplified implementation - Ghostty WASM may provide this
+    if (typeof data === 'string' && data.includes('\x1b]')) {
+      this.checkForTitleChange(data);
+    }
+
+    // Call callback if provided
+    if (callback) {
+      // Queue callback after next render
+      requestAnimationFrame(callback);
+    }
+
     // Render will happen on next animation frame
   }
 
   /**
    * Write data with newline
    */
-  writeln(data: string): void {
-    this.write(data + '\r\n');
+  writeln(data: string | Uint8Array, callback?: () => void): void {
+    if (typeof data === 'string') {
+      this.write(data + '\r\n', callback);
+    } else {
+      // Append \r\n to Uint8Array
+      const newData = new Uint8Array(data.length + 2);
+      newData.set(data);
+      newData[data.length] = 0x0d; // \r
+      newData[data.length + 1] = 0x0a; // \n
+      this.write(newData, callback);
+    }
+  }
+
+  /**
+   * Paste text into terminal (triggers bracketed paste if supported)
+   */
+  paste(data: string): void {
+    this.assertOpen();
+
+    // Don't paste if stdin is disabled
+    if (this.options.disableStdin) {
+      return;
+    }
+
+    // TODO: Check if terminal has bracketed paste mode enabled
+    // For now, just send the data directly
+    // In full implementation: wrap with \x1b[200~ and \x1b[201~
+    this.dataEmitter.fire(data);
+  }
+
+  /**
+   * Input data into terminal (as if typed by user)
+   * 
+   * @param data - Data to input
+   * @param wasUserInput - If true, triggers onData event (default: false for compat with some apps)
+   */
+  input(data: string, wasUserInput: boolean = false): void {
+    this.assertOpen();
+
+    // Don't input if stdin is disabled
+    if (this.options.disableStdin) {
+      return;
+    }
+
+    if (wasUserInput) {
+      // Trigger onData event as if user typed it
+      this.dataEmitter.fire(data);
+    } else {
+      // Just write to terminal without triggering onData
+      this.write(data);
+    }
   }
 
   /**
@@ -255,6 +349,9 @@ export class Terminal implements ITerminalCore {
 
     // Clear renderer
     this.renderer!.clear();
+
+    // Reset title
+    this.currentTitle = '';
   }
 
   /**
@@ -267,6 +364,15 @@ export class Terminal implements ITerminalCore {
       setTimeout(() => {
         this.element?.focus();
       }, 0);
+    }
+  }
+
+  /**
+   * Blur terminal (remove focus)
+   */
+  blur(): void {
+    if (this.isOpen && this.element) {
+      this.element.blur();
     }
   }
 
@@ -310,6 +416,43 @@ export class Terminal implements ITerminalCore {
     this.selectionManager?.selectAll();
   }
 
+  /**
+   * Select text at specific column and row with length
+   */
+  public select(column: number, row: number, length: number): void {
+    this.selectionManager?.select(column, row, length);
+  }
+
+  /**
+   * Select entire lines from start to end
+   */
+  public selectLines(start: number, end: number): void {
+    this.selectionManager?.selectLines(start, end);
+  }
+
+  /**
+   * Get selection position as buffer range
+   */
+  public getSelectionPosition(): IBufferRange | undefined {
+    return this.selectionManager?.getSelectionPosition();
+  }
+
+  // ==========================================================================
+  // Phase 1: Custom Event Handlers
+  // ==========================================================================
+
+  /**
+   * Attach a custom keyboard event handler
+   * Returns true to prevent default handling
+   */
+  public attachCustomKeyEventHandler(customKeyEventHandler: (event: KeyboardEvent) => boolean): void {
+    this.customKeyEventHandler = customKeyEventHandler;
+    // Update input handler if already created
+    if (this.inputHandler) {
+      this.inputHandler.setCustomKeyEventHandler(customKeyEventHandler);
+    }
+  }
+
   // ==========================================================================
   // Lifecycle
   // ==========================================================================
@@ -345,6 +488,8 @@ export class Terminal implements ITerminalCore {
     this.resizeEmitter.dispose();
     this.bellEmitter.dispose();
     this.selectionChangeEmitter.dispose();
+    this.keyEmitter.dispose();
+    this.titleChangeEmitter.dispose();
   }
 
   // ==========================================================================
@@ -400,7 +545,6 @@ export class Terminal implements ITerminalCore {
     }
 
     // Clear references
-
     this.ghostty = undefined;
     this.element = undefined;
     this.textarea = undefined;
@@ -415,6 +559,31 @@ export class Terminal implements ITerminalCore {
     }
     if (this.isDisposed) {
       throw new Error('Terminal has been disposed');
+    }
+  }
+
+  /**
+   * Check for title changes in written data (OSC sequences)
+   * Simplified implementation - looks for OSC 0, 1, 2
+   */
+  private checkForTitleChange(data: string): void {
+    // OSC sequences: ESC ] Ps ; Pt BEL or ESC ] Ps ; Pt ST
+    // OSC 0 = icon + title, OSC 1 = icon, OSC 2 = title
+    const oscRegex = /\x1b\]([012]);([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+    let match: RegExpExecArray | null = null;
+
+    // biome-ignore lint/suspicious/noAssignInExpressions: Standard regex pattern
+    while ((match = oscRegex.exec(data)) !== null) {
+      const ps = match[1];
+      const pt = match[2];
+
+      // OSC 0 and OSC 2 set the title
+      if (ps === '0' || ps === '2') {
+        if (pt !== this.currentTitle) {
+          this.currentTitle = pt;
+          this.titleChangeEmitter.fire(pt);
+        }
+      }
     }
   }
 }

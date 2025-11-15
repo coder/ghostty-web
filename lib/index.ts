@@ -15,6 +15,8 @@ export type {
   ITerminalCore,
   IDisposable,
   IEvent,
+  IBufferRange,
+  IKeyEvent,
 } from './interfaces';
 
 // Ghostty WASM components (for advanced usage)

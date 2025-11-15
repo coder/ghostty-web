@@ -169,6 +169,93 @@
           align-items: flex-start;
         }
       }
+
+      /* Phase 1 Feature Panel */
+      .feature-panel {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        padding: 15px;
+        border-radius: 10px;
+        color: white;
+        margin-top: 20px;
+      }
+
+      .feature-panel h3 {
+        margin-bottom: 15px;
+        font-size: 1.2rem;
+      }
+
+      .button-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        margin-bottom: 15px;
+      }
+
+      .test-button {
+        background: rgba(76, 175, 80, 0.8);
+        border: none;
+        padding: 12px 20px;
+        border-radius: 5px;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.2s;
+      }
+
+      .test-button:hover {
+        background: rgba(76, 175, 80, 1);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      }
+
+      .test-button:active {
+        transform: translateY(0);
+      }
+
+      .event-log {
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 5px;
+        padding: 10px;
+        max-height: 150px;
+        overflow-y: auto;
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 12px;
+      }
+
+      .event-log .event {
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .event-log .event:last-child {
+        border-bottom: none;
+      }
+
+      .event-log .event-type {
+        color: #4caf50;
+        font-weight: bold;
+      }
+
+      .event-log .event-data {
+        color: #e0e0e0;
+      }
+
+      .clear-log {
+        background: rgba(244, 67, 54, 0.8);
+        border: none;
+        padding: 8px 16px;
+        border-radius: 5px;
+        color: white;
+        cursor: pointer;
+        font-size: 12px;
+        margin-top: 10px;
+      }
+
+      .clear-log:hover {
+        background: rgba(244, 67, 54, 1);
+      }
     </style>
   </head>
   <body>
@@ -193,21 +280,25 @@
         <div id="terminal-container"></div>
       </div>
 
-      <div class="info-box">
-        <h3>📚 Available Commands</h3>
-        <ul>
-          <li><code>ls</code>, <code>ls -la</code> - List directory contents</li>
-          <li>
-            <code>cd &lt;path&gt;</code> - Change directory (supports <code>~</code>,
-            <code>/</code>, <code>..</code>)
-          </li>
-          <li><code>pwd</code> - Print working directory</li>
-          <li><code>cat &lt;file&gt;</code> - Display file contents</li>
-          <li><code>grep</code>, <code>find</code>, <code>tree</code> - Search and explore</li>
-          <li><code>whoami</code>, <code>hostname</code>, <code>date</code> - System info</li>
-          <li><code>clear</code> - Clear screen</li>
-          <li><code>exit</code> - Close connection</li>
-        </ul>
+      <div class="feature-panel">
+        <h3>🎯 Phase 1 Features - xterm.js API Parity</h3>
+        <div class="button-grid">
+          <button class="test-button" id="btn-paste">📋 Test paste()</button>
+          <button class="test-button" id="btn-blur">👁️ Test blur()</button>
+          <button class="test-button" id="btn-input">⌨️ Test input()</button>
+          <button class="test-button" id="btn-select">🔤 Test select()</button>
+          <button class="test-button" id="btn-selectLines">📄 Test selectLines()</button>
+          <button class="test-button" id="btn-getSelectionPos">📍 Get Selection Position</button>
+          <button class="test-button" id="btn-setTitle">🏷️ Set Title (OSC)</button>
+          <button class="test-button" id="btn-customHandler">🔧 Toggle Custom Handler</button>
+        </div>
+        <div>
+          <strong style="display: block; margin-bottom: 8px;">Event Log (onKey, onTitleChange):</strong>
+          <div class="event-log" id="event-log">
+            <div style="opacity: 0.5; text-align: center;">Events will appear here...</div>
+          </div>
+          <button class="clear-log" id="btn-clear-log">Clear Log</button>
+        </div>
       </div>
 
       <div class="warning">
@@ -533,6 +624,129 @@
       // - Ctrl+C / Cmd+C to copy (via browser context menu)
 
       // =========================================================================
+      // Phase 1 Features - Event Logging & Handlers
+      // =========================================================================
+
+      let customHandlerEnabled = false;
+
+      function logEvent(type, data) {
+        const eventLog = document.getElementById('event-log');
+        const eventDiv = document.createElement('div');
+        eventDiv.className = 'event';
+        
+        const timestamp = new Date().toLocaleTimeString();
+        const dataStr = typeof data === 'object' ? JSON.stringify(data) : String(data);
+        
+        eventDiv.innerHTML = `
+          <span style="opacity: 0.6;">[${timestamp}]</span> 
+          <span class="event-type">${type}:</span> 
+          <span class="event-data">${dataStr}</span>
+        `;
+        
+        eventLog.appendChild(eventDiv);
+        eventLog.scrollTop = eventLog.scrollHeight;
+        
+        // Keep only last 50 events
+        while (eventLog.children.length > 50) {
+          eventLog.removeChild(eventLog.firstChild);
+        }
+      }
+
+      function setupPhase1Events() {
+        // Event: onKey - fires on every keypress
+        term.onKey((e) => {
+          logEvent('onKey', `key="${e.key}" ctrl=${e.domEvent.ctrlKey} alt=${e.domEvent.altKey}`);
+        });
+
+        // Event: onTitleChange - fires when terminal title changes via OSC sequences
+        term.onTitleChange((title) => {
+          logEvent('onTitleChange', title);
+          document.title = `${title} - Ghostty Terminal`;
+        });
+
+        // Button handlers
+        document.getElementById('btn-paste').addEventListener('click', () => {
+          term.paste('Pasted text from paste() method!\n');
+          logEvent('Action', 'Called paste()');
+        });
+
+        document.getElementById('btn-blur').addEventListener('click', () => {
+          term.blur();
+          logEvent('Action', 'Called blur() - terminal lost focus');
+        });
+
+        document.getElementById('btn-input').addEventListener('click', () => {
+          term.input('echo "Input from input() method"\n', true);
+          logEvent('Action', 'Called input() with wasUserInput=true');
+        });
+
+        document.getElementById('btn-select').addEventListener('click', () => {
+          // Select 20 characters starting at column 0, row 0
+          // This selects from the current cursor position backwards 20 chars
+          const cursor = term.wasmTerm.getCursor();
+          const startRow = Math.max(0, cursor.y - 1);
+          term.select(0, startRow, 30);
+          logEvent('Action', `Called select(0, ${startRow}, 30) - selects 30 chars from row ${startRow}`);
+        });
+
+        document.getElementById('btn-selectLines').addEventListener('click', () => {
+          // Select last 3 visible lines
+          const cursor = term.wasmTerm.getCursor();
+          const endRow = cursor.y;
+          const startRow = Math.max(0, endRow - 2);
+          term.selectLines(startRow, endRow);
+          logEvent('Action', `Called selectLines(${startRow}, ${endRow}) - selects 3 lines`);
+        });
+
+        document.getElementById('btn-getSelectionPos').addEventListener('click', () => {
+          const pos = term.getSelectionPosition();
+          if (pos) {
+            logEvent('getSelectionPosition', 
+              `start=(${pos.start.x},${pos.start.y}) end=(${pos.end.x},${pos.end.y})`);
+          } else {
+            logEvent('getSelectionPosition', 'No selection');
+          }
+        });
+
+        document.getElementById('btn-setTitle').addEventListener('click', () => {
+          // Send OSC 2 sequence to change title
+          const newTitle = `Ghostty Terminal ${new Date().toLocaleTimeString()}`;
+          term.write(`\x1b]2;${newTitle}\x07`);
+          logEvent('Action', `Sent OSC 2 sequence with title: ${newTitle}`);
+        });
+
+        document.getElementById('btn-customHandler').addEventListener('click', () => {
+          customHandlerEnabled = !customHandlerEnabled;
+          
+          if (customHandlerEnabled) {
+            // Custom handler that blocks Ctrl+K
+            term.attachCustomKeyEventHandler((event) => {
+              if (event.ctrlKey && event.key === 'k') {
+                logEvent('CustomHandler', 'Blocked Ctrl+K');
+                return true; // Block default handling
+              }
+              return false; // Allow default handling
+            });
+            logEvent('Action', 'Custom handler enabled (blocks Ctrl+K)');
+            document.getElementById('btn-customHandler').style.background = 'rgba(33, 150, 243, 0.8)';
+          } else {
+            term.attachCustomKeyEventHandler(undefined);
+            logEvent('Action', 'Custom handler disabled');
+            document.getElementById('btn-customHandler').style.background = 'rgba(76, 175, 80, 0.8)';
+          }
+        });
+
+        document.getElementById('btn-clear-log').addEventListener('click', () => {
+          document.getElementById('event-log').innerHTML = 
+            '<div style="opacity: 0.5; text-align: center;">Log cleared</div>';
+        });
+
+        // Expose terminal to console for debugging
+        window.term = term;
+        console.log('Terminal exposed to window.term for debugging');
+      }
+
+      // =========================================================================
       // Initialization
       // =========================================================================
 
@@ -602,6 +816,9 @@
 
           // Text selection is now built-in - no need to enable it!
           // You can use term.getSelection(), term.selectAll(), etc.
+
+          // Phase 1: Hook up new event listeners
+          setupPhase1Events();
 
           // Connect to WebSocket server
           connect();

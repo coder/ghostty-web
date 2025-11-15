@@ -146,6 +146,72 @@ export class SelectionManager {
   }
 
   /**
+   * Select text at specific column and row with length
+   * xterm.js compatible API
+   */
+  select(column: number, row: number, length: number): void {
+    // Clamp to valid ranges
+    const dims = this.wasmTerm.getDimensions();
+    row = Math.max(0, Math.min(row, dims.rows - 1));
+    column = Math.max(0, Math.min(column, dims.cols - 1));
+
+    // Calculate end position
+    let endRow = row;
+    let endCol = column + length - 1;
+
+    // Handle wrapping to next line(s)
+    while (endCol >= dims.cols) {
+      endCol -= dims.cols;
+      endRow++;
+    }
+
+    // Clamp end position
+    endRow = Math.min(endRow, dims.rows - 1);
+    endCol = Math.max(0, Math.min(endCol, dims.cols - 1));
+
+    this.selectionStart = { col: column, row };
+    this.selectionEnd = { col: endCol, row: endRow };
+    this.requestRender();
+    this.selectionChangedEmitter.fire();
+  }
+
+  /**
+   * Select entire lines from start to end
+   * xterm.js compatible API
+   */
+  selectLines(start: number, end: number): void {
+    const dims = this.wasmTerm.getDimensions();
+    
+    // Clamp to valid row ranges
+    start = Math.max(0, Math.min(start, dims.rows - 1));
+    end = Math.max(0, Math.min(end, dims.rows - 1));
+
+    // Ensure start <= end
+    if (start > end) {
+      [start, end] = [end, start];
+    }
+
+    this.selectionStart = { col: 0, row: start };
+    this.selectionEnd = { col: dims.cols - 1, row: end };
+    this.requestRender();
+    this.selectionChangedEmitter.fire();
+  }
+
+  /**
+   * Get selection position as buffer range
+   * xterm.js compatible API
+   */
+  getSelectionPosition(): { start: { x: number; y: number }; end: { x: number; y: number } } | undefined {
+    const coords = this.normalizeSelection();
+    if (!coords) return undefined;
+
+    return {
+      start: { x: coords.startCol, y: coords.startRow },
+      end: { x: coords.endCol, y: coords.endRow },
+    };
+  }
+
+  /**
    * Get normalized selection coordinates (for rendering)
    */
   getSelectionCoords(): SelectionCoordinates | null {
@@ -227,6 +293,9 @@ export class SelectionManager {
     // Mouse move - update selection
     canvas.addEventListener('mousemove', (e: MouseEvent) => {
       if (this.isSelecting) {
+        // Save previous selection state before updating
+        this.previousSelection = this.normalizeSelection();
+        
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         this.selectionEnd = cell;
         this.requestRender();
