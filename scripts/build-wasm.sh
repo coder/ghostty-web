@@ -47,6 +47,9 @@ cp ghostty/zig-out/bin/ghostty-vt.wasm ./
 echo "🧹 Cleaning up..."
 cd ghostty
 git apply -R ../patches/ghostty-wasm-api.patch
+# Remove new files created by the patch
+rm -f include/ghostty/vt/terminal.h
+rm -f src/terminal/c/terminal.zig
 cd ..
 
 SIZE=$(du -h ghostty-vt.wasm | cut -f1)
