@@ -24,6 +24,11 @@ export interface IRenderable {
   clearDirty(): void;
 }
 
+export interface IScrollbackProvider {
+  getScrollbackLine(offset: number): GhosttyCell[] | null;
+  getScrollbackLength(): number;
+}
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -92,6 +97,9 @@ export class CanvasRenderer {
   private cursorVisible: boolean = true;
   private cursorBlinkInterval?: number;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
+
+  // Viewport tracking (for scrolling)
+  private lastViewportY: number = 0;
 
   // Selection manager (for rendering selection overlay)
   private selectionManager?: SelectionManager;
@@ -222,9 +230,15 @@ export class CanvasRenderer {
   /**
    * Render the terminal buffer to canvas
    */
-  public render(buffer: IRenderable, forceAll: boolean = false): void {
+  public render(
+    buffer: IRenderable,
+    forceAll: boolean = false,
+    viewportY: number = 0,
+    scrollbackProvider?: IScrollbackProvider
+  ): void {
     const cursor = buffer.getCursor();
     const dims = buffer.getDimensions();
+    const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
 
     // Resize canvas if dimensions changed
     const needsResize =
@@ -234,6 +248,12 @@ export class CanvasRenderer {
     if (needsResize) {
       this.resize(dims.cols, dims.rows);
       forceAll = true; // Force full render after resize
+    }
+
+    // Force re-render when viewport changes (scrolling)
+    if (viewportY !== this.lastViewportY) {
+      forceAll = true;
+      this.lastViewportY = viewportY;
     }
 
     // Check if cursor position changed or if blinking (need to redraw cursor line)
@@ -290,15 +310,39 @@ export class CanvasRenderer {
 
     // Render each line
     for (let y = 0; y < dims.rows; y++) {
-      // Render if forcing all, or if dirty, or if it has selection
-      const needsRender = forceAll || buffer.isRowDirty(y) || selectionRows.has(y);
+      // When scrolled, always force render all lines since we're showing scrollback
+      const needsRender =
+        viewportY > 0 ? true : forceAll || buffer.isRowDirty(y) || selectionRows.has(y);
 
       if (!needsRender) {
         continue;
       }
 
       anyLinesRendered = true;
-      const line = buffer.getLine(y);
+
+      // Fetch line from scrollback or visible screen
+      let line: GhosttyCell[] | null = null;
+      if (viewportY > 0) {
+        // Scrolled up - need to fetch from scrollback + visible screen
+        // When scrolled up N lines, we want to show:
+        // - Scrollback lines (from the end) + visible screen lines
+
+        // Check if this row should come from scrollback or visible screen
+        if (y < viewportY && scrollbackProvider) {
+          // This row is from scrollback (upper part of viewport)
+          // Get from end of scrollback buffer
+          const scrollbackOffset = scrollbackLength - viewportY + y;
+          line = scrollbackProvider.getScrollbackLine(scrollbackOffset);
+        } else {
+          // This row is from visible screen (lower part of viewport)
+          const screenRow = viewportY > 0 ? y - viewportY : y;
+          line = buffer.getLine(screenRow);
+        }
+      } else {
+        // At bottom - fetch from visible screen
+        line = buffer.getLine(y);
+      }
+
       if (line) {
         this.renderLine(line, y, dims.cols);
       }
@@ -311,9 +355,14 @@ export class CanvasRenderer {
       this.renderSelection(dims.cols);
     }
 
-    // Render cursor
-    if (cursor.visible && this.cursorVisible) {
+    // Render cursor (only if we're at the bottom, not scrolled)
+    if (viewportY === 0 && cursor.visible && this.cursorVisible) {
       this.renderCursor(cursor.x, cursor.y);
+    }
+
+    // Render scrollbar if scrolled or scrollback exists
+    if (scrollbackProvider) {
+      this.renderScrollbar(viewportY, scrollbackLength, dims.rows);
     }
 
     // Update last cursor position
@@ -549,6 +598,64 @@ export class CanvasRenderer {
   /**
    * Get current font metrics
    */
+
+  /**
+   * Render scrollbar (Phase 2)
+   */
+  private renderScrollbar(viewportY: number, scrollbackLength: number, visibleRows: number): void {
+    if (scrollbackLength === 0) return;
+
+    const ctx = this.ctx;
+    const canvasHeight = this.canvas.height / this.devicePixelRatio;
+    const canvasWidth = this.canvas.width / this.devicePixelRatio;
+
+    // Scrollbar dimensions
+    const scrollbarWidth = 8;
+    const scrollbarX = canvasWidth - scrollbarWidth - 4;
+    const scrollbarPadding = 4;
+    const scrollbarTrackHeight = canvasHeight - scrollbarPadding * 2;
+
+    // Calculate scrollbar thumb size and position
+    const totalLines = scrollbackLength + visibleRows;
+    const thumbHeight = Math.max(20, (visibleRows / totalLines) * scrollbarTrackHeight);
+
+    // Position: 0 = at bottom, scrollbackLength = at top
+    const scrollPosition = viewportY / scrollbackLength; // 0 to 1
+    const thumbY = scrollbarPadding + (scrollbarTrackHeight - thumbHeight) * (1 - scrollPosition);
+
+    // Draw scrollbar track (subtle background)
+    ctx.fillStyle = 'rgba(128, 128, 128, 0.1)';
+    ctx.fillRect(scrollbarX, scrollbarPadding, scrollbarWidth, scrollbarTrackHeight);
+
+    // Draw scrollbar thumb
+    const isScrolled = viewportY > 0;
+    ctx.fillStyle = isScrolled ? 'rgba(128, 128, 128, 0.5)' : 'rgba(128, 128, 128, 0.3)';
+    ctx.fillRect(scrollbarX, thumbY, scrollbarWidth, thumbHeight);
+
+    // Draw "scrolled up" indicator if not at bottom
+    if (isScrolled) {
+      // Draw a banner at the top showing scroll position
+      const bannerHeight = 24;
+      const bannerY = 0;
+
+      // Semi-transparent background
+      ctx.fillStyle = 'rgba(33, 150, 243, 0.9)';
+      ctx.fillRect(0, bannerY, canvasWidth, bannerHeight);
+
+      // Text showing position
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const linesFromBottom = viewportY;
+      const text = `↑ Scrolled ${linesFromBottom} lines from bottom (${scrollbackLength} total) - Scroll down or type to return`;
+      ctx.fillText(text, canvasWidth / 2, bannerY + bannerHeight / 2);
+
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
+  }
   public getMetrics(): FontMetrics {
     return { ...this.metrics };
   }

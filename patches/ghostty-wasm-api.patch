@@ -517,7 +517,7 @@ new file mode 100644
 index 000000000..6461dc9a9
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,516 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a C-compatible interface to Ghostty's Terminal for WASM export.
@@ -899,12 +899,44 @@ index 000000000..6461dc9a9
 +    out_buffer: [*]GhosttyCell,
 +    buffer_size: usize,
 +) callconv(.c) c_int {
-+    // Not implemented - scrollback access is deferred to Phase 2
-+    _ = ptr;
-+    _ = y;
-+    _ = out_buffer;
-+    _ = buffer_size;
-+    return -1;
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
++
++    const y_usize: usize = @intCast(y);
++    
++    // Get scrollback length to validate bounds
++    const active_pin = wrapper.terminal.screen.pages.getTopLeft(.active);
++    const screen_pin = wrapper.terminal.screen.pages.getTopLeft(.screen);
++    
++    // Count total scrollback rows
++    var scrollback_len: usize = 0;
++    var pin = screen_pin;
++    while (pin.node != active_pin.node or pin.y != active_pin.y) {
++        scrollback_len += 1;
++        pin = pin.down(1) orelse break;
++        if (scrollback_len > 100000) return -1; // Safety limit
++    }
++    
++    // Validate y is within scrollback bounds
++    if (y_usize >= scrollback_len) return -1;
++    
++    const cols = wrapper.terminal.cols;
++    if (buffer_size < cols) return -1;
++    
++    // Get cells from scrollback using screen coordinates
++    // Screen coordinates: y=0 is the oldest line in scrollback, increasing toward active area
++    var x: usize = 0;
++    while (x < cols) : (x += 1) {
++        const pt = point.Point{ .screen = .{
++            .x = @intCast(x),
++            .y = @intCast(y_usize),
++        } };
++        
++        const list_cell = wrapper.terminal.screen.pages.getCell(pt);
++        const cell = if (list_cell) |lc| lc.cell.* else Cell{};
++        out_buffer[x] = convertCell(wrapper, cell, list_cell);
++    }
++    
++    return @intCast(cols);
 +}
 +
 +// ============================================================================

@@ -459,7 +459,10 @@ export class GhosttyTerminal {
    */
   getScrollbackLine(offset: number): GhosttyCell[] | null {
     const scrollbackLen = this.getScrollbackLength();
-    if (offset < 0 || offset >= scrollbackLen) return null;
+
+    if (offset < 0 || offset >= scrollbackLen) {
+      return null;
+    }
 
     const bufferSize = this._cols * GhosttyTerminal.CELL_SIZE;
     const ptr = this.exports.ghostty_wasm_alloc_u8_array(bufferSize);
@@ -472,7 +475,9 @@ export class GhosttyTerminal {
         this._cols
       );
 
-      if (count < 0) return null;
+      if (count < 0) {
+        return null;
+      }
 
       // Parse cells (same logic as getLine)
       const cells: GhosttyCell[] = [];

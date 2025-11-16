@@ -90,10 +90,9 @@
         border-radius: 0 0 10px 10px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
         overflow: hidden;
-        flex: 1;
         display: flex;
         flex-direction: column;
-        min-height: 600px;
+        height: 400px;
       }
 
       #terminal-container {
@@ -101,6 +100,7 @@
         padding: 10px;
         background: #1e1e1e;
         position: relative;
+        overflow: hidden; /* Prevent browser scrolling */
       }
 
       .info-box {
@@ -281,21 +281,19 @@
       </div>
 
       <div class="feature-panel">
-        <h3>🎯 xterm.js API Features</h3>
+        <h3>📜 Scrolling Features</h3>
         <div class="button-grid">
-          <button class="test-button" id="btn-paste">📋 Test paste()</button>
-          <button class="test-button" id="btn-blur">👁️ Test blur()</button>
-          <button class="test-button" id="btn-input">⌨️ Test input()</button>
-          <button class="test-button" id="btn-select">🔤 Test select()</button>
-          <button class="test-button" id="btn-selectLines">📄 Test selectLines()</button>
-          <button class="test-button" id="btn-getSelectionPos">📍 Get Selection Position</button>
-          <button class="test-button" id="btn-setTitle">🏷️ Set Title (OSC)</button>
-          <button class="test-button" id="btn-customHandler">🔧 Toggle Custom Handler</button>
+          <button class="test-button" id="btn-scrollUp">⬆️ Scroll Up 5 Lines</button>
+          <button class="test-button" id="btn-scrollDown">⬇️ Scroll Down 5 Lines</button>
+          <button class="test-button" id="btn-scrollPageUp">📄⬆️ Scroll Page Up</button>
+          <button class="test-button" id="btn-scrollPageDown">📄⬇️ Scroll Page Down</button>
+          <button class="test-button" id="btn-scrollToTop">🔝 Scroll to Top</button>
+          <button class="test-button" id="btn-scrollToBottom">⬇️ Scroll to Bottom</button>
+          <button class="test-button" id="btn-scrollToLine">🎯 Scroll to Line 10</button>
+          <button class="test-button" id="btn-generateContent">📝 Generate Scrollback</button>
         </div>
         <div>
-          <strong style="display: block; margin-bottom: 8px"
-            >Event Log (onKey, onTitleChange):</strong
-          >
+          <strong style="display: block; margin-bottom: 8px">Event Log (onScroll):</strong>
           <div class="event-log" id="event-log">
             <div style="opacity: 0.5; text-align: center">Events will appear here...</div>
           </div>
@@ -340,9 +338,7 @@
         updateStatus('connecting', 'Connecting to server...');
 
         // Include terminal size in WebSocket URL
-        console.log(`Terminal dimensions at connect time: ${term.cols}x${term.rows}`);
         const wsUrlWithSize = `${WS_URL}?cols=${term.cols}&rows=${term.rows}`;
-        console.log('Connecting to WebSocket:', wsUrlWithSize);
 
         // Show WebSocket URL in status bar
         document.getElementById('ws-url').textContent = WS_URL;
@@ -351,8 +347,6 @@
 
         ws.onopen = () => {
           updateStatus('connected', 'Connected (PTY mode)');
-          console.log('WebSocket connected - PTY mode active');
-          console.log('Terminal onData handler:', term.onData ? 'registered' : 'NOT REGISTERED');
 
           // Focus the terminal
           term.focus();
@@ -361,18 +355,9 @@
         ws.onmessage = (event) => {
           // PTY server sends raw text, not JSON
           const data = event.data;
-          console.log(
-            'WebSocket received:',
-            typeof data,
-            'length:',
-            data?.length,
-            'data:',
-            JSON.stringify(data?.substring(0, 50))
-          );
 
           // If it's a string (raw PTY output), write directly to terminal
           if (typeof data === 'string') {
-            console.log('Writing to terminal:', JSON.stringify(data.substring(0, 50)));
             term.write(data);
           }
           // Otherwise try JSON parsing for file-browser-server compatibility
@@ -394,7 +379,6 @@
 
         ws.onclose = () => {
           updateStatus('disconnected', 'Disconnected');
-          console.log('WebSocket closed');
           term?.write('\r\n\x1b[1;33mConnection closed.\x1b[0m\r\n');
         };
       }
@@ -517,22 +501,10 @@
       }
 
       function handleInput(data) {
-        console.log(
-          'handleInput called, data:',
-          data,
-          'isPtyMode:',
-          isPtyMode,
-          'ws state:',
-          ws?.readyState
-        );
-
         // PTY mode: send every keystroke directly to shell
         if (isPtyMode) {
           if (ws && ws.readyState === WebSocket.OPEN) {
-            console.log('Sending to shell:', JSON.stringify(data));
             ws.send(data);
-          } else {
-            console.error('WebSocket not open, state:', ws?.readyState);
           }
           return;
         }
@@ -629,8 +601,6 @@
       // Event Logging & Handlers
       // =========================================================================
 
-      let customHandlerEnabled = false;
-
       function logEvent(type, data) {
         const eventLog = document.getElementById('event-log');
         const eventDiv = document.createElement('div');
@@ -655,94 +625,9 @@
       }
 
       function setupEventHandlers() {
-        // Event: onKey - fires on every keypress
-        term.onKey((e) => {
-          logEvent('onKey', `key="${e.key}" ctrl=${e.domEvent.ctrlKey} alt=${e.domEvent.altKey}`);
-        });
-
-        // Event: onTitleChange - fires when terminal title changes via OSC sequences
-        term.onTitleChange((title) => {
-          logEvent('onTitleChange', title);
-          document.title = `${title} - Ghostty Terminal`;
-        });
-
-        // Button handlers
-        document.getElementById('btn-paste').addEventListener('click', () => {
-          term.paste('Pasted text from paste() method!\n');
-          logEvent('Action', 'Called paste()');
-        });
-
-        document.getElementById('btn-blur').addEventListener('click', () => {
-          term.blur();
-          logEvent('Action', 'Called blur() - terminal lost focus');
-        });
-
-        document.getElementById('btn-input').addEventListener('click', () => {
-          term.input('echo "Input from input() method"\n', true);
-          logEvent('Action', 'Called input() with wasUserInput=true');
-        });
-
-        document.getElementById('btn-select').addEventListener('click', () => {
-          // Select 20 characters starting at column 0, row 0
-          // This selects from the current cursor position backwards 20 chars
-          const cursor = term.wasmTerm.getCursor();
-          const startRow = Math.max(0, cursor.y - 1);
-          term.select(0, startRow, 30);
-          logEvent(
-            'Action',
-            `Called select(0, ${startRow}, 30) - selects 30 chars from row ${startRow}`
-          );
-        });
-
-        document.getElementById('btn-selectLines').addEventListener('click', () => {
-          // Select last 3 visible lines
-          const cursor = term.wasmTerm.getCursor();
-          const endRow = cursor.y;
-          const startRow = Math.max(0, endRow - 2);
-          term.selectLines(startRow, endRow);
-          logEvent('Action', `Called selectLines(${startRow}, ${endRow}) - selects 3 lines`);
-        });
-
-        document.getElementById('btn-getSelectionPos').addEventListener('click', () => {
-          const pos = term.getSelectionPosition();
-          if (pos) {
-            logEvent(
-              'getSelectionPosition',
-              `start=(${pos.start.x},${pos.start.y}) end=(${pos.end.x},${pos.end.y})`
-            );
-          } else {
-            logEvent('getSelectionPosition', 'No selection');
-          }
-        });
-
-        document.getElementById('btn-setTitle').addEventListener('click', () => {
-          // Send OSC 2 sequence to change title
-          const newTitle = `Ghostty Terminal ${new Date().toLocaleTimeString()}`;
-          term.write(`\x1b]2;${newTitle}\x07`);
-          logEvent('Action', `Sent OSC 2 sequence with title: ${newTitle}`);
-        });
-
-        document.getElementById('btn-customHandler').addEventListener('click', () => {
-          customHandlerEnabled = !customHandlerEnabled;
-
-          if (customHandlerEnabled) {
-            // Custom handler that blocks Ctrl+K
-            term.attachCustomKeyEventHandler((event) => {
-              if (event.ctrlKey && event.key === 'k') {
-                logEvent('CustomHandler', 'Blocked Ctrl+K');
-                return true; // Block default handling
-              }
-              return false; // Allow default handling
-            });
-            logEvent('Action', 'Custom handler enabled (blocks Ctrl+K)');
-            document.getElementById('btn-customHandler').style.background =
-              'rgba(33, 150, 243, 0.8)';
-          } else {
-            term.attachCustomKeyEventHandler(undefined);
-            logEvent('Action', 'Custom handler disabled');
-            document.getElementById('btn-customHandler').style.background =
-              'rgba(76, 175, 80, 0.8)';
-          }
+        // Scrolling event handlers
+        term.onScroll((position) => {
+          logEvent('onScroll', `viewportY=${position}`);
         });
 
         document.getElementById('btn-clear-log').addEventListener('click', () => {
@@ -750,9 +635,65 @@
             '<div style="opacity: 0.5; text-align: center;">Log cleared</div>';
         });
 
+        // Scrolling button handlers
+        document.getElementById('btn-scrollUp').addEventListener('click', () => {
+          const scrollbackLen = term.getScrollbackLength();
+          term.scrollLines(-5);
+          logEvent('Action', `Called scrollLines(-5)`);
+        });
+
+        document.getElementById('btn-scrollDown').addEventListener('click', () => {
+          term.scrollLines(5);
+          logEvent('Action', 'Called scrollLines(5) - scroll down');
+        });
+
+        document.getElementById('btn-scrollPageUp').addEventListener('click', () => {
+          term.scrollPages(-1);
+          logEvent('Action', 'Called scrollPages(-1) - page up');
+        });
+
+        document.getElementById('btn-scrollPageDown').addEventListener('click', () => {
+          term.scrollPages(1);
+          logEvent('Action', 'Called scrollPages(1) - page down');
+        });
+
+        document.getElementById('btn-scrollToTop').addEventListener('click', () => {
+          const scrollbackLen = term.getScrollbackLength();
+          term.scrollToTop();
+          logEvent('Action', `Called scrollToTop() (${scrollbackLen} lines)`);
+        });
+
+        document.getElementById('btn-scrollToBottom').addEventListener('click', () => {
+          term.scrollToBottom();
+          logEvent('Action', 'Called scrollToBottom()');
+        });
+
+        document.getElementById('btn-scrollToLine').addEventListener('click', () => {
+          term.scrollToLine(10);
+          logEvent('Action', 'Called scrollToLine(10)');
+        });
+
+        document.getElementById('btn-generateContent').addEventListener('click', () => {
+          // First clear the terminal to start fresh
+          term.clear();
+
+          // Generate lots of content to create scrollback
+          // Terminal is ~24 rows, so 200 lines will create ~176 lines of scrollback
+          for (let i = 1; i <= 200; i++) {
+            term.write(
+              `Line ${i.toString().padStart(3, '0')}: Test content for scrollback buffer\r\n`
+            );
+          }
+
+          // Wait a bit for rendering, then check scrollback
+          setTimeout(() => {
+            const scrollbackLen = term.getScrollbackLength();
+            logEvent('Action', `Generated 200 lines, scrollback: ${scrollbackLen} lines`);
+          }, 100);
+        });
+
         // Expose terminal to console for debugging
         window.term = term;
-        console.log('Terminal exposed to window.term for debugging');
       }
 
       // =========================================================================
@@ -805,7 +746,6 @@
 
           // Fit terminal to container
           fitAddon.fit();
-          console.log(`After fit(): Terminal size is ${term.cols}x${term.rows}`);
 
           // Handle window resize
           window.addEventListener('resize', () => {
@@ -816,7 +756,6 @@
           term.onResize(({ cols, rows }) => {
             if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-              console.log(`Sent resize to server: ${cols}x${rows}`);
             }
           });
 

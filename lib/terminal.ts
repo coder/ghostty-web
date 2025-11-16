@@ -13,7 +13,7 @@
  */
 
 import { EventEmitter } from './event-emitter';
-import { Ghostty, type GhosttyTerminal } from './ghostty';
+import { Ghostty, type GhosttyCell, type GhosttyTerminal } from './ghostty';
 import { InputHandler } from './input-handler';
 import type {
   IBufferRange,
@@ -58,6 +58,9 @@ export class Terminal implements ITerminalCore {
   private selectionChangeEmitter = new EventEmitter<void>();
   private keyEmitter = new EventEmitter<IKeyEvent>();
   private titleChangeEmitter = new EventEmitter<string>();
+  private scrollEmitter = new EventEmitter<number>();
+  private renderEmitter = new EventEmitter<{ start: number; end: number }>();
+  private cursorMoveEmitter = new EventEmitter<void>();
 
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
@@ -66,6 +69,9 @@ export class Terminal implements ITerminalCore {
   public readonly onSelectionChange: IEvent<void> = this.selectionChangeEmitter.event;
   public readonly onKey: IEvent<IKeyEvent> = this.keyEmitter.event;
   public readonly onTitleChange: IEvent<string> = this.titleChangeEmitter.event;
+  public readonly onScroll: IEvent<number> = this.scrollEmitter.event;
+  public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
+  public readonly onCursorMove: IEvent<void> = this.cursorMoveEmitter.event;
 
   // Lifecycle state
   private isOpen = false;
@@ -80,6 +86,11 @@ export class Terminal implements ITerminalCore {
 
   // Phase 1: Title tracking
   private currentTitle: string = '';
+
+  // Phase 2: Viewport and scrolling state
+  private viewportY: number = 0; // Top line of viewport in scrollback buffer (0 = at bottom)
+  private customWheelEventHandler?: (event: WheelEvent) => boolean;
+  private lastCursorY: number = 0; // Track cursor position for onCursorMove
 
   constructor(options: ITerminalOptions = {}) {
     // Set default options
@@ -184,11 +195,15 @@ export class Terminal implements ITerminalCore {
         this.selectionChangeEmitter.fire();
       });
 
+      // Setup wheel event handling for scrolling (Phase 2)
+      // Use capture phase to ensure we get the event before browser scrolling
+      parent.addEventListener('wheel', this.handleWheel, { passive: false, capture: true });
+
       // Mark as open
       this.isOpen = true;
 
       // Render initial blank screen
-      this.renderer.render(this.wasmTerm, true);
+      this.renderer.render(this.wasmTerm, true, this.viewportY, this);
 
       // Start render loop
       this.startRenderLoop();
@@ -220,6 +235,11 @@ export class Terminal implements ITerminalCore {
 
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
+
+    // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
+    if (this.viewportY !== 0) {
+      this.scrollToBottom();
+    }
 
     // Check for title changes (OSC 0, 1, 2 sequences)
     // This is a simplified implementation - Ghostty WASM may provide this
@@ -323,7 +343,7 @@ export class Terminal implements ITerminalCore {
     this.resizeEmitter.fire({ cols, rows });
 
     // Force full render
-    this.renderer!.render(this.wasmTerm!, true);
+    this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
   }
 
   /**
@@ -455,6 +475,89 @@ export class Terminal implements ITerminalCore {
     }
   }
 
+  /**
+   * Attach a custom wheel event handler (Phase 2)
+   * Returns true to prevent default handling
+   */
+  public attachCustomWheelEventHandler(
+    customWheelEventHandler?: (event: WheelEvent) => boolean
+  ): void {
+    this.customWheelEventHandler = customWheelEventHandler;
+  }
+
+  // ==========================================================================
+  // Phase 2: Scrolling Methods
+  // ==========================================================================
+
+  /**
+   * Scroll viewport by a number of lines
+   * @param amount Number of lines to scroll (positive = down, negative = up)
+   */
+  public scrollLines(amount: number): void {
+    if (!this.wasmTerm) {
+      throw new Error('Terminal not open');
+    }
+
+    const scrollbackLength = this.getScrollbackLength();
+    const maxScroll = scrollbackLength;
+
+    // Calculate new viewport position
+    // viewportY = 0 means at bottom (no scroll)
+    // viewportY > 0 means scrolled up into history
+    // amount < 0 (scroll up) should INCREASE viewportY
+    // amount > 0 (scroll down) should DECREASE viewportY
+    // So we SUBTRACT amount (negative amount becomes positive change)
+    const newViewportY = Math.max(0, Math.min(maxScroll, this.viewportY - amount));
+
+    if (newViewportY !== this.viewportY) {
+      this.viewportY = newViewportY;
+      this.scrollEmitter.fire(this.viewportY);
+    }
+  }
+
+  /**
+   * Scroll viewport by a number of pages
+   * @param amount Number of pages to scroll (positive = down, negative = up)
+   */
+  public scrollPages(amount: number): void {
+    this.scrollLines(amount * this.rows);
+  }
+
+  /**
+   * Scroll viewport to the top of the scrollback buffer
+   */
+  public scrollToTop(): void {
+    const scrollbackLength = this.getScrollbackLength();
+    if (scrollbackLength > 0 && this.viewportY !== scrollbackLength) {
+      this.viewportY = scrollbackLength;
+      this.scrollEmitter.fire(this.viewportY);
+    }
+  }
+
+  /**
+   * Scroll viewport to the bottom (current output)
+   */
+  public scrollToBottom(): void {
+    if (this.viewportY !== 0) {
+      this.viewportY = 0;
+      this.scrollEmitter.fire(this.viewportY);
+    }
+  }
+
+  /**
+   * Scroll viewport to a specific line in the buffer
+   * @param line Line number (0 = top of scrollback, scrollbackLength = bottom)
+   */
+  public scrollToLine(line: number): void {
+    const scrollbackLength = this.getScrollbackLength();
+    const newViewportY = Math.max(0, Math.min(scrollbackLength, line));
+
+    if (newViewportY !== this.viewportY) {
+      this.viewportY = newViewportY;
+      this.scrollEmitter.fire(this.viewportY);
+    }
+  }
+
   // ==========================================================================
   // Lifecycle
   // ==========================================================================
@@ -492,6 +595,9 @@ export class Terminal implements ITerminalCore {
     this.selectionChangeEmitter.dispose();
     this.keyEmitter.dispose();
     this.titleChangeEmitter.dispose();
+    this.scrollEmitter.dispose();
+    this.renderEmitter.dispose();
+    this.cursorMoveEmitter.dispose();
   }
 
   // ==========================================================================
@@ -504,12 +610,43 @@ export class Terminal implements ITerminalCore {
   private startRenderLoop(): void {
     const loop = () => {
       if (!this.isDisposed && this.isOpen) {
+        // Check for cursor movement (Phase 2: onCursorMove event)
+        const cursor = this.wasmTerm!.getCursor();
+        if (cursor.y !== this.lastCursorY) {
+          this.lastCursorY = cursor.y;
+          this.cursorMoveEmitter.fire();
+        }
+
         // Render only dirty lines for 60 FPS performance
-        this.renderer!.render(this.wasmTerm!, false);
+        this.renderer!.render(this.wasmTerm!, false, this.viewportY, this);
+
+        // Note: onRender event is intentionally not fired in the render loop
+        // to avoid performance issues. It will be added in Phase 3 with
+        // proper dirty tracking. For now, consumers can use requestAnimationFrame
+        // if they need frame-by-frame updates.
+
         this.animationFrameId = requestAnimationFrame(loop);
       }
     };
     loop();
+  }
+
+  /**
+   * Get a line from native WASM scrollback buffer
+   * Implements IScrollbackProvider
+   */
+  public getScrollbackLine(offset: number): GhosttyCell[] | null {
+    if (!this.wasmTerm) return null;
+    return this.wasmTerm.getScrollbackLine(offset);
+  }
+
+  /**
+   * Get scrollback length from native WASM
+   * Implements IScrollbackProvider
+   */
+  public getScrollbackLength(): number {
+    if (!this.wasmTerm) return 0;
+    return this.wasmTerm.getScrollbackLength();
   }
 
   /**
@@ -540,6 +677,11 @@ export class Terminal implements ITerminalCore {
       this.canvas = undefined;
     }
 
+    // Remove wheel event listener
+    if (this.element) {
+      this.element.removeEventListener('wheel', this.handleWheel);
+    }
+
     // Free WASM terminal
     if (this.wasmTerm) {
       this.wasmTerm.free();
@@ -563,6 +705,28 @@ export class Terminal implements ITerminalCore {
       throw new Error('Terminal has been disposed');
     }
   }
+
+  /**
+   * Handle wheel events for scrolling (Phase 2)
+   */
+  private handleWheel = (e: WheelEvent): void => {
+    // Always prevent default browser scrolling
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Allow custom handler to override
+    if (this.customWheelEventHandler && this.customWheelEventHandler(e)) {
+      return;
+    }
+
+    // Default scrolling behavior
+    // deltaY > 0 = scroll down, < 0 = scroll up
+    // Typical wheel delta is ±100 per "click", scale to 3 lines per click
+    const lines = Math.round(e.deltaY / 33); // ~3 lines per wheel click
+    if (lines !== 0) {
+      this.scrollLines(lines);
+    }
+  };
 
   /**
    * Check for title changes in written data (OSC sequences)
