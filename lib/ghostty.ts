@@ -411,7 +411,7 @@ export class GhosttyTerminal {
    * ```
    */
   isAlternateScreen(): boolean {
-    return this.exports.ghostty_terminal_is_alternate_screen(this.handle);
+    return Boolean(this.exports.ghostty_terminal_is_alternate_screen(this.handle));
   }
 
   /**
@@ -440,7 +440,7 @@ export class GhosttyTerminal {
    */
   isRowWrapped(row: number): boolean {
     if (row < 0 || row >= this._rows) return false;
-    return this.exports.ghostty_terminal_is_row_wrapped(this.handle, row);
+    return Boolean(this.exports.ghostty_terminal_is_row_wrapped(this.handle, row));
   }
 
   /**
