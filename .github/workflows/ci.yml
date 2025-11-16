@@ -113,3 +113,23 @@ jobs:
 
       - name: Build library
         run: bun run build
+
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    # Only publish on main branch pushes after all checks pass
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [fmt, lint, typecheck, test, build]
+    permissions:
+      contents: read
+      id-token: write # Required for OIDC trusted publishing
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required for git describe to find tags
+
+      - name: Publish to NPM
+        uses: ./.github/actions/npm-publish
+        with:
+          is-tag: 'false'
