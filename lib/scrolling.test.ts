@@ -1,10 +1,366 @@
-/**
- * Tests for scrolling methods and events (Phase 2)
- */
-
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Terminal } from './terminal';
 
+describe('Terminal Scrolling', () => {
+  let terminal: Terminal;
+  let container: HTMLElement;
+
+  beforeEach(async () => {
+    if (typeof document === 'undefined') return; // Skip if no DOM
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    terminal = new Terminal({ cols: 80, rows: 24 });
+    await terminal.open(container);
+  });
+
+  afterEach(() => {
+    if (terminal) {
+      terminal.dispose();
+    }
+    if (container && document.body.contains(container)) {
+      document.body.removeChild(container);
+    }
+  });
+
+  describe('Normal Screen Mode', () => {
+    test('should scroll viewport on wheel event in normal mode', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      // Fill with enough lines to create scrollback
+      for (let i = 0; i < 50; i++) {
+        terminal.write(`Line ${i}\r\n`);
+      }
+
+      // Initial viewport should be at bottom
+      const initialViewportY = terminal.viewportY;
+
+      // Simulate wheel up (negative deltaY)
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Viewport should have scrolled up
+      expect(terminal.viewportY).toBeLessThan(initialViewportY);
+    });
+
+    test('should scroll down on positive deltaY', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      // Fill with scrollback
+      for (let i = 0; i < 50; i++) {
+        terminal.write(`Line ${i}\r\n`);
+      }
+
+      // Scroll up first
+      terminal.scrollLines(-10);
+      const scrolledUpViewportY = terminal.viewportY;
+
+      // Simulate wheel down (positive deltaY)
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: 100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Viewport should have scrolled down
+      expect(terminal.viewportY).toBeGreaterThan(scrolledUpViewportY);
+    });
+
+    test('should not send data to application in normal mode', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      // Simulate wheel event
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // No data should be sent to application
+      expect(dataSent).toEqual([]);
+    });
+  });
+
+  describe('Alternate Screen Mode', () => {
+    beforeEach(() => {
+      if (typeof document === 'undefined' || !terminal) return; // Skip if no DOM
+      // Enter alternate screen mode (vim, less, htop, etc.)
+      terminal.write('\x1B[?1049h');
+    });
+
+    test('should detect alternate screen mode', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      expect(terminal.wasmTerm?.isAlternateScreen()).toBe(true);
+    });
+
+    test('should send arrow up sequences on wheel up in alternate screen', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      // Simulate wheel up (negative deltaY = -100, should send ~3 arrow ups)
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should send arrow up sequences (ESC[A)
+      expect(dataSent.length).toBeGreaterThan(0);
+      expect(dataSent.every((data) => data === '\x1B[A')).toBe(true);
+      expect(dataSent.length).toBeCloseTo(3, 1); // ~3 arrows per click
+    });
+
+    test('should send arrow down sequences on wheel down in alternate screen', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      // Simulate wheel down (positive deltaY = +100)
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: 100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should send arrow down sequences (ESC[B)
+      expect(dataSent.length).toBeGreaterThan(0);
+      expect(dataSent.every((data) => data === '\x1B[B')).toBe(true);
+      expect(dataSent.length).toBeCloseTo(3, 1); // ~3 arrows per click
+    });
+
+    test('should not scroll viewport in alternate screen', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const initialViewportY = terminal.viewportY;
+
+      // Simulate wheel event
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Viewport should not have changed
+      expect(terminal.viewportY).toBe(initialViewportY);
+    });
+
+    test('should cap arrow count at 5 per wheel event', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      // Simulate very large wheel delta
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -1000, // Very large delta
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should cap at 5 arrows
+      expect(dataSent.length).toBeLessThanOrEqual(5);
+    });
+  });
+
+  describe('Mode Transitions', () => {
+    test('should switch behavior when entering alternate screen', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      // Start in normal mode
+      for (let i = 0; i < 30; i++) {
+        terminal.write(`Line ${i}\r\n`);
+      }
+
+      // Scroll up in normal mode
+      const wheelUpNormal = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelUpNormal);
+      const normalModeViewportY = terminal.viewportY;
+
+      // Should have scrolled viewport
+      expect(normalModeViewportY).toBeLessThan(terminal.rows);
+
+      // Enter alternate screen
+      terminal.write('\x1B[?1049h');
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      // Wheel should now send arrow keys
+      const wheelUpAlt = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelUpAlt);
+
+      // Should have sent arrow keys, not scrolled
+      expect(dataSent.length).toBeGreaterThan(0);
+      expect(dataSent[0]).toBe('\x1B[A');
+    });
+
+    test('should switch back to viewport scrolling when exiting alternate screen', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      // Enter alternate screen
+      terminal.write('\x1B[?1049h');
+      expect(terminal.wasmTerm?.isAlternateScreen()).toBe(true);
+
+      // Exit alternate screen
+      terminal.write('\x1B[?1049l');
+      expect(terminal.wasmTerm?.isAlternateScreen()).toBe(false);
+
+      // Fill with lines
+      for (let i = 0; i < 30; i++) {
+        terminal.write(`Line ${i}\r\n`);
+      }
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      const initialViewportY = terminal.viewportY;
+
+      // Wheel should scroll viewport again
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should have scrolled, not sent data
+      expect(dataSent.length).toBe(0);
+      expect(terminal.viewportY).toBeLessThan(initialViewportY);
+    });
+  });
+
+  describe('Custom Wheel Handler', () => {
+    test('should respect custom wheel handler in both modes', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      let customHandlerCalled = false;
+      terminal.attachCustomWheelEventHandler(() => {
+        customHandlerCalled = true;
+        return true; // Override default behavior
+      });
+
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      expect(customHandlerCalled).toBe(true);
+    });
+
+    test('custom handler can delegate to default behavior', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      terminal.attachCustomWheelEventHandler(() => {
+        return false; // Don't override, use default
+      });
+
+      // Enter alternate screen
+      terminal.write('\x1B[?1049h');
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -100,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should still send arrow keys
+      expect(dataSent.length).toBeGreaterThan(0);
+      expect(dataSent[0]).toBe('\x1B[A');
+    });
+  });
+
+  describe('Edge Cases', () => {
+    test('should handle zero deltaY gracefully', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: 0,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should not send any data or crash
+      expect(dataSent.length).toBe(0);
+    });
+
+    test('should handle very small deltaY values', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const dataSent: string[] = [];
+      terminal.onData((data) => dataSent.push(data));
+
+      // Enter alternate screen
+      terminal.write('\x1B[?1049h');
+
+      const wheelEvent = new WheelEvent('wheel', {
+        deltaY: -10, // Small delta, rounds to 0
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(wheelEvent);
+
+      // Should not send any arrows (count is 0)
+      expect(dataSent.length).toBe(0);
+    });
+
+    test('should handle terminal not yet opened', () => {
+      if (typeof document === 'undefined') return; // Skip if no DOM
+
+      const closedTerminal = new Terminal({ cols: 80, rows: 24 });
+
+      // Should not crash when handleWheel is called without wasmTerm
+      expect(() => {
+        const wheelEvent = new WheelEvent('wheel', {
+          deltaY: -100,
+          bubbles: true,
+          cancelable: true,
+        });
+        // Can't dispatch without container, but we can test the internal state
+        expect(closedTerminal.wasmTerm).toBeUndefined();
+      }).not.toThrow();
+
+      closedTerminal.dispose();
+    });
+  });
+});
+
+/**
+ * Tests for scrolling methods and events (Phase 2)
+ */
 describe('Scrolling Methods', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;

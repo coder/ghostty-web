@@ -75,6 +75,24 @@
         background: #44ff44;
       }
 
+      .alt-screen-indicator {
+        display: inline-block;
+        padding: 4px 12px;
+        margin-left: 15px;
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        font-size: 0.85rem;
+        font-weight: 500;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      }
+
+      .alt-screen-indicator.active {
+        opacity: 1;
+        background: rgba(255, 200, 100, 0.25);
+        color: #ffd700;
+      }
+
       @keyframes pulse {
         0%,
         100% {
@@ -269,6 +287,7 @@
         <div class="status-indicator">
           <div class="status-dot" id="status-dot"></div>
           <span id="status-text">Connecting...</span>
+          <span id="alt-screen-indicator" class="alt-screen-indicator">ALT SCREEN</span>
         </div>
         <div>
           <small id="ws-url" style="opacity: 0.7; margin-right: 15px"></small>
@@ -376,12 +395,14 @@
           // If it's a string (raw PTY output), write directly to terminal
           if (typeof data === 'string') {
             term.write(data);
+            updateAltScreenIndicator();
           }
           // Otherwise try JSON parsing for file-browser-server compatibility
           else {
             try {
               const jsonData = JSON.parse(data);
               handleServerMessage(jsonData);
+              updateAltScreenIndicator();
             } catch (error) {
               console.error('Failed to parse message:', error);
             }
@@ -473,6 +494,18 @@
         }
 
         textEl.textContent = text;
+      }
+
+      function updateAltScreenIndicator() {
+        const indicator = document.getElementById('alt-screen-indicator');
+        if (!term || !term.wasmTerm) return;
+
+        const isAltScreen = term.wasmTerm.isAlternateScreen();
+        if (isAltScreen) {
+          indicator.classList.add('active');
+        } else {
+          indicator.classList.remove('active');
+        }
       }
 
       function updateCwdDisplay(cwd) {

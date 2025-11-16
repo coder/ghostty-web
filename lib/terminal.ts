@@ -719,12 +719,31 @@ export class Terminal implements ITerminalCore {
       return;
     }
 
-    // Default scrolling behavior
-    // deltaY > 0 = scroll down, < 0 = scroll up
-    // Typical wheel delta is ±100 per "click", scale to 3 lines per click
-    const lines = Math.round(e.deltaY / 33); // ~3 lines per wheel click
-    if (lines !== 0) {
-      this.scrollLines(lines);
+    // Check if in alternate screen mode (vim, less, htop, etc.)
+    const isAltScreen = this.wasmTerm?.isAlternateScreen() ?? false;
+
+    if (isAltScreen) {
+      // Alternate screen: send arrow keys to the application
+      // Applications like vim handle scrolling internally
+      // Standard: ~3 arrow presses per wheel "click"
+      const direction = e.deltaY > 0 ? 'down' : 'up';
+      const count = Math.min(Math.abs(Math.round(e.deltaY / 33)), 5); // Cap at 5
+
+      for (let i = 0; i < count; i++) {
+        if (direction === 'up') {
+          this.dataEmitter.fire('\x1B[A'); // Up arrow
+        } else {
+          this.dataEmitter.fire('\x1B[B'); // Down arrow
+        }
+      }
+    } else {
+      // Normal screen: scroll viewport through history
+      // deltaY > 0 = scroll down, < 0 = scroll up
+      // Typical wheel delta is ±100 per "click", scale to 3 lines per click
+      const lines = Math.round(e.deltaY / 33); // ~3 lines per wheel click
+      if (lines !== 0) {
+        this.scrollLines(lines);
+      }
     }
   };
 
