@@ -358,6 +358,12 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_terminal_is_dirty(terminal: TerminalHandle): boolean;
   ghostty_terminal_is_row_dirty(terminal: TerminalHandle, row: number): boolean;
   ghostty_terminal_clear_dirty(terminal: TerminalHandle): void;
+  ghostty_terminal_get_hyperlink_uri(
+    terminal: TerminalHandle,
+    hyperlinkId: number,
+    bufPtr: number,
+    bufLen: number
+  ): number; // returns bytes written
   ghostty_terminal_get_line(
     terminal: TerminalHandle,
     row: number,
@@ -383,7 +389,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
 export type TerminalHandle = number;
 
 /**
- * Cell structure matching ghostty_cell_t in C (12 bytes)
+ * Cell structure matching ghostty_cell_t in C (16 bytes)
  */
 export interface GhosttyCell {
   codepoint: number; // u32 (Unicode codepoint)
@@ -395,6 +401,7 @@ export interface GhosttyCell {
   bg_b: number; // u8 (background blue)
   flags: number; // u8 (style flags bitfield)
   width: number; // u8 (character width: 1=normal, 2=wide, etc.)
+  hyperlink_id: number; // u16 (0 = no link, >0 = hyperlink ID in set)
 }
 
 /**

@@ -113,6 +113,7 @@ export class Buffer implements IBuffer {
       bg_b: 0,
       flags: 0,
       width: 1,
+      hyperlink_id: 0,
     };
     this.nullCell = new BufferCell(nullCellData, 0);
   }
@@ -248,6 +249,7 @@ export class BufferLine implements IBufferLine {
           bg_b: 0,
           flags: 0,
           width: 1,
+          hyperlink_id: 0,
         },
         x
       );

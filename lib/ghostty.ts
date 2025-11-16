@@ -274,10 +274,10 @@ export class GhosttyTerminal {
   private _rows: number;
 
   /**
-   * Size of ghostty_cell_t in bytes (12 bytes in WASM)
-   * Structure: codepoint(u32) + fg_rgb(3xu8) + bg_rgb(3xu8) + flags(u8) + width(u8)
+   * Size of ghostty_cell_t in bytes (16 bytes in WASM)
+   * Structure: codepoint(u32) + fg_rgb(3xu8) + bg_rgb(3xu8) + flags(u8) + width(u8) + hyperlink_id(u16) + padding(u32)
    */
-  private static readonly CELL_SIZE = 12;
+  private static readonly CELL_SIZE = 16;
 
   /**
    * Create a new terminal.
@@ -491,6 +491,7 @@ export class GhosttyTerminal {
           bg_b: view.getUint8(offset + 9),
           flags: view.getUint8(offset + 10),
           width: view.getUint8(offset + 11),
+          hyperlink_id: view.getUint16(offset + 12, true),
         });
       }
 
@@ -544,6 +545,7 @@ export class GhosttyTerminal {
           bg_b: view.getUint8(offset + 9),
           flags: view.getUint8(offset + 10),
           width: view.getUint8(offset + 11),
+          hyperlink_id: view.getUint16(offset + 12, true),
         });
       }
 
@@ -607,5 +609,34 @@ export class GhosttyTerminal {
       }
     }
     return dirtyLines;
+  }
+
+  /**
+   * Get hyperlink URI by ID
+   *
+   * @param hyperlinkId Hyperlink ID from a GhosttyCell (0 = no link)
+   * @returns URI string or null if ID is invalid/not found
+   */
+  getHyperlinkUri(hyperlinkId: number): string | null {
+    if (hyperlinkId === 0) return null;
+
+    const maxUriLen = 2048; // Reasonable limit for URIs
+    const bufferPtr = this.exports.ghostty_wasm_alloc_u8_array(maxUriLen);
+
+    try {
+      const bytesWritten = this.exports.ghostty_terminal_get_hyperlink_uri(
+        this.handle,
+        hyperlinkId,
+        bufferPtr,
+        maxUriLen
+      );
+
+      if (bytesWritten === 0) return null;
+
+      const buffer = new Uint8Array(this.memory.buffer, bufferPtr, bytesWritten);
+      return new TextDecoder().decode(buffer);
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(bufferPtr, maxUriLen);
+    }
   }
 }

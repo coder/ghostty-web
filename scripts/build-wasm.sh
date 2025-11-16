@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Use full PATH including user bin directories
+export PATH="/home/coder/.nvm/versions/node/v22.19.0/bin:/home/coder/.autojump/bin:/home/coder/.bun/bin:/home/coder/tools/google-cloud-sdk/bin:/home/coder/go/bin:~/bin:~/.local/bin:/home/linuxbrew/.linuxbrew/bin:/tmp/coder-script-data/bin:/home/coder/go/bin:/usr/local/nvm/versions/node/v22.19.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin:/home/coder/.yarn/bin:/home/coder/bin:/usr/local/go/bin:/usr/local/nvm/versions/node/v22.19.0/bin"
+
 echo "🔨 Building ghostty-vt.wasm..."
 
 # Check for Zig

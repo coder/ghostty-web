@@ -29,10 +29,10 @@ index 4f8fef88e..ca9fb1d4d 100644
  #include <ghostty/vt/key.h>
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
 new file mode 100644
-index 000000000..26ee23ed5
+index 000000000..dd7d1ee6b
 --- /dev/null
 +++ b/include/ghostty/vt/terminal.h
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,418 @@
 +/**
 + * @file terminal.h
 + *
@@ -164,6 +164,12 @@ index 000000000..26ee23ed5
 +
 +    /** Character width: 0=combining, 1=normal, 2=wide (CJK) */
 +    uint8_t width;
++
++    /** Hyperlink ID (0 = no link, >0 = lookup in hyperlink set) */
++    uint16_t hyperlink_id;
++
++    /** Padding for alignment (keeps struct at 16 bytes) */
++    uint32_t _padding;
 +} GhosttyCell;
 +
 +/** Cell flag: Bold text */
@@ -409,6 +415,35 @@ index 000000000..26ee23ed5
 + */
 +void ghostty_terminal_clear_dirty(GhosttyTerminal term);
 +
++/* ============================================================================
++ * Hyperlink Support
++ * ========================================================================= */
++
++/**
++ * Get hyperlink URI by ID.
++ *
++ * Retrieves the URI string for a hyperlink ID obtained from a GhosttyCell.
++ * The URI is written to the provided buffer.
++ *
++ * @param term Terminal instance
++ * @param hyperlink_id Hyperlink ID from GhosttyCell (must be > 0)
++ * @param out_buffer Buffer to write URI string (UTF-8)
++ * @param buffer_size Size of output buffer in bytes
++ * @return Number of bytes written (not including null terminator), or 0 if:
++ *         - hyperlink_id is 0 or invalid
++ *         - URI doesn't exist
++ *         - buffer is too small (URI is truncated)
++ *
++ * @note The returned string is NOT null-terminated. Use the return value
++ *       to determine the actual length.
++ */
++int ghostty_terminal_get_hyperlink_uri(
++    GhosttyTerminal term,
++    uint16_t hyperlink_id,
++    uint8_t* out_buffer,
++    size_t buffer_size
++);
++
 +#ifdef __cplusplus
 +}
 +#endif
@@ -417,10 +452,10 @@ index 000000000..26ee23ed5
 +
 +#endif /* GHOSTTY_VT_TERMINAL_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index e95eee5f4..4b57361f6 100644
+index e95eee5f4..1ac0672e4 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -137,6 +137,24 @@ comptime {
+@@ -137,6 +137,25 @@ comptime {
          @export(&c.sgr_unknown_partial, .{ .name = "ghostty_sgr_unknown_partial" });
          @export(&c.sgr_attribute_tag, .{ .name = "ghostty_sgr_attribute_tag" });
          @export(&c.sgr_attribute_value, .{ .name = "ghostty_sgr_attribute_value" });
@@ -442,11 +477,12 @@ index e95eee5f4..4b57361f6 100644
 +        @export(&c.terminal_is_dirty, .{ .name = "ghostty_terminal_is_dirty" });
 +        @export(&c.terminal_is_row_dirty, .{ .name = "ghostty_terminal_is_row_dirty" });
 +        @export(&c.terminal_clear_dirty, .{ .name = "ghostty_terminal_clear_dirty" });
++        @export(&c.terminal_get_hyperlink_uri, .{ .name = "ghostty_terminal_get_hyperlink_uri" });
  
          // On Wasm we need to export our allocator convenience functions.
          if (builtin.target.cpu.arch.isWasm()) {
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index bc92597f5..3ce57e206 100644
+index bc92597f5..1b3cc92a5 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
 @@ -4,6 +4,7 @@ pub const key_event = @import("key_event.zig");
@@ -457,7 +493,7 @@ index bc92597f5..3ce57e206 100644
  
  // The full C API, unexported.
  pub const osc_new = osc.new;
-@@ -52,6 +53,25 @@ pub const key_encoder_encode = key_encode.encode;
+@@ -52,6 +53,26 @@ pub const key_encoder_encode = key_encode.encode;
  
  pub const paste_is_safe = paste.is_safe;
  
@@ -479,11 +515,12 @@ index bc92597f5..3ce57e206 100644
 +pub const terminal_is_dirty = terminal.isDirty;
 +pub const terminal_is_row_dirty = terminal.isRowDirty;
 +pub const terminal_clear_dirty = terminal.clearDirty;
++pub const terminal_get_hyperlink_uri = terminal.getHyperlinkUri;
 +
  test {
      _ = color;
      _ = osc;
-@@ -59,6 +79,7 @@ test {
+@@ -59,6 +80,7 @@ test {
      _ = key_encode;
      _ = paste;
      _ = sgr;
@@ -493,10 +530,10 @@ index bc92597f5..3ce57e206 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 000000000..d195e1acf
+index 000000000..7693111c6
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,530 @@
+@@ -0,0 +1,578 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a C-compatible interface to Ghostty's Terminal for WASM export.
@@ -540,17 +577,20 @@ index 000000000..d195e1acf
 +    };
 +};
 +
-+/// C-compatible cell structure
++/// C-compatible cell structure (14 bytes actual, padded to 16 by compiler)
 +pub const GhosttyCell = extern struct {
-+    codepoint: u32,
-+    fg_r: u8,
-+    fg_g: u8,
-+    fg_b: u8,
-+    bg_r: u8,
-+    bg_g: u8,
-+    bg_b: u8,
-+    flags: u8,
-+    width: u8,
++    codepoint: u32,       // 0-3
++    fg_r: u8,             // 4
++    fg_g: u8,             // 5
++    fg_b: u8,             // 6
++    bg_r: u8,             // 7
++    bg_g: u8,             // 8
++    bg_b: u8,             // 9
++    flags: u8,            // 10
++    width: u8,            // 11
++    hyperlink_id: u16,    // 12-13 (0 = no link, >0 = hyperlink ID in set)
++    // Compiler adds 2 bytes padding here to align to 4 bytes
++    // Total size: 16 bytes with padding
 +};
 +
 +/// C-compatible terminal configuration
@@ -843,6 +883,19 @@ index 000000000..d195e1acf
 +        .spacer_head => 0,
 +    };
 +
++    // Get hyperlink ID if cell has hyperlink
++    const hyperlink_id: u16 = if (cell.hyperlink) blk: {
++        if (list_cell_opt) |list_cell| {
++            const page = &list_cell.node.data;
++            const cell_offset = size.getOffset(Cell, page.memory, list_cell.cell);
++            const map = page.hyperlink_map.map(page.memory);
++            if (map.get(cell_offset)) |id| {
++                break :blk id;
++            }
++        }
++        break :blk 0;
++    } else 0;
++
 +    return .{
 +        .codepoint = cp,
 +        .fg_r = fg_rgb.r,
@@ -853,6 +906,7 @@ index 000000000..d195e1acf
 +        .bg_b = bg_rgb.b,
 +        .flags = flags,
 +        .width = width,
++        .hyperlink_id = hyperlink_id,
 +    };
 +}
 +
@@ -957,6 +1011,37 @@ index 000000000..d195e1acf
 +pub fn clearDirty(ptr: ?*anyopaque) callconv(.c) void {
 +    const wrapper: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return));
 +    @memset(wrapper.dirty_rows, false);
++}
++
++// ============================================================================
++// Hyperlink Support
++// ============================================================================
++
++pub fn getHyperlinkUri(
++    ptr: ?*anyopaque,
++    hyperlink_id: u16,
++    out_buffer: [*]u8,
++    buffer_size: usize,
++) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
++    
++    // Hyperlink ID 0 means no link
++    if (hyperlink_id == 0) return 0;
++    
++    // Get the current page
++    const page = &wrapper.terminal.screen.cursor.page_pin.node.data;
++    
++    // Look up hyperlink in the set
++    const hyperlink_entry = page.hyperlink_set.get(page.memory, hyperlink_id);
++    
++    // Get URI string from page memory  
++    const uri = hyperlink_entry.uri.offset.ptr(page.memory)[0..hyperlink_entry.uri.len];
++    
++    // Copy to output buffer (truncate if necessary)
++    const copy_len = @min(uri.len, buffer_size);
++    @memcpy(out_buffer[0..copy_len], uri[0..copy_len]);
++    
++    return @intCast(copy_len);
 +}
 +
 +// ============================================================================
