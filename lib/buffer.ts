@@ -177,7 +177,10 @@ export class Buffer implements IBuffer {
 
     if (this.bufferType === 'normal' && y < scrollbackLength) {
       // Accessing scrollback
-      const scrollbackOffset = scrollbackLength - y - 1; // Most recent = 0
+      // WASM getScrollbackLine: offset 0 = oldest, offset (length-1) = newest
+      // Buffer coords: y=0 = oldest, y=(length-1) = newest
+      // So scrollbackOffset = y directly!
+      const scrollbackOffset = y;
       cells = wasmTerm.getScrollbackLine(scrollbackOffset);
       // TODO: We'd need WASM API to check if scrollback line is wrapped
       // For now, assume not wrapped

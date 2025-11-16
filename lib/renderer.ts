@@ -106,6 +106,7 @@ export class CanvasRenderer {
 
   // Phase 3: Link rendering state
   private hoveredHyperlinkId: number = 0;
+  private previousHoveredHyperlinkId: number = 0;
 
   constructor(canvas: HTMLCanvasElement, options: RendererOptions = {}) {
     this.canvas = canvas;
@@ -308,6 +309,48 @@ export class CanvasRenderer {
       }
     }
 
+    // Phase 3: Track rows with hyperlinks that need redraw when hover changes
+    const hyperlinkRows = new Set<number>();
+    const hyperlinkChanged = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId;
+
+    if (hyperlinkChanged) {
+      // Find rows containing the old or new hovered hyperlink
+      // Must check the correct buffer based on viewportY (scrollback vs screen)
+      for (let y = 0; y < dims.rows; y++) {
+        let line: GhosttyCell[] | null = null;
+
+        // Same logic as rendering: fetch from scrollback or screen
+        if (viewportY > 0) {
+          if (y < viewportY && scrollbackProvider) {
+            // This row is from scrollback
+            const scrollbackOffset = scrollbackLength - viewportY + y;
+            line = scrollbackProvider.getScrollbackLine(scrollbackOffset);
+          } else {
+            // This row is from visible screen
+            const screenRow = y - viewportY;
+            line = buffer.getLine(screenRow);
+          }
+        } else {
+          // At bottom - fetch from visible screen
+          line = buffer.getLine(y);
+        }
+
+        if (line) {
+          for (const cell of line) {
+            if (
+              cell.hyperlink_id === this.hoveredHyperlinkId ||
+              cell.hyperlink_id === this.previousHoveredHyperlinkId
+            ) {
+              hyperlinkRows.add(y);
+              break; // Found hyperlink in this row
+            }
+          }
+        }
+      }
+      // Update previous state
+      this.previousHoveredHyperlinkId = this.hoveredHyperlinkId;
+    }
+
     // Track if anything was actually rendered
     let anyLinesRendered = false;
 
@@ -315,7 +358,9 @@ export class CanvasRenderer {
     for (let y = 0; y < dims.rows; y++) {
       // When scrolled, always force render all lines since we're showing scrollback
       const needsRender =
-        viewportY > 0 ? true : forceAll || buffer.isRowDirty(y) || selectionRows.has(y);
+        viewportY > 0
+          ? true
+          : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
 
       if (!needsRender) {
         continue;

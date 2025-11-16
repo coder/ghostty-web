@@ -62,6 +62,8 @@ export class Terminal implements ITerminalCore {
   // Phase 3: Link detection system
   private linkDetector?: LinkDetector;
   private currentHoveredLink?: ILink;
+  private mouseMoveThrottleTimeout?: number;
+  private pendingMouseMove?: MouseEvent;
 
   // Event emitters
   private dataEmitter = new EventEmitter<string>();
@@ -446,8 +448,11 @@ export class Terminal implements ITerminalCore {
    */
   focus(): void {
     if (this.isOpen && this.element) {
-      // Focus the container element to receive keyboard events
-      // Use setTimeout to ensure DOM is fully ready
+      // Focus immediately for immediate keyboard/wheel event handling
+      this.element.focus();
+
+      // Also schedule a delayed focus as backup to ensure it sticks
+      // (some browsers may need this if DOM isn't fully settled)
       setTimeout(() => {
         this.element?.focus();
       }, 0);
@@ -671,6 +676,13 @@ export class Terminal implements ITerminalCore {
       this.animationFrameId = undefined;
     }
 
+    // Clear mouse move throttle timeout
+    if (this.mouseMoveThrottleTimeout) {
+      clearTimeout(this.mouseMoveThrottleTimeout);
+      this.mouseMoveThrottleTimeout = undefined;
+    }
+    this.pendingMouseMove = undefined;
+
     // Dispose addons
     for (const addon of this.addons) {
       addon.dispose();
@@ -809,8 +821,33 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Phase 3: Handle mouse move for link hover detection
+   * Throttled to avoid blocking scroll events
    */
-  private handleMouseMove = async (e: MouseEvent): Promise<void> => {
+  private handleMouseMove = (e: MouseEvent): void => {
+    if (!this.canvas || !this.renderer || !this.linkDetector || !this.wasmTerm) return;
+
+    // Throttle to ~60fps (16ms) to avoid blocking scroll/other events
+    if (this.mouseMoveThrottleTimeout) {
+      this.pendingMouseMove = e;
+      return;
+    }
+
+    this.processMouseMove(e);
+
+    this.mouseMoveThrottleTimeout = window.setTimeout(() => {
+      this.mouseMoveThrottleTimeout = undefined;
+      if (this.pendingMouseMove) {
+        const pending = this.pendingMouseMove;
+        this.pendingMouseMove = undefined;
+        this.processMouseMove(pending);
+      }
+    }, 16);
+  };
+
+  /**
+   * Process mouse move for link detection (internal, called by throttled handler)
+   */
+  private processMouseMove(e: MouseEvent): void {
     if (!this.canvas || !this.renderer || !this.linkDetector || !this.wasmTerm) return;
 
     // Convert mouse coordinates to terminal cell position
@@ -819,10 +856,28 @@ export class Terminal implements ITerminalCore {
     const y = Math.floor((e.clientY - rect.top) / this.renderer.charHeight);
 
     // Get hyperlink_id directly from the cell at this position
-    // wasmTerm.getLine() expects screen-relative coordinates (0-rows)
-    const screenRow = y; // Screen row (0-23 for 24-row terminal)
+    // Must account for viewportY (scrollback position)
+    const viewportRow = y; // Row in the viewport (0 to rows-1)
     let hyperlinkId = 0;
-    const line = this.wasmTerm.getLine(screenRow);
+
+    // When scrolled, fetch from scrollback or screen based on position
+    let line: GhosttyCell[] | null = null;
+    if (this.viewportY > 0) {
+      const scrollbackLength = this.wasmTerm.getScrollbackLength();
+      if (viewportRow < this.viewportY) {
+        // Mouse is over scrollback content
+        const scrollbackOffset = scrollbackLength - this.viewportY + viewportRow;
+        line = this.wasmTerm.getScrollbackLine(scrollbackOffset);
+      } else {
+        // Mouse is over screen content (bottom part of viewport)
+        const screenRow = viewportRow - this.viewportY;
+        line = this.wasmTerm.getLine(screenRow);
+      }
+    } else {
+      // At bottom - just use screen buffer
+      line = this.wasmTerm.getLine(viewportRow);
+    }
+
     if (line && x >= 0 && x < line.length) {
       hyperlinkId = line[x].hyperlink_id;
     }
@@ -832,64 +887,56 @@ export class Terminal implements ITerminalCore {
     if (hyperlinkId !== previousHyperlinkId) {
       this.renderer.setHoveredHyperlinkId(hyperlinkId);
 
-      // Find all rows that contain the old or new hyperlink ID and redraw them
-      // This is more efficient than a full render
-      const rowsToRedraw = new Set<number>();
-
-      // Scan visible rows for hyperlinks
-      const dims = this.wasmTerm.getDimensions();
-      for (let screenRow = 0; screenRow < dims.rows; screenRow++) {
-        const line = this.wasmTerm.getLine(screenRow);
-        if (line) {
-          for (const cell of line) {
-            if (cell.hyperlink_id === previousHyperlinkId || cell.hyperlink_id === hyperlinkId) {
-              rowsToRedraw.add(screenRow);
-              break; // Found hyperlink in this row, move to next row
-            }
-          }
-        }
-      }
-
-      // Redraw only the affected rows
-      if (rowsToRedraw.size > 0) {
-        // If many rows affected, just do full render (more efficient)
-        if (rowsToRedraw.size > dims.rows / 2) {
-          this.renderer.render(this.wasmTerm, true, this.viewportY, this);
-        } else {
-          // Redraw individual rows
-          for (const screenRow of rowsToRedraw) {
-            const line = this.wasmTerm.getLine(screenRow);
-            if (line) {
-              (this.renderer as any).renderLine(line, screenRow, dims.cols);
-            }
-          }
-        }
-      }
+      // The 60fps render loop will pick up the change automatically
+      // No need to force a render - this keeps performance smooth
     }
 
     // Check if there's a link at this position (for click handling and cursor)
     // Buffer API expects absolute buffer coordinates (including scrollback)
+    // When scrolled, we need to adjust the buffer row based on viewportY
     const scrollbackLength = this.wasmTerm.getScrollbackLength();
-    const bufferRow = scrollbackLength + screenRow;
-    const link = await this.linkDetector.getLinkAt(x, bufferRow);
+    let bufferRow: number;
 
-    // Update hover state for cursor changes and click handling
-    if (link !== this.currentHoveredLink) {
-      // Notify old link we're leaving
-      this.currentHoveredLink?.hover?.(false);
-
-      // Update current link
-      this.currentHoveredLink = link;
-
-      // Notify new link we're entering
-      link?.hover?.(true);
-
-      // Update cursor style
-      if (this.element) {
-        this.element.style.cursor = link ? 'pointer' : 'text';
+    if (this.viewportY > 0) {
+      // When scrolled, the buffer row depends on where in the viewport we are
+      if (viewportRow < this.viewportY) {
+        // Mouse is over scrollback content
+        bufferRow = scrollbackLength - this.viewportY + viewportRow;
+      } else {
+        // Mouse is over screen content (bottom part of viewport)
+        const screenRow = viewportRow - this.viewportY;
+        bufferRow = scrollbackLength + screenRow;
       }
+    } else {
+      // At bottom - buffer row is scrollback + screen row
+      bufferRow = scrollbackLength + viewportRow;
     }
-  };
+
+    // Make async call non-blocking - don't await
+    this.linkDetector
+      .getLinkAt(x, bufferRow)
+      .then((link) => {
+        // Update hover state for cursor changes and click handling
+        if (link !== this.currentHoveredLink) {
+          // Notify old link we're leaving
+          this.currentHoveredLink?.hover?.(false);
+
+          // Update current link
+          this.currentHoveredLink = link;
+
+          // Notify new link we're entering
+          link?.hover?.(true);
+
+          // Update cursor style
+          if (this.element) {
+            this.element.style.cursor = link ? 'pointer' : 'text';
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('Link detection error:', err);
+      });
+  }
 
   /**
    * Phase 3: Handle mouse leave to clear link hover
@@ -898,32 +945,10 @@ export class Terminal implements ITerminalCore {
     // Clear hyperlink underline
     if (this.renderer && this.wasmTerm) {
       const previousHyperlinkId = (this.renderer as any).hoveredHyperlinkId || 0;
-      this.renderer.setHoveredHyperlinkId(0);
-
-      // Redraw rows containing the previous hyperlink
       if (previousHyperlinkId > 0) {
-        const dims = this.wasmTerm.getDimensions();
-        const rowsToRedraw = new Set<number>();
+        this.renderer.setHoveredHyperlinkId(0);
 
-        for (let screenRow = 0; screenRow < dims.rows; screenRow++) {
-          const line = this.wasmTerm.getLine(screenRow);
-          if (line) {
-            for (const cell of line) {
-              if (cell.hyperlink_id === previousHyperlinkId) {
-                rowsToRedraw.add(screenRow);
-                break;
-              }
-            }
-          }
-        }
-
-        // Redraw affected rows
-        for (const screenRow of rowsToRedraw) {
-          const line = this.wasmTerm.getLine(screenRow);
-          if (line) {
-            (this.renderer as any).renderLine(line, screenRow, dims.cols);
-          }
-        }
+        // The 60fps render loop will pick up the change automatically
       }
     }
 
@@ -944,12 +969,40 @@ export class Terminal implements ITerminalCore {
   /**
    * Phase 3: Handle mouse click for link activation
    */
-  private handleClick = (e: MouseEvent): void => {
-    if (this.currentHoveredLink) {
-      // Activate link
-      this.currentHoveredLink.activate(e);
+  private handleClick = async (e: MouseEvent): Promise<void> => {
+    // For more reliable clicking, detect the link at click time
+    // rather than relying on cached hover state (avoids async races)
+    if (!this.canvas || !this.renderer || !this.linkDetector || !this.wasmTerm) return;
 
-      // Prevent default action if link handled it
+    // Get click position
+    const rect = this.canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / this.renderer.charWidth);
+    const y = Math.floor((e.clientY - rect.top) / this.renderer.charHeight);
+
+    // Calculate buffer row (same logic as processMouseMove)
+    const viewportRow = y;
+    const scrollbackLength = this.wasmTerm.getScrollbackLength();
+    let bufferRow: number;
+
+    if (this.viewportY > 0) {
+      if (viewportRow < this.viewportY) {
+        bufferRow = scrollbackLength - this.viewportY + viewportRow;
+      } else {
+        const screenRow = viewportRow - this.viewportY;
+        bufferRow = scrollbackLength + screenRow;
+      }
+    } else {
+      bufferRow = scrollbackLength + viewportRow;
+    }
+
+    // Get the link at this position
+    const link = await this.linkDetector.getLinkAt(x, bufferRow);
+
+    if (link) {
+      // Activate link
+      link.activate(e);
+
+      // Prevent default action if modifier key held
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
       }
