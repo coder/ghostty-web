@@ -234,6 +234,7 @@ export class Terminal implements ITerminalCore {
       // Setup paste event handler on textarea
       this.textarea.addEventListener('paste', (e: ClipboardEvent) => {
         e.preventDefault();
+        e.stopPropagation(); // Prevent event from bubbling to parent (InputHandler)
         const text = e.clipboardData?.getData('text');
         if (text) {
           // Use the paste() method which will handle bracketed paste mode in the future
