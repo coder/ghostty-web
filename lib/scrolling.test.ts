@@ -620,7 +620,7 @@ describe('Scroll Events', () => {
     expect(positions[2]).toBe(6);
   });
 
-  // Note: onRender event is deferred to Phase 3 for proper dirty tracking
+  // Note: onRender event implementation uses dirty tracking for performance
   // implementation. Firing it every frame causes performance issues.
 
   test('onCursorMove should fire when cursor moves', async () => {

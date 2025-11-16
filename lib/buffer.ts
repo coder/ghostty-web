@@ -370,7 +370,7 @@ export class BufferCell implements IBufferCell {
 
   /**
    * Get hyperlink ID for this cell (0 = no link)
-   * Used by link detection system (Phase 3)
+   * Used by link detection system
    */
   getHyperlinkId(): number {
     return this.cell.hyperlink_id;
@@ -378,7 +378,7 @@ export class BufferCell implements IBufferCell {
 
   /**
    * Get the Unicode codepoint for this cell
-   * Used by link detection system (Phase 3)
+   * Used by link detection system
    */
   getCodepoint(): number {
     return this.cell.codepoint;

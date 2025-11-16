@@ -59,7 +59,7 @@ export class Terminal implements ITerminalCore {
   private selectionManager?: SelectionManager;
   private canvas?: HTMLCanvasElement;
 
-  // Phase 3: Link detection system
+  // Link detection system
   private linkDetector?: LinkDetector;
   private currentHoveredLink?: ILink;
   private mouseMoveThrottleTimeout?: number;
@@ -250,7 +250,7 @@ export class Terminal implements ITerminalCore {
         }
       });
 
-      // Phase 3: Initialize link detection system
+      // Initialize link detection system
       this.linkDetector = new LinkDetector(this);
 
       // Register OSC 8 hyperlink provider
@@ -302,7 +302,7 @@ export class Terminal implements ITerminalCore {
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
 
-    // Phase 3: Invalidate link cache (content changed)
+    // Invalidate link cache (content changed)
     this.linkDetector?.invalidateCache();
 
     // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
@@ -558,7 +558,7 @@ export class Terminal implements ITerminalCore {
   }
 
   // ==========================================================================
-  // Phase 3: Link Detection Methods
+  // Link Detection Methods
   // ==========================================================================
 
   /**
@@ -725,8 +725,7 @@ export class Terminal implements ITerminalCore {
         this.renderer!.render(this.wasmTerm!, false, this.viewportY, this);
 
         // Note: onRender event is intentionally not fired in the render loop
-        // to avoid performance issues. It will be added in Phase 3 with
-        // proper dirty tracking. For now, consumers can use requestAnimationFrame
+        // to avoid performance issues. For now, consumers can use requestAnimationFrame
         // if they need frame-by-frame updates.
 
         this.animationFrameId = requestAnimationFrame(loop);
@@ -820,7 +819,7 @@ export class Terminal implements ITerminalCore {
   }
 
   /**
-   * Phase 3: Handle mouse move for link hover detection
+   * Handle mouse move for link hover detection
    * Throttled to avoid blocking scroll events
    */
   private handleMouseMove = (e: MouseEvent): void => {
@@ -939,7 +938,7 @@ export class Terminal implements ITerminalCore {
   }
 
   /**
-   * Phase 3: Handle mouse leave to clear link hover
+   * Handle mouse leave to clear link hover
    */
   private handleMouseLeave = (): void => {
     // Clear hyperlink underline
@@ -967,7 +966,7 @@ export class Terminal implements ITerminalCore {
   };
 
   /**
-   * Phase 3: Handle mouse click for link activation
+   * Handle mouse click for link activation
    */
   private handleClick = async (e: MouseEvent): Promise<void> => {
     // For more reliable clicking, detect the link at click time

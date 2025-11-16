@@ -104,7 +104,7 @@ export class CanvasRenderer {
   // Selection manager (for rendering selection overlay)
   private selectionManager?: SelectionManager;
 
-  // Phase 3: Link rendering state
+  // Link rendering state
   private hoveredHyperlinkId: number = 0;
   private previousHoveredHyperlinkId: number = 0;
 
@@ -309,7 +309,7 @@ export class CanvasRenderer {
       }
     }
 
-    // Phase 3: Track rows with hyperlinks that need redraw when hover changes
+    // Track rows with hyperlinks that need redraw when hover changes
     const hyperlinkRows = new Set<number>();
     const hyperlinkChanged = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId;
 
@@ -403,7 +403,7 @@ export class CanvasRenderer {
       this.renderSelection(dims.cols);
     }
 
-    // Phase 3: Link underlines are drawn during cell rendering (see renderCell)
+    // Link underlines are drawn during cell rendering (see renderCell)
 
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
@@ -523,7 +523,7 @@ export class CanvasRenderer {
       this.ctx.stroke();
     }
 
-    // Phase 3: Draw hyperlink underline
+    // Draw hyperlink underline
     if (cell.hyperlink_id > 0) {
       const isHovered = cell.hyperlink_id === this.hoveredHyperlinkId;
 
@@ -741,21 +741,21 @@ export class CanvasRenderer {
   }
 
   /**
-   * Phase 3: Set the currently hovered hyperlink ID for rendering underlines
+   * Set the currently hovered hyperlink ID for rendering underlines
    */
   public setHoveredHyperlinkId(hyperlinkId: number): void {
     this.hoveredHyperlinkId = hyperlinkId;
   }
 
   /**
-   * Phase 3: Get character cell width (for coordinate conversion)
+   * Get character cell width (for coordinate conversion)
    */
   public get charWidth(): number {
     return this.metrics.width;
   }
 
   /**
-   * Phase 3: Get character cell height (for coordinate conversion)
+   * Get character cell height (for coordinate conversion)
    */
   public get charHeight(): number {
     return this.metrics.height;
