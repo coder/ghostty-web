@@ -444,3 +444,159 @@ export interface TerminalConfig {
   fg_color: RGB; // Default foreground color
   bg_color: RGB; // Default background color
 }
+
+// ============================================================================
+// Link Detection System
+// ============================================================================
+
+/**
+ * Represents a coordinate in the terminal buffer
+ */
+export interface IBufferCellPosition {
+  x: number; // Column (0-based)
+  y: number; // Row (0-based, absolute buffer position)
+}
+
+/**
+ * Represents a range in the terminal buffer
+ * Can span multiple lines for wrapped links
+ */
+export interface IBufferRange {
+  start: IBufferCellPosition;
+  end: IBufferCellPosition; // Inclusive
+}
+
+/**
+ * Represents a detected link in the terminal
+ */
+export interface ILink {
+  /** The URL or text of the link */
+  text: string;
+
+  /** The range of the link in the buffer (may span multiple lines) */
+  range: IBufferRange;
+
+  /** Called when the link is activated (clicked with modifier) */
+  activate(event: MouseEvent): void;
+
+  /** Optional: called when mouse enters/leaves the link */
+  hover?(isHovered: boolean): void;
+
+  /** Optional: called to clean up resources */
+  dispose?(): void;
+}
+
+/**
+ * Provides link detection for a specific type of link
+ * Examples: OSC 8 hyperlinks, URL regex detection
+ */
+export interface ILinkProvider {
+  /**
+   * Provide links for a given row
+   * @param y Absolute row in buffer (0-based)
+   * @param callback Called with detected links (or undefined if none)
+   */
+  provideLinks(y: number, callback: (links: ILink[] | undefined) => void): void;
+
+  /** Optional: called when terminal is disposed */
+  dispose?(): void;
+}
+
+/**
+ * Simplified buffer line interface for link providers
+ */
+export interface IBufferLine {
+  /** Number of cells in this line */
+  length: number;
+
+  /** Get cell at position */
+  getCell(x: number): IBufferCell;
+
+  /** Get text content of the line */
+  translateToString(trimRight?: boolean, startColumn?: number, endColumn?: number): string;
+}
+
+/**
+ * Simplified buffer cell interface for link providers
+ */
+export interface IBufferCell {
+  /** Get the character codepoint */
+  getCodepoint(): number;
+
+  /** Get the hyperlink ID (0 = no link) */
+  getHyperlinkId(): number;
+
+  /** Get the width of the character (1 or 2 for wide chars) */
+  getWidth(): number;
+
+  /** Check if cell has specific flags */
+  isBold(): boolean;
+  isItalic(): boolean;
+  isDim(): boolean;
+}
+
+/**
+ * Simplified terminal buffer interface for link providers
+ */
+export interface IBuffer {
+  /** Number of rows in the buffer (viewport + scrollback) */
+  length: number;
+
+  /** Get line at absolute buffer position */
+  getLine(y: number): IBufferLine;
+}
+
+/**
+ * Terminal buffer manager (active vs alternate screen)
+ */
+export interface IBufferManager {
+  /** Currently active buffer */
+  active: IBuffer;
+
+  /** Normal screen buffer */
+  normal: IBuffer;
+
+  /** Alternate screen buffer (for fullscreen apps) */
+  alternate: IBuffer;
+}
+
+/**
+ * Event system interface (xterm.js compatible)
+ */
+export type IEvent<T> = (listener: (data: T) => void) => IDisposable;
+
+export interface IDisposable {
+  dispose(): void;
+}
+
+/**
+ * Event emitter for custom events
+ */
+export class EventEmitter<T> {
+  private listeners: Array<(data: T) => void> = [];
+
+  /** Subscribe to events */
+  public readonly event: IEvent<T> = (listener: (data: T) => void): IDisposable => {
+    this.listeners.push(listener);
+    return {
+      dispose: () => {
+        const index = this.listeners.indexOf(listener);
+        if (index !== -1) {
+          this.listeners.splice(index, 1);
+        }
+      },
+    };
+  };
+
+  /** Emit an event to all listeners */
+  public fire(data: T): void {
+    for (const listener of this.listeners) {
+      listener(data);
+    }
+  }
+
+  /** Remove all listeners */
+  public dispose(): void {
+    this.listeners = [];
+  }
+}

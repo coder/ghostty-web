@@ -192,4 +192,12 @@ export interface IBufferCell {
   isInvisible(): number;
   /** Whether cell has faint/dim style */
   isFaint(): number;
+
+  // Phase 3: Link detection support
+  /** Get hyperlink ID for this cell (0 = no link) */
+  getHyperlinkId(): number;
+  /** Get the Unicode codepoint for this cell */
+  getCodepoint(): number;
+  /** Whether cell has dim/faint attribute (boolean version) */
+  isDim(): boolean;
 }

@@ -12,7 +12,7 @@
 
 import type { ITheme } from './interfaces';
 import type { SelectionManager } from './selection-manager';
-import type { GhosttyCell } from './types';
+import type { GhosttyCell, ILink } from './types';
 import { CellFlags } from './types';
 
 // Interface for objects that can be rendered
@@ -103,6 +103,9 @@ export class CanvasRenderer {
 
   // Selection manager (for rendering selection overlay)
   private selectionManager?: SelectionManager;
+
+  // Phase 3: Link rendering state
+  private hoveredHyperlinkId: number = 0;
 
   constructor(canvas: HTMLCanvasElement, options: RendererOptions = {}) {
     this.canvas = canvas;
@@ -355,6 +358,8 @@ export class CanvasRenderer {
       this.renderSelection(dims.cols);
     }
 
+    // Phase 3: Link underlines are drawn during cell rendering (see renderCell)
+
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
       this.renderCursor(cursor.x, cursor.y);
@@ -471,6 +476,22 @@ export class CanvasRenderer {
       this.ctx.moveTo(cellX, strikeY);
       this.ctx.lineTo(cellX + cellWidth, strikeY);
       this.ctx.stroke();
+    }
+
+    // Phase 3: Draw hyperlink underline
+    if (cell.hyperlink_id > 0) {
+      const isHovered = cell.hyperlink_id === this.hoveredHyperlinkId;
+
+      // Only show underline when hovered (cleaner look)
+      if (isHovered) {
+        const underlineY = cellY + this.metrics.baseline + 2;
+        this.ctx.strokeStyle = '#4A90E2'; // Blue underline on hover
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(cellX, underlineY);
+        this.ctx.lineTo(cellX + cellWidth, underlineY);
+        this.ctx.stroke();
+      }
     }
   }
 
@@ -672,6 +693,27 @@ export class CanvasRenderer {
    */
   public setSelectionManager(manager: SelectionManager): void {
     this.selectionManager = manager;
+  }
+
+  /**
+   * Phase 3: Set the currently hovered hyperlink ID for rendering underlines
+   */
+  public setHoveredHyperlinkId(hyperlinkId: number): void {
+    this.hoveredHyperlinkId = hyperlinkId;
+  }
+
+  /**
+   * Phase 3: Get character cell width (for coordinate conversion)
+   */
+  public get charWidth(): number {
+    return this.metrics.width;
+  }
+
+  /**
+   * Phase 3: Get character cell height (for coordinate conversion)
+   */
+  public get charHeight(): number {
+    return this.metrics.height;
   }
 
   /**

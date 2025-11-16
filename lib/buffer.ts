@@ -364,4 +364,28 @@ export class BufferCell implements IBufferCell {
   isFaint(): number {
     return (this.cell.flags & CellFlags.FAINT) !== 0 ? 1 : 0;
   }
+
+  /**
+   * Get hyperlink ID for this cell (0 = no link)
+   * Used by link detection system (Phase 3)
+   */
+  getHyperlinkId(): number {
+    return this.cell.hyperlink_id;
+  }
+
+  /**
+   * Get the Unicode codepoint for this cell
+   * Used by link detection system (Phase 3)
+   */
+  getCodepoint(): number {
+    return this.cell.codepoint;
+  }
+
+  /**
+   * Check if cell has dim/faint attribute
+   * Added for IBufferCell compatibility
+   */
+  isDim(): boolean {
+    return (this.cell.flags & CellFlags.FAINT) !== 0;
+  }
 }

@@ -26,8 +26,11 @@ import type {
   ITerminalCore,
   ITerminalOptions,
 } from './interfaces';
+import { LinkDetector } from './link-detector';
+import { OSC8LinkProvider } from './providers/osc8-link-provider';
 import { CanvasRenderer } from './renderer';
 import { SelectionManager } from './selection-manager';
+import type { ILink, ILinkProvider } from './types';
 
 // ============================================================================
 // Terminal Class
@@ -50,11 +53,15 @@ export class Terminal implements ITerminalCore {
 
   // Components (created on open())
   private ghostty?: Ghostty;
-  private wasmTerm?: GhosttyTerminal;
+  public wasmTerm?: GhosttyTerminal; // Made public for link providers
   private renderer?: CanvasRenderer;
   private inputHandler?: InputHandler;
   private selectionManager?: SelectionManager;
   private canvas?: HTMLCanvasElement;
+
+  // Phase 3: Link detection system
+  private linkDetector?: LinkDetector;
+  private currentHoveredLink?: ILink;
 
   // Event emitters
   private dataEmitter = new EventEmitter<string>();
@@ -241,6 +248,17 @@ export class Terminal implements ITerminalCore {
         }
       });
 
+      // Phase 3: Initialize link detection system
+      this.linkDetector = new LinkDetector(this);
+
+      // Register OSC 8 hyperlink provider
+      this.linkDetector.registerProvider(new OSC8LinkProvider(this));
+
+      // Setup mouse event handling for links
+      parent.addEventListener('mousemove', this.handleMouseMove);
+      parent.addEventListener('mouseleave', this.handleMouseLeave);
+      parent.addEventListener('click', this.handleClick);
+
       // Setup wheel event handling for scrolling (Phase 2)
       // Use capture phase to ensure we get the event before browser scrolling
       parent.addEventListener('wheel', this.handleWheel, { passive: false, capture: true });
@@ -281,6 +299,9 @@ export class Terminal implements ITerminalCore {
 
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
+
+    // Phase 3: Invalidate link cache (content changed)
+    this.linkDetector?.invalidateCache();
 
     // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
     if (this.viewportY !== 0) {
@@ -532,6 +553,31 @@ export class Terminal implements ITerminalCore {
   }
 
   // ==========================================================================
+  // Phase 3: Link Detection Methods
+  // ==========================================================================
+
+  /**
+   * Register a custom link provider
+   * Multiple providers can be registered to detect different types of links
+   *
+   * @example
+   * ```typescript
+   * term.registerLinkProvider({
+   *   provideLinks(y, callback) {
+   *     // Detect URLs, file paths, etc.
+   *     callback(detectedLinks);
+   *   }
+   * });
+   * ```
+   */
+  public registerLinkProvider(provider: ILinkProvider): void {
+    if (!this.linkDetector) {
+      throw new Error('Terminal must be opened before registering link providers');
+    }
+    this.linkDetector.registerProvider(provider);
+  }
+
+  // ==========================================================================
   // Phase 2: Scrolling Methods
   // ==========================================================================
 
@@ -723,9 +769,18 @@ export class Terminal implements ITerminalCore {
       this.canvas = undefined;
     }
 
-    // Remove wheel event listener
+    // Remove event listeners
     if (this.element) {
       this.element.removeEventListener('wheel', this.handleWheel);
+      this.element.removeEventListener('mousemove', this.handleMouseMove);
+      this.element.removeEventListener('mouseleave', this.handleMouseLeave);
+      this.element.removeEventListener('click', this.handleClick);
+    }
+
+    // Dispose link detector
+    if (this.linkDetector) {
+      this.linkDetector.dispose();
+      this.linkDetector = undefined;
     }
 
     // Free WASM terminal
@@ -751,6 +806,155 @@ export class Terminal implements ITerminalCore {
       throw new Error('Terminal has been disposed');
     }
   }
+
+  /**
+   * Phase 3: Handle mouse move for link hover detection
+   */
+  private handleMouseMove = async (e: MouseEvent): Promise<void> => {
+    if (!this.canvas || !this.renderer || !this.linkDetector || !this.wasmTerm) return;
+
+    // Convert mouse coordinates to terminal cell position
+    const rect = this.canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / this.renderer.charWidth);
+    const y = Math.floor((e.clientY - rect.top) / this.renderer.charHeight);
+
+    // Get hyperlink_id directly from the cell at this position
+    // wasmTerm.getLine() expects screen-relative coordinates (0-rows)
+    const screenRow = y; // Screen row (0-23 for 24-row terminal)
+    let hyperlinkId = 0;
+    const line = this.wasmTerm.getLine(screenRow);
+    if (line && x >= 0 && x < line.length) {
+      hyperlinkId = line[x].hyperlink_id;
+    }
+
+    // Update renderer for underline rendering
+    const previousHyperlinkId = (this.renderer as any).hoveredHyperlinkId || 0;
+    if (hyperlinkId !== previousHyperlinkId) {
+      this.renderer.setHoveredHyperlinkId(hyperlinkId);
+
+      // Find all rows that contain the old or new hyperlink ID and redraw them
+      // This is more efficient than a full render
+      const rowsToRedraw = new Set<number>();
+
+      // Scan visible rows for hyperlinks
+      const dims = this.wasmTerm.getDimensions();
+      for (let screenRow = 0; screenRow < dims.rows; screenRow++) {
+        const line = this.wasmTerm.getLine(screenRow);
+        if (line) {
+          for (const cell of line) {
+            if (cell.hyperlink_id === previousHyperlinkId || cell.hyperlink_id === hyperlinkId) {
+              rowsToRedraw.add(screenRow);
+              break; // Found hyperlink in this row, move to next row
+            }
+          }
+        }
+      }
+
+      // Redraw only the affected rows
+      if (rowsToRedraw.size > 0) {
+        // If many rows affected, just do full render (more efficient)
+        if (rowsToRedraw.size > dims.rows / 2) {
+          this.renderer.render(this.wasmTerm, true, this.viewportY, this);
+        } else {
+          // Redraw individual rows
+          for (const screenRow of rowsToRedraw) {
+            const line = this.wasmTerm.getLine(screenRow);
+            if (line) {
+              (this.renderer as any).renderLine(line, screenRow, dims.cols);
+            }
+          }
+        }
+      }
+    }
+
+    // Check if there's a link at this position (for click handling and cursor)
+    // Buffer API expects absolute buffer coordinates (including scrollback)
+    const scrollbackLength = this.wasmTerm.getScrollbackLength();
+    const bufferRow = scrollbackLength + screenRow;
+    const link = await this.linkDetector.getLinkAt(x, bufferRow);
+
+    // Update hover state for cursor changes and click handling
+    if (link !== this.currentHoveredLink) {
+      // Notify old link we're leaving
+      this.currentHoveredLink?.hover?.(false);
+
+      // Update current link
+      this.currentHoveredLink = link;
+
+      // Notify new link we're entering
+      link?.hover?.(true);
+
+      // Update cursor style
+      if (this.element) {
+        this.element.style.cursor = link ? 'pointer' : 'text';
+      }
+    }
+  };
+
+  /**
+   * Phase 3: Handle mouse leave to clear link hover
+   */
+  private handleMouseLeave = (): void => {
+    // Clear hyperlink underline
+    if (this.renderer && this.wasmTerm) {
+      const previousHyperlinkId = (this.renderer as any).hoveredHyperlinkId || 0;
+      this.renderer.setHoveredHyperlinkId(0);
+
+      // Redraw rows containing the previous hyperlink
+      if (previousHyperlinkId > 0) {
+        const dims = this.wasmTerm.getDimensions();
+        const rowsToRedraw = new Set<number>();
+
+        for (let screenRow = 0; screenRow < dims.rows; screenRow++) {
+          const line = this.wasmTerm.getLine(screenRow);
+          if (line) {
+            for (const cell of line) {
+              if (cell.hyperlink_id === previousHyperlinkId) {
+                rowsToRedraw.add(screenRow);
+                break;
+              }
+            }
+          }
+        }
+
+        // Redraw affected rows
+        for (const screenRow of rowsToRedraw) {
+          const line = this.wasmTerm.getLine(screenRow);
+          if (line) {
+            (this.renderer as any).renderLine(line, screenRow, dims.cols);
+          }
+        }
+      }
+    }
+
+    if (this.currentHoveredLink) {
+      // Notify link we're leaving
+      this.currentHoveredLink.hover?.(false);
+
+      // Clear hovered link
+      this.currentHoveredLink = undefined;
+
+      // Reset cursor
+      if (this.element) {
+        this.element.style.cursor = 'text';
+      }
+    }
+  };
+
+  /**
+   * Phase 3: Handle mouse click for link activation
+   */
+  private handleClick = (e: MouseEvent): void => {
+    if (this.currentHoveredLink) {
+      // Activate link
+      this.currentHoveredLink.activate(e);
+
+      // Prevent default action if link handled it
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    }
+  };
 
   /**
    * Handle wheel events for scrolling (Phase 2)
