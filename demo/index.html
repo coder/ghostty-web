@@ -499,7 +499,7 @@
       function updateAltScreenIndicator() {
         const indicator = document.getElementById('alt-screen-indicator');
         if (!term || !term.wasmTerm) return;
-        
+
         const isAltScreen = term.wasmTerm.isAlternateScreen();
         if (isAltScreen) {
           indicator.classList.add('active');

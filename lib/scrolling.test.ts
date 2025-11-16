@@ -25,7 +25,7 @@ describe('Terminal Scrolling', () => {
   describe('Normal Screen Mode', () => {
     test('should scroll viewport on wheel event in normal mode', () => {
       if (typeof document === 'undefined') return; // Skip if no DOM
-      
+
       // Fill with enough lines to create scrollback
       for (let i = 0; i < 50; i++) {
         terminal.write(`Line ${i}\r\n`);
