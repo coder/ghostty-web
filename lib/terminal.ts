@@ -12,10 +12,12 @@
  * ```
  */
 
+import { BufferNamespace } from './buffer';
 import { EventEmitter } from './event-emitter';
 import { Ghostty, type GhosttyCell, type GhosttyTerminal } from './ghostty';
 import { InputHandler } from './input-handler';
 import type {
+  IBufferNamespace,
   IBufferRange,
   IDisposable,
   IEvent,
@@ -37,6 +39,9 @@ export class Terminal implements ITerminalCore {
   public rows: number;
   public element?: HTMLElement;
   public textarea?: HTMLTextAreaElement;
+
+  // Buffer API (xterm.js compatibility)
+  public readonly buffer: IBufferNamespace;
 
   // Options
   private options: Required<Omit<ITerminalOptions, 'wasmPath'>> & {
@@ -111,6 +116,9 @@ export class Terminal implements ITerminalCore {
 
     this.cols = this.options.cols;
     this.rows = this.options.rows;
+
+    // Initialize buffer API
+    this.buffer = new BufferNamespace(this);
   }
 
   // ==========================================================================
