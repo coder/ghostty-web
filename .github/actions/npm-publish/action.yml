@@ -1,10 +1,5 @@
 name: Publish to NPM
-description: Publish package to NPM with version generation and idempotent checks
-
-inputs:
-  is-tag:
-    description: 'Whether this is a tag push (true) or main branch push (false)'
-    required: true
+description: Publish package to NPM with automatic version generation and idempotent checks
 
 runs:
   using: composite
@@ -22,26 +17,29 @@ runs:
         # Get base version from package.json
         BASE_VERSION=$(jq -r .version package.json)
 
-        # Generate git describe version
-        GIT_DESCRIBE=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
-
-        if [[ "${{ inputs.is-tag }}" == "true" ]]; then
+        # Auto-detect if this is a tag or branch push
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          IS_TAG=true
           # For tags, use the base version as-is (stable release)
           NPM_VERSION="${BASE_VERSION}"
           NPM_TAG="latest"
-          echo "Publishing stable release: ${NPM_VERSION}"
+          echo "📦 Publishing stable release: ${NPM_VERSION}"
+          echo "   Trigger: Tag ${GITHUB_REF#refs/tags/}"
         else
+          IS_TAG=false
           # For main branch, create a pre-release version using git describe
           # Format: 0.3.0-next.5.g1a2b3c4 (base-next.commits.hash)
           GIT_COMMIT=$(git rev-parse --short HEAD)
           COMMITS_SINCE_TAG=$(git rev-list --count HEAD ^$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD) 2>/dev/null || echo "0")
           NPM_VERSION="${BASE_VERSION}-next.${COMMITS_SINCE_TAG}.g${GIT_COMMIT}"
           NPM_TAG="next"
-          echo "Publishing pre-release: ${NPM_VERSION}"
+          echo "🚧 Publishing pre-release: ${NPM_VERSION}"
+          echo "   Trigger: Branch ${GITHUB_REF#refs/heads/}"
         fi
 
         echo "version=${NPM_VERSION}" >> $GITHUB_OUTPUT
         echo "tag=${NPM_TAG}" >> $GITHUB_OUTPUT
+        echo "is_tag=${IS_TAG}" >> $GITHUB_OUTPUT
 
         # Update package.json with the new version
         node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json')); pkg.version = '${NPM_VERSION}'; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
@@ -49,7 +47,7 @@ runs:
         echo "Updated package.json to version ${NPM_VERSION}"
 
     - name: Validate tag matches package.json version
-      if: inputs.is-tag == 'true'
+      if: steps.version.outputs.is_tag == 'true'
       shell: bash
       run: |
         # Extract version from package.json
@@ -93,7 +91,7 @@ runs:
       run: npm publish --tag ${{ steps.version.outputs.tag }} --provenance --access public
 
     - name: Update dist-tag (version already exists)
-      if: steps.check-exists.outputs.exists == 'true' && inputs.is-tag == 'true'
+      if: steps.check-exists.outputs.exists == 'true' && steps.version.outputs.is_tag == 'true'
       shell: bash
       run: |
         PACKAGE_NAME=$(node -p "require('./package.json').name")
@@ -104,7 +102,7 @@ runs:
         npm dist-tag add "${PACKAGE_NAME}@${VERSION}" "${TAG}"
 
     - name: Skip (pre-release already exists)
-      if: steps.check-exists.outputs.exists == 'true' && inputs.is-tag != 'true'
+      if: steps.check-exists.outputs.exists == 'true' && steps.version.outputs.is_tag != 'true'
       shell: bash
       run: |
         echo "⏭️ Pre-release version already exists, skipping"
