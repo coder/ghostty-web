@@ -129,5 +129,9 @@ jobs:
         with:
           fetch-depth: 0 # Required for git describe to find tags
 
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
       - name: Publish to NPM
         uses: ./.github/actions/npm-publish
