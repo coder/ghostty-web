@@ -238,7 +238,8 @@ export class CanvasRenderer {
     buffer: IRenderable,
     forceAll: boolean = false,
     viewportY: number = 0,
-    scrollbackProvider?: IScrollbackProvider
+    scrollbackProvider?: IScrollbackProvider,
+    scrollbarOpacity: number = 1
   ): void {
     const cursor = buffer.getCursor();
     const dims = buffer.getDimensions();
@@ -410,9 +411,9 @@ export class CanvasRenderer {
       this.renderCursor(cursor.x, cursor.y);
     }
 
-    // Render scrollbar if scrolled or scrollback exists
-    if (scrollbackProvider) {
-      this.renderScrollbar(viewportY, scrollbackLength, dims.rows);
+    // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect)
+    if (scrollbackProvider && scrollbarOpacity > 0) {
+      this.renderScrollbar(viewportY, scrollbackLength, dims.rows, scrollbarOpacity);
     }
 
     // Update last cursor position
@@ -667,9 +668,17 @@ export class CanvasRenderer {
 
   /**
    * Render scrollbar (Phase 2)
+   * Shows scroll position and allows click/drag interaction
+   * @param opacity Opacity level (0-1) for fade in/out effect
    */
-  private renderScrollbar(viewportY: number, scrollbackLength: number, visibleRows: number): void {
-    if (scrollbackLength === 0) return;
+  private renderScrollbar(
+    viewportY: number,
+    scrollbackLength: number,
+    visibleRows: number,
+    opacity: number = 1
+  ): void {
+    // Don't render if fully transparent or no scrollback
+    if (opacity <= 0 || scrollbackLength === 0) return;
 
     const ctx = this.ctx;
     const canvasHeight = this.canvas.height / this.devicePixelRatio;
@@ -689,38 +698,15 @@ export class CanvasRenderer {
     const scrollPosition = viewportY / scrollbackLength; // 0 to 1
     const thumbY = scrollbarPadding + (scrollbarTrackHeight - thumbHeight) * (1 - scrollPosition);
 
-    // Draw scrollbar track (subtle background)
-    ctx.fillStyle = 'rgba(128, 128, 128, 0.1)';
+    // Draw scrollbar track (subtle background) with opacity
+    ctx.fillStyle = `rgba(128, 128, 128, ${0.1 * opacity})`;
     ctx.fillRect(scrollbarX, scrollbarPadding, scrollbarWidth, scrollbarTrackHeight);
 
-    // Draw scrollbar thumb
+    // Draw scrollbar thumb with opacity
     const isScrolled = viewportY > 0;
-    ctx.fillStyle = isScrolled ? 'rgba(128, 128, 128, 0.5)' : 'rgba(128, 128, 128, 0.3)';
+    const baseOpacity = isScrolled ? 0.5 : 0.3;
+    ctx.fillStyle = `rgba(128, 128, 128, ${baseOpacity * opacity})`;
     ctx.fillRect(scrollbarX, thumbY, scrollbarWidth, thumbHeight);
-
-    // Draw "scrolled up" indicator if not at bottom
-    if (isScrolled) {
-      // Draw a banner at the top showing scroll position
-      const bannerHeight = 24;
-      const bannerY = 0;
-
-      // Semi-transparent background
-      ctx.fillStyle = 'rgba(33, 150, 243, 0.9)';
-      ctx.fillRect(0, bannerY, canvasWidth, bannerHeight);
-
-      // Text showing position
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      const linesFromBottom = viewportY;
-      const text = `↑ Scrolled ${linesFromBottom} lines from bottom (${scrollbackLength} total) - Scroll down or type to return`;
-      ctx.fillText(text, canvasWidth / 2, bannerY + bannerHeight / 2);
-
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
-    }
   }
   public getMetrics(): FontMetrics {
     return { ...this.metrics };

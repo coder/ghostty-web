@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Scrollbar Test - Ghostty WASM</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        background: #1e1e1e;
+        color: white;
+        font-family: monospace;
+      }
+      #terminal {
+        width: 800px;
+        height: 600px;
+        margin: 20px auto;
+      }
+      .info {
+        max-width: 800px;
+        margin: 0 auto 20px;
+        padding: 10px;
+        background: #2d2d2d;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="info">
+      <h2>Scrollbar Test</h2>
+      <p>✅ Blue banner removed</p>
+      <p>🖱️ Try clicking the scrollbar track or dragging the thumb</p>
+      <p>🔄 Use mouse wheel to scroll and see the scrollbar</p>
+    </div>
+    <div id="terminal"></div>
+
+    <script type="module">
+      import { Terminal } from '../lib/terminal.ts';
+      import { FitAddon } from '../lib/addons/fit.ts';
+
+      const term = new Terminal({
+        fontSize: 14,
+        fontFamily: 'Monaco, Menlo, monospace',
+        scrollback: 5000,
+      });
+
+      const fitAddon = new FitAddon();
+      term.loadAddon(fitAddon);
+
+      await term.open(document.getElementById('terminal'));
+      fitAddon.fit();
+
+      // Write lots of lines to create scrollback
+      term.write('\\x1b[1;32m=== Scrollbar Test ===\\x1b[0m\\r\\n\\r\\n');
+      term.write('Generating 200 lines of content...\\r\\n\\r\\n');
+
+      for (let i = 1; i <= 200; i++) {
+        const color = 31 + (i % 7);
+        term.write(
+          `\\x1b[${color}mLine ${i}: This is test content for scrolling. The quick brown fox jumps over the lazy dog.\\x1b[0m\\r\\n`
+        );
+      }
+
+      term.write('\\r\\n\\x1b[1;33m✅ Done! Now try:\\x1b[0m\\r\\n');
+      term.write('  • Scroll up with mouse wheel\\r\\n');
+      term.write('  • Click on the scrollbar track to jump\\r\\n');
+      term.write('  • Drag the scrollbar thumb\\r\\n');
+      term.write('  • Notice: NO blue banner! 🎉\\r\\n');
+
+      // Handle window resize
+      window.addEventListener('resize', () => {
+        fitAddon.fit();
+      });
+    </script>
+  </body>
+</html>
