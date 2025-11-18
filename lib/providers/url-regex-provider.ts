@@ -2,7 +2,7 @@
  * URL Regex Link Provider
  *
  * Detects plain text URLs using regex pattern matching.
- * Supports common protocols but excludes file paths.
+ * Uses RFC-compliant patterns for robust URL detection.
  *
  * This provider runs after OSC8LinkProvider, so explicit hyperlinks
  * take precedence over regex-detected URLs.
@@ -13,32 +13,62 @@ import type { IBufferRange, ILink, ILinkProvider } from '../types';
 /**
  * URL Regex Provider
  *
- * Detects plain text URLs on a single line using regex.
+ * Detects plain text HTTP(S) URLs on a single line using regex.
  * Does not support multi-line URLs or file paths.
+ *
+ * Features:
+ * - Matches http:// and https:// URLs
+ * - Excludes unsafe characters per RFC3986 and RFC1738
+ * - Properly handles trailing punctuation and brackets
+ * - Validates URLs using the URL constructor
  *
  * Supported protocols:
  * - https://, http://
- * - mailto:
- * - ftp://, ssh://, git://
- * - tel:, magnet:
- * - gemini://, gopher://, news:
+ *
+ * Character exclusions:
+ * - Unsafe from RFC3986: !*'()
+ * - Unsafe from RFC1738: {}|\^~[]` (except ~ which is allowed)
+ * - Final punctuation: ,.!?
+ * - Brackets: ()[]{}<>
  */
 export class UrlRegexProvider implements ILinkProvider {
   /**
    * URL regex pattern
-   * Matches common protocols followed by valid URL characters
-   * Excludes file paths (no ./ or ../ or bare /)
+   *
+   * Matches everything starting with http:// or https://
+   * up to first whitespace, quote, or excluded character.
+   *
+   * The pattern uses negative character classes to exclude:
+   * - Whitespace and quotes
+   * - Unsafe RFC characters
+   * - Common trailing punctuation
    */
   private static readonly URL_REGEX =
-    /(?:https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|gemini:\/\/|gopher:\/\/|news:)[\w\-.~:\/?#@!$&*+,;=%]+/gi;
-
-  /**
-   * Characters to strip from end of URLs
-   * Common punctuation that's unlikely to be part of the URL
-   */
-  private static readonly TRAILING_PUNCTUATION = /[.,;!?)\]]+$/;
+    /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/g;
 
   constructor(private terminal: ITerminalForUrlProvider) {}
+
+  /**
+   * Validate that a matched string is a proper URL
+   *
+   * Uses the URL constructor to validate the URL format.
+   * Also checks that the URL starts with the parsed protocol+host
+   * to avoid false positives.
+   */
+  private isUrl(urlString: string): boolean {
+    try {
+      const url = new URL(urlString);
+      const parsedBase =
+        url.password && url.username
+          ? `${url.protocol}//${url.username}:${url.password}@${url.host}`
+          : url.username
+            ? `${url.protocol}//${url.username}@${url.host}`
+            : `${url.protocol}//${url.host}`;
+      return urlString.toLowerCase().startsWith(parsedBase.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Provide all regex-detected URLs on the given row
@@ -61,33 +91,30 @@ export class UrlRegexProvider implements ILinkProvider {
     // Find all URL matches in the line
     let match: RegExpExecArray | null = UrlRegexProvider.URL_REGEX.exec(lineText);
     while (match !== null) {
-      let url = match[0];
+      const url = match[0];
+
+      // Validate that the matched text is a proper URL
+      if (!this.isUrl(url)) {
+        match = UrlRegexProvider.URL_REGEX.exec(lineText);
+        continue;
+      }
+
       const startX = match.index;
-      let endX = match.index + url.length - 1; // Inclusive end
+      const endX = match.index + url.length - 1; // Inclusive end
 
-      // Strip trailing punctuation
-      const stripped = url.replace(UrlRegexProvider.TRAILING_PUNCTUATION, '');
-      if (stripped.length < url.length) {
-        url = stripped;
-        endX = startX + url.length - 1;
-      }
-
-      // Skip if URL is too short (e.g., just "http://")
-      if (url.length > 8) {
-        links.push({
-          text: url,
-          range: {
-            start: { x: startX, y },
-            end: { x: endX, y },
-          },
-          activate: (event) => {
-            // Open link if Ctrl/Cmd is pressed
-            if (event.ctrlKey || event.metaKey) {
-              window.open(url, '_blank', 'noopener,noreferrer');
-            }
-          },
-        });
-      }
+      links.push({
+        text: url,
+        range: {
+          start: { x: startX, y },
+          end: { x: endX, y },
+        },
+        activate: (event) => {
+          // Open link if Ctrl/Cmd is pressed
+          if (event.ctrlKey || event.metaKey) {
+            window.open(url, '_blank', 'noopener,noreferrer');
+          }
+        },
+      });
 
       // Get next match
       match = UrlRegexProvider.URL_REGEX.exec(lineText);

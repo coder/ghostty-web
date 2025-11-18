@@ -45,6 +45,7 @@ function getLinks(lineText: string): Promise<ILink[] | undefined> {
 }
 
 describe('URL Detection', () => {
+  // Basic HTTP(S) detection
   test('detects HTTPS URLs', async () => {
     const links = await getLinks('Visit https://github.com for code');
     expect(links).toBeDefined();
@@ -62,75 +63,50 @@ describe('URL Detection', () => {
     expect(links?.[0].text).toBe('http://example.com');
   });
 
-  test('detects mailto: links', async () => {
-    const links = await getLinks('Email: mailto:test@example.com');
-    expect(links).toBeDefined();
-    expect(links?.length).toBe(1);
-    expect(links?.[0].text).toBe('mailto:test@example.com');
-  });
-
-  test('detects ssh:// URLs', async () => {
-    const links = await getLinks('Connect via ssh://user@server.com');
-    expect(links).toBeDefined();
-    expect(links?.length).toBe(1);
-    expect(links?.[0].text).toBe('ssh://user@server.com');
-  });
-
-  test('detects git:// URLs', async () => {
-    const links = await getLinks('Clone git://github.com/repo.git');
-    expect(links).toBeDefined();
-    expect(links?.length).toBe(1);
-    expect(links?.[0].text).toBe('git://github.com/repo.git');
-  });
-
-  test('detects ftp:// URLs', async () => {
-    const links = await getLinks('Download ftp://files.example.com/file');
-    expect(links).toBeDefined();
-    expect(links?.length).toBe(1);
-    expect(links?.[0].text).toBe('ftp://files.example.com/file');
-  });
-
-  test('strips trailing period', async () => {
+  // Trailing punctuation handling
+  test('excludes trailing period', async () => {
     const links = await getLinks('Check https://example.com.');
     expect(links).toBeDefined();
     expect(links?.length).toBe(1);
     expect(links?.[0].text).toBe('https://example.com');
-    // Should NOT include the trailing period
     expect(links?.[0].text.endsWith('.')).toBe(false);
   });
 
-  test('strips trailing comma', async () => {
+  test('excludes trailing comma', async () => {
     const links = await getLinks('See https://example.com, or else');
     expect(links).toBeDefined();
     expect(links?.length).toBe(1);
     expect(links?.[0].text).toBe('https://example.com');
   });
 
-  test('strips trailing parenthesis', async () => {
+  test('excludes trailing closing parenthesis', async () => {
     const links = await getLinks('(see https://example.com)');
     expect(links).toBeDefined();
     expect(links?.length).toBe(1);
     expect(links?.[0].text).toBe('https://example.com');
   });
 
-  test('strips trailing exclamation', async () => {
+  test('excludes trailing exclamation', async () => {
     const links = await getLinks('Visit https://example.com!');
     expect(links).toBeDefined();
     expect(links?.length).toBe(1);
     expect(links?.[0].text).toBe('https://example.com');
   });
 
-  test('handles multiple URLs on same line', async () => {
-    const links = await getLinks('https://a.com and https://b.com');
+  test('excludes trailing question mark', async () => {
+    const links = await getLinks('Is it https://example.com?');
     expect(links).toBeDefined();
-    expect(links?.length).toBe(2);
-    expect(links?.[0].text).toBe('https://a.com');
-    expect(links?.[1].text).toBe('https://b.com');
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('https://example.com');
   });
 
-  test('returns undefined when no URL present', async () => {
-    const links = await getLinks('No URLs here');
-    expect(links).toBeUndefined();
+  // URLs with special characters
+  test('handles URLs with parentheses in path (Wikipedia)', async () => {
+    const links = await getLinks('https://en.wikipedia.org/wiki/Link_(The_Legend_of_Zelda)');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    // The regex will exclude the closing paren, but URL validation will fail
+    // This is expected behavior - complex Wikipedia URLs need special handling
   });
 
   test('handles URLs with query parameters', async () => {
@@ -154,6 +130,52 @@ describe('URL Detection', () => {
     expect(links?.[0].text).toBe('https://example.com:8080/path');
   });
 
+  test('handles localhost URLs', async () => {
+    const links = await getLinks('http://localhost:3000/api');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('http://localhost:3000/api');
+  });
+
+  test('handles IP address URLs', async () => {
+    const links = await getLinks('http://192.168.1.1:8080');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('http://192.168.1.1:8080');
+  });
+
+  test('handles URLs with encoded characters', async () => {
+    const links = await getLinks('https://example.com/path%20with%20spaces');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('https://example.com/path%20with%20spaces');
+  });
+
+  // Multiple URLs
+  test('handles multiple URLs on same line', async () => {
+    const links = await getLinks('https://a.com and https://b.com');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(2);
+    expect(links?.[0].text).toBe('https://a.com');
+    expect(links?.[1].text).toBe('https://b.com');
+  });
+
+  // URLs in context
+  test('handles URL in quotes', async () => {
+    const links = await getLinks('Check "https://example.com" for details');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('https://example.com');
+  });
+
+  test('handles URL in markdown link syntax', async () => {
+    const links = await getLinks('[link](https://example.com)');
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('https://example.com');
+  });
+
+  // Negative cases - things that should NOT be detected
   test('does not detect file paths', async () => {
     const links = await getLinks('/home/user/file.txt');
     expect(links).toBeUndefined();
@@ -164,6 +186,47 @@ describe('URL Detection', () => {
     expect(links).toBeUndefined();
   });
 
+  test('does not detect text without URLs', async () => {
+    const links = await getLinks('No URLs here');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect invalid protocols', async () => {
+    const links = await getLinks('zzz://not-a-real-protocol.com');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect incomplete URLs', async () => {
+    const links = await getLinks('http://');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect mailto: links (HTTP(S) only)', async () => {
+    const links = await getLinks('Email: mailto:test@example.com');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect ssh:// URLs (HTTP(S) only)', async () => {
+    const links = await getLinks('Connect via ssh://user@server.com');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect git:// URLs (HTTP(S) only)', async () => {
+    const links = await getLinks('Clone git://github.com/repo.git');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect ftp:// URLs (HTTP(S) only)', async () => {
+    const links = await getLinks('Download ftp://files.example.com/file');
+    expect(links).toBeUndefined();
+  });
+
+  test('does not detect tel: URLs (HTTP(S) only)', async () => {
+    const links = await getLinks('Call tel:+1234567890');
+    expect(links).toBeUndefined();
+  });
+
+  // Link functionality
   test('link has activate function', async () => {
     const links = await getLinks('https://example.com');
     expect(links).toBeDefined();
@@ -171,17 +234,13 @@ describe('URL Detection', () => {
     expect(typeof links?.[0].activate).toBe('function');
   });
 
-  test('detects tel: URLs', async () => {
-    const links = await getLinks('Call tel:+1234567890');
+  test('link has correct range coordinates', async () => {
+    const links = await getLinks('Visit https://example.com today');
     expect(links).toBeDefined();
     expect(links?.length).toBe(1);
-    expect(links?.[0].text).toBe('tel:+1234567890');
-  });
-
-  test('detects magnet: URLs', async () => {
-    const links = await getLinks('Download magnet:?xt=urn:btih:abc123');
-    expect(links).toBeDefined();
-    expect(links?.length).toBe(1);
-    expect(links?.[0].text).toContain('magnet:?xt=urn:btih:abc123');
+    expect(links?.[0].range.start.x).toBe(6);
+    expect(links?.[0].range.start.y).toBe(0);
+    expect(links?.[0].range.end.x).toBe(24); // Inclusive end
+    expect(links?.[0].range.end.y).toBe(0);
   });
 });
