@@ -1,6 +1,6 @@
 # ghostty-web
 
-![ghostty](https://github.com/user-attachments/assets/6154beda-9b51-4a04-843d-a7f144803ecf)
+![ghostty](https://github.com/user-attachments/assets/8ef9161e-135d-4189-a6f6-0a644a82a5de)
 
 `ghostty-web` is a fully-featured web terminal built on [Ghostty's](https://github.com/ghostty-org/ghostty)
 terminal emulation core compiled to WebAssembly. By leveraging Ghostty's production-tested VT100 parser 
