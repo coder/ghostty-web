@@ -89,8 +89,8 @@ machine, and screen buffer) to WebAssembly, providing:
 ### Basic Terminal
 
 ```typescript
-import { Terminal } from 'ghostty-web';
-import { FitAddon } from 'ghostty-web/addons/fit';
+import { Terminal, FitAddon } from "ghostty-web";
+
 const term = new Terminal({
   cursorBlink: true,
   fontSize: 14,
@@ -99,10 +99,13 @@ const term = new Terminal({
     foreground: '#d4d4d4',
   },
 });
+
 const fitAddon = new FitAddon();
 term.loadAddon(fitAddon);
+
 await term.open(document.getElementById('terminal'));
 fitAddon.fit();
+
 // Handle user input
 term.onData(data => {
   // Send to backend/PTY
