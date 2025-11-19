@@ -25,7 +25,6 @@ bun run dev # Starts on localhost:8000
 cd ./demo/server
 bun run start
 ```
->>>>>>> Stashed changes
 
 ## Getting Started
 
@@ -120,13 +119,9 @@ In order to begin development you'll need:
 
 ### Building WASM
 
-<<<<<<< Updated upstream
-The library relies on a patch applied on top of Ghostty in order to expose additional functionality not yet implemented in the upstream repo. Building it is as simple as running `bun run build`. 
-=======
 `ghostty-web` builds a custom WASM binary from Ghostty's source with patches to expose additional 
 browser-specific functionality
 
 ```bash
 bun run build
 ```
->>>>>>> Stashed changes
