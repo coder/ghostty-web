@@ -80,9 +80,9 @@ machine, and screen buffer) to WebAssembly, providing:
 
 ## Why ghostty-web?
 
-**Don't reimplement VT100 parsing** – it's thousands of edge cases refined over years. Instead, leverage Ghostty's battle-tested terminal emulator that's proven by thousands of daily users.
-**Drop-in xterm.js replacement** – for many use cases, ghostty-web can replace xterm.js with minimal code changes 
-**Modern & maintained** – Built on Ghostty, an actively developed modern terminal emulator, ensuring continued improvements and bug fixes.
+- **Don't reimplement VT100 parsing** – it's thousands of edge cases refined over years. Instead, leverage Ghostty's battle-tested terminal emulator that's proven by thousands of daily users.
+- **Drop-in xterm.js replacement** – for many use cases, ghostty-web can replace xterm.js with minimal code changes 
+- **Modern & maintained** – Built on Ghostty, an actively developed modern terminal emulator, ensuring continued improvements and bug fixes.
 
 ## Usage Example
 
