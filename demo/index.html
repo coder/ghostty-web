@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ghostty Terminal - File Browser</title>
+    <title>ghostty-web</title>
     <style>
       * {
         margin: 0;
@@ -13,1054 +13,228 @@
 
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
         min-height: 100vh;
-        padding: 20px;
         display: flex;
-        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 20px;
       }
 
-      .container {
-        max-width: 1200px;
-        margin: 0 auto;
+      .terminal-window {
         width: 100%;
-        flex: 1;
-        display: flex;
-        flex-direction: column;
+        max-width: 1000px;
+        background: #1e1e1e;
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
       }
 
-      header {
-        text-align: center;
-        color: white;
-        margin-bottom: 20px;
-      }
-
-      h1 {
-        font-size: 2.5rem;
-        margin-bottom: 10px;
-        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-      }
-
-      .subtitle {
-        opacity: 0.9;
-        font-size: 1.1rem;
-      }
-
-      .status-bar {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        padding: 15px 20px;
-        border-radius: 10px 10px 0 0;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        color: white;
-      }
-
-      .status-indicator {
+      .title-bar {
+        background: #2d2d2d;
+        padding: 12px 16px;
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
+        border-bottom: 1px solid #1a1a1a;
       }
 
-      .status-dot {
+      .traffic-lights {
+        display: flex;
+        gap: 8px;
+      }
+
+      .light {
         width: 12px;
         height: 12px;
         border-radius: 50%;
-        background: #ff4444;
-        animation: pulse 2s infinite;
       }
 
-      .status-dot.connected {
-        background: #44ff44;
+      .light.red {
+        background: #ff5f56;
       }
 
-      .alt-screen-indicator {
-        display: inline-block;
-        padding: 4px 12px;
-        margin-left: 15px;
-        background: rgba(255, 255, 255, 0.15);
-        border-radius: 4px;
-        font-size: 0.85rem;
+      .light.yellow {
+        background: #ffbd2e;
+      }
+
+      .light.green {
+        background: #27c93f;
+      }
+
+      .title {
+        color: #e5e5e5;
+        font-size: 13px;
         font-weight: 500;
-        opacity: 0;
-        transition: opacity 0.3s ease;
+        letter-spacing: 0.3px;
       }
 
-      .alt-screen-indicator.active {
-        opacity: 1;
-        background: rgba(255, 200, 100, 0.25);
-        color: #ffd700;
-      }
-
-      @keyframes pulse {
-        0%,
-        100% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.5;
-        }
-      }
-
-      .terminal-wrapper {
-        background: white;
-        border-radius: 0 0 10px 10px;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-        overflow: hidden;
+      .connection-status {
+        margin-left: auto;
+        font-size: 11px;
+        color: #888;
         display: flex;
-        flex-direction: column;
-        height: 400px;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .connection-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #666;
+      }
+
+      .connection-dot.connected {
+        background: #27c93f;
       }
 
       #terminal-container {
-        flex: 1;
-        padding: 10px;
+        height: 600px;
+        padding: 16px;
         background: #1e1e1e;
         position: relative;
-        overflow: hidden; /* Prevent browser scrolling */
+        overflow: hidden;
       }
 
-      .info-box {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        padding: 15px;
-        border-radius: 10px;
-        color: white;
-        margin-top: 20px;
-      }
-
-      .info-box h3 {
-        margin-bottom: 10px;
-        font-size: 1.2rem;
-      }
-
-      .info-box ul {
-        list-style: none;
-        padding-left: 0;
-      }
-
-      .info-box li {
-        padding: 5px 0;
-        padding-left: 20px;
-        position: relative;
-      }
-
-      .info-box li:before {
-        content: '▸';
-        position: absolute;
-        left: 0;
-        color: #4caf50;
-      }
-
-      .warning {
-        background: rgba(255, 152, 0, 0.2);
-        border-left: 4px solid #ff9800;
-        padding: 15px;
-        border-radius: 5px;
-        color: white;
-        margin-top: 20px;
-      }
-
-      .warning strong {
+      /* Ensure terminal canvas can handle scrolling */
+      #terminal-container canvas {
         display: block;
-        margin-bottom: 5px;
-        color: #ffd54f;
-      }
-
-      code {
-        background: rgba(0, 0, 0, 0.3);
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-family: 'Monaco', 'Menlo', monospace;
-        font-size: 0.9em;
       }
 
       @media (max-width: 768px) {
-        h1 {
-          font-size: 2rem;
+        body {
+          padding: 20px 10px;
         }
 
-        .status-bar {
-          flex-direction: column;
-          gap: 10px;
-          align-items: flex-start;
+        #terminal-container {
+          height: 500px;
         }
-      }
-
-      /* Feature Panel */
-      .feature-panel {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        padding: 15px;
-        border-radius: 10px;
-        color: white;
-        margin-top: 20px;
-      }
-
-      .feature-panel h3 {
-        margin-bottom: 15px;
-        font-size: 1.2rem;
-      }
-
-      .button-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 10px;
-        margin-bottom: 15px;
-      }
-
-      .test-button {
-        background: rgba(76, 175, 80, 0.8);
-        border: none;
-        padding: 12px 20px;
-        border-radius: 5px;
-        color: white;
-        cursor: pointer;
-        font-size: 14px;
-        font-weight: 500;
-        transition: all 0.2s;
-      }
-
-      .test-button:hover {
-        background: rgba(76, 175, 80, 1);
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-      }
-
-      .test-button:active {
-        transform: translateY(0);
-      }
-
-      .event-log {
-        background: rgba(0, 0, 0, 0.3);
-        border-radius: 5px;
-        padding: 10px;
-        max-height: 150px;
-        overflow-y: auto;
-        font-family: 'Monaco', 'Menlo', monospace;
-        font-size: 12px;
-      }
-
-      .event-log .event {
-        padding: 4px 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-      }
-
-      .event-log .event:last-child {
-        border-bottom: none;
-      }
-
-      .event-log .event-type {
-        color: #4caf50;
-        font-weight: bold;
-      }
-
-      .event-log .event-data {
-        color: #e0e0e0;
-      }
-
-      .clear-log {
-        background: rgba(244, 67, 54, 0.8);
-        border: none;
-        padding: 8px 16px;
-        border-radius: 5px;
-        color: white;
-        cursor: pointer;
-        font-size: 12px;
-        margin-top: 10px;
-      }
-
-      .clear-log:hover {
-        background: rgba(244, 67, 54, 1);
       }
     </style>
   </head>
   <body>
-    <div class="container">
-      <header>
-        <h1>🖥️ Ghostty Terminal</h1>
-        <p class="subtitle">WebAssembly-powered terminal with full filesystem access</p>
-      </header>
-
-      <div class="status-bar">
-        <div class="status-indicator">
-          <div class="status-dot" id="status-dot"></div>
-          <span id="status-text">Connecting...</span>
-          <span id="alt-screen-indicator" class="alt-screen-indicator">ALT SCREEN</span>
+    <div class="terminal-window">
+      <div class="title-bar">
+        <div class="traffic-lights">
+          <span class="light red"></span>
+          <span class="light yellow"></span>
+          <span class="light green"></span>
         </div>
-        <div>
-          <small id="ws-url" style="opacity: 0.7; margin-right: 15px"></small>
-          <span id="cwd-display">~/</span>
+        <div class="title">ghostty-web</div>
+        <div class="connection-status">
+          <span class="connection-dot" id="connection-dot"></span>
+          <span id="connection-text">Disconnected</span>
         </div>
       </div>
-
-      <div class="terminal-wrapper">
-        <div id="terminal-container"></div>
-      </div>
-
-      <div class="feature-panel">
-        <h3>📜 Scrolling Features</h3>
-        <div class="button-grid">
-          <button class="test-button" id="btn-scrollUp">⬆️ Scroll Up 5 Lines</button>
-          <button class="test-button" id="btn-scrollDown">⬇️ Scroll Down 5 Lines</button>
-          <button class="test-button" id="btn-scrollPageUp">📄⬆️ Scroll Page Up</button>
-          <button class="test-button" id="btn-scrollPageDown">📄⬇️ Scroll Page Down</button>
-          <button class="test-button" id="btn-scrollToTop">🔝 Scroll to Top</button>
-          <button class="test-button" id="btn-scrollToBottom">⬇️ Scroll to Bottom</button>
-          <button class="test-button" id="btn-scrollToLine">🎯 Scroll to Line 10</button>
-          <button class="test-button" id="btn-generateContent">📝 Generate Scrollback</button>
-        </div>
-        <div>
-          <strong style="display: block; margin-bottom: 8px">Event Log (onScroll):</strong>
-          <div class="event-log" id="event-log">
-            <div style="opacity: 0.5; text-align: center">Events will appear here...</div>
-          </div>
-          <button class="clear-log" id="btn-clear-log">Clear Log</button>
-        </div>
-      </div>
-
-      <div class="feature-panel">
-        <h3>🔍 Buffer Access API (NEW!)</h3>
-        <div class="button-grid">
-          <button class="test-button" id="btn-testAlternateScreen">🔄 Test Alternate Screen</button>
-          <button class="test-button" id="btn-testWrapping">📏 Test Line Wrapping</button>
-          <button class="test-button" id="btn-testEdgeCases">⚠️ Test Edge Cases</button>
-          <button class="test-button" id="btn-showBufferInfo">ℹ️ Show Buffer Info</button>
-        </div>
-        <div>
-          <strong style="display: block; margin-bottom: 8px">API Test Results:</strong>
-          <div class="event-log" id="buffer-api-log">
-            <div style="opacity: 0.5; text-align: center">Test results will appear here...</div>
-          </div>
-          <button class="clear-log" id="btn-clear-buffer-log">Clear Results</button>
-        </div>
-      </div>
-
-      <div class="feature-panel">
-        <h3>🔗 URL Detection (NEW!)</h3>
-        <p style="margin: 10px 0; font-size: 0.9em; opacity: 0.8">
-          Plain text URLs are automatically detected and made clickable. Hover to see cursor change,
-          Ctrl/Cmd+Click to open.
-        </p>
-        <div class="button-grid">
-          <button class="test-button" id="btn-testUrls">📝 Write Test URLs</button>
-          <button class="test-button" id="btn-testUrlEdgeCases">⚠️ Test URL Edge Cases</button>
-        </div>
-      </div>
-
-      <div class="warning">
-        <strong>⚠️ Warning: Full Filesystem Access</strong>
-        This demo has unrestricted access to your entire filesystem. It's meant for local
-        development and demonstration purposes only. Do not expose this to untrusted users or
-        networks.
-      </div>
+      <div id="terminal-container"></div>
     </div>
 
-    <!-- Import Terminal from lib -->
     <script type="module">
-      import { Terminal } from '../lib/index.ts';
+      import { Terminal } from '../lib/terminal.ts';
       import { FitAddon } from '../lib/addons/fit.ts';
 
-      // =========================================================================
-      // Configuration
-      // =========================================================================
+      let term;
+      let ws;
+      let fitAddon;
 
-      // Auto-detect hostname (works for localhost and remote hosts like mux.coder)
-      const hostname = window.location.hostname || 'localhost';
-      const WS_URL = `ws://${hostname}:3001/ws`;
-      let ws = null;
-      let term = null;
-      let fitAddon = null;
-      let currentLine = '';
-      let commandHistory = [];
-      let historyIndex = -1;
-      let currentCwd = '~';
-      let isPtyMode = true; // PTY mode sends raw keystrokes, command mode uses line editing
+      async function initTerminal() {
+        term = new Terminal({
+          cursorBlink: true,
+          fontSize: 14,
+          fontFamily: 'Monaco, Menlo, "Courier New", monospace',
+          theme: {
+            background: '#1e1e1e',
+            foreground: '#d4d4d4',
+          },
+          scrollback: 10000,
+        });
 
-      // =========================================================================
-      // WebSocket Connection
-      // =========================================================================
+        fitAddon = new FitAddon();
+        term.loadAddon(fitAddon);
 
-      function connect() {
-        updateStatus('connecting', 'Connecting to server...');
+        await term.open(document.getElementById('terminal-container'));
+        fitAddon.fit();
 
-        // Include terminal size in WebSocket URL
-        const wsUrlWithSize = `${WS_URL}?cols=${term.cols}&rows=${term.rows}`;
+        // Handle window resize
+        window.addEventListener('resize', () => {
+          fitAddon.fit();
+        });
 
-        // Show WebSocket URL in status bar
-        document.getElementById('ws-url').textContent = WS_URL;
+        // Connect to PTY server
+        connectWebSocket();
 
-        ws = new WebSocket(wsUrlWithSize);
+        // Handle user input
+        term.onData((data) => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+          }
+        });
+
+        // Debug scrollback
+        console.log('Terminal scrollback:', term.buffer?.scrollback?.length || 'N/A');
+        term.onScroll((ydisp) => {
+          console.log('Scroll position:', ydisp);
+        });
+      }
+
+      function connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.hostname}:3001/ws?cols=${term.cols}&rows=${term.rows}`;
+
+        ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
-          updateStatus('connected', 'Connected (PTY mode)');
-
-          // Focus the terminal
-          term.focus();
+          console.log('WebSocket connected');
+          updateConnectionStatus(true);
         };
 
         ws.onmessage = (event) => {
-          // PTY server sends raw text, not JSON
-          const data = event.data;
-
-          // If it's a string (raw PTY output), write directly to terminal
-          if (typeof data === 'string') {
-            term.write(data);
-            updateAltScreenIndicator();
-          }
-          // Otherwise try JSON parsing for file-browser-server compatibility
-          else {
-            try {
-              const jsonData = JSON.parse(data);
-              handleServerMessage(jsonData);
-              updateAltScreenIndicator();
-            } catch (error) {
-              console.error('Failed to parse message:', error);
-            }
-          }
+          // Server sends raw strings, not JSON
+          term.write(event.data);
         };
 
         ws.onerror = (error) => {
           console.error('WebSocket error:', error);
-          updateStatus('error', 'Connection error');
-          term?.write('\r\n\x1b[1;31mWebSocket error. Check if server is running.\x1b[0m\r\n');
+          updateConnectionStatus(false);
         };
 
         ws.onclose = () => {
-          updateStatus('disconnected', 'Disconnected');
-          term?.write('\r\n\x1b[1;33mConnection closed.\x1b[0m\r\n');
-        };
-      }
-
-      function handleServerMessage(data) {
-        switch (data.type) {
-          case 'connected':
-            currentCwd = data.cwd;
-            updateCwdDisplay(currentCwd);
-            if (!isPtyMode) {
-              showWelcome();
-              showPrompt();
-            }
-            break;
-
-          case 'output':
-            // Display stdout
-            if (data.stdout) {
-              term.write(data.stdout.replace(/\n/g, '\r\n'));
-            }
-
-            // Display stderr in red
-            if (data.stderr) {
-              term.write(`\x1b[1;31m${data.stderr.replace(/\n/g, '\r\n')}\x1b[0m`);
-            }
-
-            // Update CWD
-            if (data.cwd) {
-              currentCwd = data.cwd;
-              updateCwdDisplay(currentCwd);
-            }
-
-            // Show new prompt
-            showPrompt();
-            break;
-
-          case 'error':
-            term.write(`\r\n\x1b[1;31mError: ${data.data}\x1b[0m\r\n`);
-            showPrompt();
-            break;
-        }
-      }
-
-      function sendCommand(command) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: 'command',
-              data: command,
-            })
-          );
-
-          // Add to history if not empty
-          if (command.trim()) {
-            commandHistory.push(command);
-            historyIndex = commandHistory.length;
-          }
-        } else {
-          term.write('\r\n\x1b[1;31mNot connected to server.\x1b[0m\r\n');
-          showPrompt();
-        }
-      }
-
-      // =========================================================================
-      // Terminal UI
-      // =========================================================================
-
-      function updateStatus(status, text) {
-        const dot = document.getElementById('status-dot');
-        const textEl = document.getElementById('status-text');
-
-        dot.className = 'status-dot';
-        if (status === 'connected') {
-          dot.classList.add('connected');
-        }
-
-        textEl.textContent = text;
-      }
-
-      function updateAltScreenIndicator() {
-        const indicator = document.getElementById('alt-screen-indicator');
-        if (!term || !term.wasmTerm) return;
-
-        const isAltScreen = term.wasmTerm.isAlternateScreen();
-        if (isAltScreen) {
-          indicator.classList.add('active');
-        } else {
-          indicator.classList.remove('active');
-        }
-      }
-
-      function updateCwdDisplay(cwd) {
-        const display = document.getElementById('cwd-display');
-        // Shorten long paths
-        const shortened = cwd.replace(process.env.HOME || '/home/coder', '~');
-        display.textContent = shortened;
-      }
-
-      function showWelcome() {
-        term.write(
-          '\x1b[1;36m╔══════════════════════════════════════════════════════════════╗\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m║\x1b[0m  \x1b[1;32mWelcome to File Browser Terminal!\x1b[0m                       \x1b[1;36m║\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m║\x1b[0m                                                              \x1b[1;36m║\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m║\x1b[0m  Type commands to navigate your filesystem.                  \x1b[1;36m║\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m║\x1b[0m  Try: \x1b[1;33mls -la\x1b[0m, \x1b[1;33mcd /tmp\x1b[0m, \x1b[1;33mcat package.json\x1b[0m            \x1b[1;36m║\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m║\x1b[0m                                                              \x1b[1;36m║\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m║\x1b[0m  Use ↑/↓ for command history, Tab for... well, nothing yet  \x1b[1;36m║\x1b[0m\r\n'
-        );
-        term.write(
-          '\x1b[1;36m╚══════════════════════════════════════════════════════════════╝\x1b[0m\r\n'
-        );
-        term.write('\r\n');
-      }
-
-      function showPrompt() {
-        // Format: user@host:~/path $
-        const shortened = currentCwd.replace(process.env.HOME || '/home/coder', '~');
-        term.write(`\x1b[1;32m$\x1b[0m `);
-        currentLine = '';
-      }
-
-      function handleInput(data) {
-        // PTY mode: send every keystroke directly to shell
-        if (isPtyMode) {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(data);
-          }
-          return;
-        }
-
-        // Command mode: line editing with prompt (for file-browser-server)
-        for (let i = 0; i < data.length; i++) {
-          const code = data.charCodeAt(i);
-
-          // Enter key
-          if (code === 13) {
-            term.write('\r\n');
-            if (currentLine.trim()) {
-              sendCommand(currentLine);
-            } else {
-              showPrompt();
-            }
-            currentLine = '';
-          }
-          // Backspace or Delete
-          else if (code === 127 || code === 8) {
-            if (currentLine.length > 0) {
-              currentLine = currentLine.slice(0, -1);
-              term.write('\b \b');
-            }
-          }
-          // Ctrl+C
-          else if (code === 3) {
-            term.write('^C\r\n');
-            currentLine = '';
-            showPrompt();
-          }
-          // Ctrl+D (EOF)
-          else if (code === 4) {
-            if (currentLine.length === 0) {
-              sendCommand('exit');
-            }
-          }
-          // Ctrl+L (clear)
-          else if (code === 12) {
-            term.clear();
-            showPrompt();
-          }
-          // Arrow Up (previous command)
-          else if (code === 27 && data[i + 1] === '[' && data[i + 2] === 'A') {
-            if (historyIndex > 0) {
-              // Clear current line
-              term.write('\r\x1b[K');
-              showPrompt();
-
-              // Show previous command
-              historyIndex--;
-              currentLine = commandHistory[historyIndex];
-              term.write(currentLine);
-            }
-            i += 2; // Skip the rest of the escape sequence
-          }
-          // Arrow Down (next command)
-          else if (code === 27 && data[i + 1] === '[' && data[i + 2] === 'B') {
-            // Clear current line
-            term.write('\r\x1b[K');
-            showPrompt();
-
-            if (historyIndex < commandHistory.length - 1) {
-              historyIndex++;
-              currentLine = commandHistory[historyIndex];
-            } else {
-              historyIndex = commandHistory.length;
-              currentLine = '';
-            }
-            term.write(currentLine);
-            i += 2; // Skip the rest of the escape sequence
-          }
-          // Regular printable character
-          else if (code >= 32 && code < 127) {
-            currentLine += data[i];
-            term.write(data[i]);
-          }
-        }
-      }
-
-      // =========================================================================
-      // Text Selection Support
-      // =========================================================================
-
-      // Text selection is now built-in to the Terminal library!
-      // Use term.getSelection() to access selected text programmatically.
-      // Features:
-      // - Click and drag to select text
-      // - Double-click to select a word
-      // - Auto-copy to clipboard on selection
-      // - Ctrl+C / Cmd+C to copy (via browser context menu)
-
-      // =========================================================================
-      // Event Logging & Handlers
-      // =========================================================================
-
-      function logEvent(type, data) {
-        const eventLog = document.getElementById('event-log');
-        const eventDiv = document.createElement('div');
-        eventDiv.className = 'event';
-
-        const timestamp = new Date().toLocaleTimeString();
-        const dataStr = typeof data === 'object' ? JSON.stringify(data) : String(data);
-
-        eventDiv.innerHTML = `
-          <span style="opacity: 0.6;">[${timestamp}]</span> 
-          <span class="event-type">${type}:</span> 
-          <span class="event-data">${dataStr}</span>
-        `;
-
-        eventLog.appendChild(eventDiv);
-        eventLog.scrollTop = eventLog.scrollHeight;
-
-        // Keep only last 50 events
-        while (eventLog.children.length > 50) {
-          eventLog.removeChild(eventLog.firstChild);
-        }
-      }
-
-      function setupEventHandlers() {
-        // Scrolling event handlers
-        term.onScroll((position) => {
-          logEvent('onScroll', `viewportY=${position}`);
-        });
-
-        document.getElementById('btn-clear-log').addEventListener('click', () => {
-          document.getElementById('event-log').innerHTML =
-            '<div style="opacity: 0.5; text-align: center;">Log cleared</div>';
-        });
-
-        // Scrolling button handlers
-        document.getElementById('btn-scrollUp').addEventListener('click', () => {
-          const scrollbackLen = term.getScrollbackLength();
-          term.scrollLines(-5);
-          logEvent('Action', `Called scrollLines(-5)`);
-        });
-
-        document.getElementById('btn-scrollDown').addEventListener('click', () => {
-          term.scrollLines(5);
-          logEvent('Action', 'Called scrollLines(5) - scroll down');
-        });
-
-        document.getElementById('btn-scrollPageUp').addEventListener('click', () => {
-          term.scrollPages(-1);
-          logEvent('Action', 'Called scrollPages(-1) - page up');
-        });
-
-        document.getElementById('btn-scrollPageDown').addEventListener('click', () => {
-          term.scrollPages(1);
-          logEvent('Action', 'Called scrollPages(1) - page down');
-        });
-
-        document.getElementById('btn-scrollToTop').addEventListener('click', () => {
-          const scrollbackLen = term.getScrollbackLength();
-          term.scrollToTop();
-          logEvent('Action', `Called scrollToTop() (${scrollbackLen} lines)`);
-        });
-
-        document.getElementById('btn-scrollToBottom').addEventListener('click', () => {
-          term.scrollToBottom();
-          logEvent('Action', 'Called scrollToBottom()');
-        });
-
-        document.getElementById('btn-scrollToLine').addEventListener('click', () => {
-          term.scrollToLine(10);
-          logEvent('Action', 'Called scrollToLine(10)');
-        });
-
-        document.getElementById('btn-generateContent').addEventListener('click', () => {
-          // First clear the terminal to start fresh
-          term.clear();
-
-          // Generate lots of content to create scrollback
-          // Terminal is ~24 rows, so 200 lines will create ~176 lines of scrollback
-          for (let i = 1; i <= 200; i++) {
-            term.write(
-              `Line ${i.toString().padStart(3, '0')}: Test content for scrollback buffer\r\n`
-            );
-          }
-
-          // Wait a bit for rendering, then check scrollback
+          console.log('WebSocket disconnected');
+          updateConnectionStatus(false);
+          
+          // Attempt to reconnect after 3 seconds
           setTimeout(() => {
-            const scrollbackLen = term.getScrollbackLength();
-            logEvent('Action', `Generated 200 lines, scrollback: ${scrollbackLen} lines`);
-          }, 100);
-        });
-
-        // =========================================================================
-        // Buffer Access API Handlers (NEW!)
-        // =========================================================================
-
-        function logBufferEvent(message, isSuccess = true) {
-          const bufferLog = document.getElementById('buffer-api-log');
-          const eventDiv = document.createElement('div');
-          eventDiv.className = 'event';
-          eventDiv.innerHTML = `
-            <span class="event-type" style="color: ${isSuccess ? '#4caf50' : '#ff9800'}">${isSuccess ? '✓' : '→'}</span>
-            <span class="event-data">${message}</span>
-          `;
-          bufferLog.appendChild(eventDiv);
-          bufferLog.scrollTop = bufferLog.scrollHeight;
-        }
-
-        document.getElementById('btn-clear-buffer-log').addEventListener('click', () => {
-          const bufferLog = document.getElementById('buffer-api-log');
-          bufferLog.innerHTML =
-            '<div style="opacity: 0.5; text-align: center">Test results will appear here...</div>';
-        });
-
-        document.getElementById('btn-testAlternateScreen').addEventListener('click', async () => {
-          const bufferLog = document.getElementById('buffer-api-log');
-          bufferLog.innerHTML = ''; // Clear log
-
-          logBufferEvent('Testing alternate screen detection...', false);
-
-          // Check initial state
-          const initial = term.wasmTerm?.isAlternateScreen();
-          logBufferEvent(
-            `Initial (normal mode): ${initial === false ? '✓ PASS' : '✗ FAIL'} (${initial})`
-          );
-
-          // Enter alternate screen
-          term.write('\x1b[?1049h');
-          term.write('\x1b[2J\x1b[H'); // Clear and home
-          term.write('\x1b[1;32m╔════════════════════════════════════════╗\r\n');
-          term.write('║     ALTERNATE SCREEN MODE ACTIVE       ║\r\n');
-          term.write('║     (Like vim/less/htop)               ║\r\n');
-          term.write('║                                        ║\r\n');
-          term.write('║     Normal buffer is preserved!        ║\r\n');
-          term.write('║     Exiting in 3 seconds...            ║\r\n');
-          term.write('╚════════════════════════════════════════╝\x1b[0m\r\n');
-
-          const inAlt = term.wasmTerm?.isAlternateScreen();
-          logBufferEvent(`In alternate mode: ${inAlt === true ? '✓ PASS' : '✗ FAIL'} (${inAlt})`);
-
-          // Exit after delay
-          await new Promise((r) => setTimeout(r, 3000));
-          term.write('\x1b[?1049l');
-
-          const afterExit = term.wasmTerm?.isAlternateScreen();
-          logBufferEvent(
-            `After exit (normal mode): ${afterExit === false ? '✓ PASS' : '✗ FAIL'} (${afterExit})`
-          );
-
-          if (initial === false && inAlt === true && afterExit === false) {
-            logBufferEvent('🎉 All alternate screen tests PASSED!', true);
-          }
-        });
-
-        document.getElementById('btn-testWrapping').addEventListener('click', () => {
-          const bufferLog = document.getElementById('buffer-api-log');
-          bufferLog.innerHTML = ''; // Clear log
-
-          logBufferEvent('Testing line wrapping detection...', false);
-
-          term.write('\x1b[2J\x1b[H'); // Clear screen
-
-          // Write short lines (no wrap)
-          term.write('Short line 1\r\n');
-          term.write('Short line 2\r\n');
-
-          const row0 = term.wasmTerm?.isRowWrapped(0);
-          const row1 = term.wasmTerm?.isRowWrapped(1);
-          logBufferEvent(
-            `Row 0 (short line): ${row0 === false ? '✓ PASS' : '✗ FAIL'} (wrapped=${row0})`
-          );
-          logBufferEvent(
-            `Row 1 (short line): ${row1 === false ? '✓ PASS' : '✗ FAIL'} (wrapped=${row1})`
-          );
-
-          // Write long line that wraps
-          term.write(
-            '\x1b[33mThis is a very long line that will definitely wrap to the next line because it is much longer than the terminal width allows for a single line of text!\x1b[0m\r\n'
-          );
-
-          // Check wrapping (row 2 starts long line, row 3+ are continuations)
-          const results = [];
-          for (let i = 2; i < 6; i++) {
-            const wrapped = term.wasmTerm?.isRowWrapped(i);
-            results.push({ row: i, wrapped });
-            logBufferEvent(
-              `Row ${i}: ${wrapped ? 'WRAPPED ↪' : 'NEW LINE ↓'} (wrapped=${wrapped})`
-            );
-          }
-
-          const row2correct = results[0].wrapped === false; // Start of line
-          const row3correct = results[1].wrapped === true; // Continuation
-
-          if (row0 === false && row1 === false && row2correct && row3correct) {
-            logBufferEvent('🎉 Line wrapping tests PASSED!', true);
-          }
-        });
-
-        document.getElementById('btn-testEdgeCases').addEventListener('click', () => {
-          const bufferLog = document.getElementById('buffer-api-log');
-          bufferLog.innerHTML = ''; // Clear log
-
-          logBufferEvent('Testing edge cases...', false);
-
-          // Row 0 can never be wrapped
-          const row0 = term.wasmTerm?.isRowWrapped(0);
-          logBufferEvent(`Row 0 (never wraps): ${row0 === false ? '✓ PASS' : '✗ FAIL'} (${row0})`);
-
-          // Negative row
-          const negRow = term.wasmTerm?.isRowWrapped(-1);
-          logBufferEvent(`Row -1 (invalid): ${negRow === false ? '✓ PASS' : '✗ FAIL'} (${negRow})`);
-
-          // Out of bounds
-          const largeRow = term.wasmTerm?.isRowWrapped(9999);
-          logBufferEvent(
-            `Row 9999 (out of bounds): ${largeRow === false ? '✓ PASS' : '✗ FAIL'} (${largeRow})`
-          );
-
-          if (row0 === false && negRow === false && largeRow === false) {
-            logBufferEvent('🎉 All edge case tests PASSED!', true);
-          }
-        });
-
-        document.getElementById('btn-showBufferInfo').addEventListener('click', () => {
-          const bufferLog = document.getElementById('buffer-api-log');
-          bufferLog.innerHTML = ''; // Clear log
-
-          logBufferEvent('📊 Current Buffer Information:', false);
-
-          const isAlt = term.wasmTerm?.isAlternateScreen();
-          const mode = isAlt
-            ? 'Alternate Screen (vim/less/htop mode)'
-            : 'Normal Screen (shell mode)';
-          logBufferEvent(`Screen Mode: ${mode}`, true);
-
-          logBufferEvent(`Terminal Size: ${term.cols}x${term.rows}`, true);
-
-          // Check wrapping for visible rows
-          let wrappedCount = 0;
-          for (let i = 0; i < term.rows; i++) {
-            if (term.wasmTerm?.isRowWrapped(i)) {
-              wrappedCount++;
+            if (!ws || ws.readyState === WebSocket.CLOSED) {
+              connectWebSocket();
             }
+          }, 3000);
+        };
+
+        // Handle terminal resize
+        term.onResize((size) => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            // Send resize as control sequence (server expects this format)
+            ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
           }
-          logBufferEvent(`Wrapped Rows: ${wrappedCount}/${term.rows} visible rows`, true);
-
-          // Show first 10 rows wrap status
-          logBufferEvent('First 10 rows wrap status:', false);
-          for (let i = 0; i < Math.min(10, term.rows); i++) {
-            const wrapped = term.wasmTerm?.isRowWrapped(i);
-            logBufferEvent(`  Row ${i}: ${wrapped ? '↪ wrapped' : '↓ new line'}`, true);
-          }
         });
-
-        // =======================================================================
-        // URL Detection Test Buttons
-        // =======================================================================
-
-        document.getElementById('btn-testUrls').addEventListener('click', () => {
-          term.write('\r\n');
-          term.write(
-            '═══════════════════════════════════════════════════════════════════════════════\r\n'
-          );
-          term.write('🔗 URL Detection Test\r\n');
-          term.write(
-            '═══════════════════════════════════════════════════════════════════════════════\r\n'
-          );
-          term.write('\r\n');
-          term.write(
-            'Hover over URLs to see cursor change, Ctrl/Cmd+Click to open in new tab:\r\n'
-          );
-          term.write('\r\n');
-          term.write(
-            '1. HTTPS: Visit https://github.com/coder/ghostty-web for the source code\r\n'
-          );
-          term.write('2. HTTP:  Check out http://example.com for more information\r\n');
-          term.write('3. Email: Contact mailto:support@example.com for help\r\n');
-          term.write('4. SSH:   Connect via ssh://user@server.com:22/path\r\n');
-          term.write('5. Git:   Clone git://github.com/user/repo.git to get started\r\n');
-          term.write('6. FTP:   Download from ftp://files.example.com/archive.zip\r\n');
-          term.write('7. Tel:   Call tel:+1-555-123-4567 for support\r\n');
-          term.write('8. Multiple URLs: https://a.com and https://b.com on same line\r\n');
-          term.write('\r\n');
-          term.write('Try clicking the URLs above!\r\n');
-          term.write('\r\n');
-        });
-
-        document.getElementById('btn-testUrlEdgeCases').addEventListener('click', () => {
-          term.write('\r\n');
-          term.write(
-            '═══════════════════════════════════════════════════════════════════════════════\r\n'
-          );
-          term.write('⚠️  URL Edge Cases\r\n');
-          term.write(
-            '═══════════════════════════════════════════════════════════════════════════════\r\n'
-          );
-          term.write('\r\n');
-          term.write('URLs should be detected correctly in these cases:\r\n');
-          term.write('\r\n');
-          term.write('1. With period:      Check https://example.com. More text here.\r\n');
-          term.write('2. With comma:       See https://example.com, then continue.\r\n');
-          term.write('3. With parentheses: (visit https://example.com) for details\r\n');
-          term.write('4. With exclamation: Visit https://example.com! Right now!\r\n');
-          term.write('5. With query:       https://example.com?foo=bar&baz=qux\r\n');
-          term.write('6. With fragment:    https://example.com/page#section-one\r\n');
-          term.write('7. With port:        https://example.com:8080/api/endpoint\r\n');
-          term.write('\r\n');
-          term.write('These should NOT be detected (not URLs):\r\n');
-          term.write('8. File path:        /home/user/file.txt\r\n');
-          term.write('9. Relative path:    ./relative/path/to/file\r\n');
-          term.write('\r\n');
-        });
-
-        // Expose terminal to console for debugging
-        window.term = term;
       }
 
-      // =========================================================================
-      // Initialization
-      // =========================================================================
-
-      async function init() {
-        try {
-          // Create terminal with selection enabled
-          term = new Terminal({
-            cols: 80,
-            rows: 30,
-            cursorBlink: true,
-            theme: {
-              background: '#1e1e1e',
-              foreground: '#d4d4d4',
-              cursor: '#ffffff',
-              cursorAccent: '#000000',
-              selectionBackground: 'rgba(255, 255, 255, 0.3)',
-              selectionForeground: '#ffffff',
-              black: '#000000',
-              red: '#cd3131',
-              green: '#0dbc79',
-              yellow: '#e5e510',
-              blue: '#2472c8',
-              magenta: '#bc3fbc',
-              cyan: '#11a8cd',
-              white: '#e5e5e5',
-              brightBlack: '#666666',
-              brightRed: '#f14c4c',
-              brightGreen: '#23d18b',
-              brightYellow: '#f5f543',
-              brightBlue: '#3b8eea',
-              brightMagenta: '#d670d6',
-              brightCyan: '#29b8db',
-              brightWhite: '#ffffff',
-            },
-            fontFamily: "'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace",
-            fontSize: 14,
-            scrollback: 10000,
-          });
-
-          // Create FitAddon
-          fitAddon = new FitAddon();
-          term.loadAddon(fitAddon);
-
-          // Open terminal
-          const container = document.getElementById('terminal-container');
-          await term.open(container);
-
-          // Fit terminal to container
-          fitAddon.fit();
-
-          // Handle window resize
-          window.addEventListener('resize', () => {
-            fitAddon.fit();
-          });
-
-          // Send resize notifications to server
-          term.onResize(({ cols, rows }) => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-            }
-          });
-
-          // Handle input
-          term.onData(handleInput);
-
-          // Text selection is now built-in - no need to enable it!
-          // You can use term.getSelection(), term.selectAll(), etc.
-
-          // Hook up event listeners and test buttons
-          setupEventHandlers();
-
-          // Connect to WebSocket server
-          connect();
-        } catch (error) {
-          console.error('Failed to initialize terminal:', error);
-          updateStatus('error', 'Initialization failed');
+      function updateConnectionStatus(connected) {
+        const dot = document.getElementById('connection-dot');
+        const text = document.getElementById('connection-text');
+        
+        if (connected) {
+          dot.classList.add('connected');
+          text.textContent = 'Connected';
+        } else {
+          dot.classList.remove('connected');
+          text.textContent = 'Disconnected';
         }
       }
 
-      // Start when page loads
-      init();
+      // Initialize on load
+      initTerminal();
     </script>
   </body>
 </html>
