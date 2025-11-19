@@ -17,8 +17,7 @@
   "files": [
     "dist",
     "ghostty-vt.wasm",
-    "README.md",
-    "INSTALL.md"
+    "README.md"
   ],
   "keywords": [
     "terminal",
