@@ -202,7 +202,7 @@
         ws.onclose = () => {
           console.log('WebSocket disconnected');
           updateConnectionStatus(false);
-          
+
           // Attempt to reconnect after 3 seconds
           setTimeout(() => {
             if (!ws || ws.readyState === WebSocket.CLOSED) {
@@ -223,7 +223,7 @@
       function updateConnectionStatus(connected) {
         const dot = document.getElementById('connection-dot');
         const text = document.getElementById('connection-text');
-        
+
         if (connected) {
           dot.classList.add('connected');
           text.textContent = 'Connected';
