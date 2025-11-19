@@ -1,5 +1,7 @@
 # ghostty-web
 
+![ghostty](https://github.com/user-attachments/assets/6154beda-9b51-4a04-843d-a7f144803ecf)
+
 `ghostty-web` is a fully featured web terminal that aims to bring all the benefits of the excellent [ghostty](https://github.com/ghostty-org/ghostty)
 project to the web by leveraging its exported WASM module. Like ghostty, `ghostty-web` intends to be fast, feature-rich,
 and native. For many use cases it is a drop-in replacement for xterm.js.
