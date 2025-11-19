@@ -26,7 +26,7 @@ bun install
 bun run start
 
 # Terminal 2: Start web server
-bun run start  # http://localhost:8000
+bun run start  # http://localhost:8000/demo/
 ```
 
 ## Getting Started
