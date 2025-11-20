@@ -6,7 +6,7 @@
  * Usage:
  * ```typescript
  * const term = new Terminal({ cols: 80, rows: 24 });
- * await term.open(document.getElementById('container'));
+ * term.open(document.getElementById('container')); // Synchronous - no await needed!
  * term.write('Hello, World!\n');
  * term.onData(data => console.log('User typed:', data));
  * ```
@@ -25,6 +25,7 @@ import type {
   ITerminalAddon,
   ITerminalCore,
   ITerminalOptions,
+  IUnicodeVersionProvider,
 } from './interfaces';
 import { LinkDetector } from './link-detector';
 import { OSC8LinkProvider } from './providers/osc8-link-provider';
@@ -47,10 +48,21 @@ export class Terminal implements ITerminalCore {
   // Buffer API (xterm.js compatibility)
   public readonly buffer: IBufferNamespace;
 
-  // Options
-  private options: Required<Omit<ITerminalOptions, 'wasmPath'>> & {
+  // Unicode API (xterm.js compatibility)
+  public readonly unicode: IUnicodeVersionProvider = {
+    get activeVersion(): string {
+      return '15.1'; // Ghostty supports Unicode 15.1
+    },
+  };
+
+  // Options (public for xterm.js compatibility)
+  public readonly options!: Required<Omit<ITerminalOptions, 'wasmPath'>> & {
     wasmPath?: string;
   };
+
+  // WASM loading state (for synchronous open())
+  private wasmLoadPromise?: Promise<Ghostty>;
+  private pendingWrites: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
 
   // Components (created on open())
   private ghostty?: Ghostty;
@@ -76,6 +88,7 @@ export class Terminal implements ITerminalCore {
   private scrollEmitter = new EventEmitter<number>();
   private renderEmitter = new EventEmitter<{ start: number; end: number }>();
   private cursorMoveEmitter = new EventEmitter<void>();
+  private readyEmitter = new EventEmitter<void>();
 
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
@@ -88,8 +101,20 @@ export class Terminal implements ITerminalCore {
   public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
   public readonly onCursorMove: IEvent<void> = this.cursorMoveEmitter.event;
 
+  // onReady is special - fires immediately if terminal is already ready
+  // This is critical for FitAddon which may subscribe before or after terminal is ready
+  public readonly onReady: IEvent<void> = (listener: () => void) => {
+    if (this.isReady) {
+      // Terminal already ready, fire immediately for late subscribers
+      listener();
+    }
+    // Also subscribe for future events
+    return this.readyEmitter.event(listener);
+  };
+
   // Lifecycle state
   private isOpen = false;
+  private isReady = false;
   private isDisposed = false;
   private animationFrameId?: number;
 
@@ -124,8 +149,8 @@ export class Terminal implements ITerminalCore {
   private readonly SCROLLBAR_FADE_DURATION_MS = 200; // 200ms fade animation
 
   constructor(options: ITerminalOptions = {}) {
-    // Set default options
-    this.options = {
+    // Create base options object with all defaults
+    const baseOptions = {
       cols: options.cols ?? 80,
       rows: options.rows ?? 24,
       cursorBlink: options.cursorBlink ?? false,
@@ -138,14 +163,86 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
+      windowsMode: options.windowsMode ?? false, // Windows PTY compatibility
+      allowProposedApi: options.allowProposedApi ?? false, // Experimental APIs
       wasmPath: options.wasmPath, // Optional - Ghostty.load() handles defaults
     };
+
+    // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
+    (this.options as any) = new Proxy(baseOptions, {
+      set: (target: any, prop: string, value: any) => {
+        const oldValue = target[prop];
+        target[prop] = value;
+
+        // Apply runtime changes if terminal is open
+        if (this.isOpen) {
+          this.handleOptionChange(prop, value, oldValue);
+        }
+
+        return true;
+      },
+    });
 
     this.cols = this.options.cols;
     this.rows = this.options.rows;
 
     // Initialize buffer API
     this.buffer = new BufferNamespace(this);
+
+    // Start WASM loading immediately (makes open() synchronous)
+    this.wasmLoadPromise = Ghostty.load(this.options.wasmPath);
+  }
+
+  // ==========================================================================
+  // Option Change Handling (for mutable options)
+  // ==========================================================================
+
+  /**
+   * Handle runtime option changes (called when options are modified after terminal is open)
+   * This enables xterm.js compatibility where options can be changed at runtime
+   */
+  private handleOptionChange(key: string, newValue: any, oldValue: any): void {
+    if (newValue === oldValue) return;
+
+    switch (key) {
+      case 'disableStdin':
+        // Input handler already checks this.options.disableStdin dynamically
+        // No action needed
+        break;
+
+      case 'windowsMode':
+        if (this.inputHandler) {
+          this.inputHandler.setWindowsMode(newValue);
+        }
+        break;
+
+      case 'cursorBlink':
+      case 'cursorStyle':
+        if (this.renderer) {
+          this.renderer.setCursorStyle(this.options.cursorStyle);
+          this.renderer.setCursorBlink(this.options.cursorBlink);
+        }
+        break;
+
+      case 'theme':
+        if (this.renderer) {
+          console.warn('ghostty-web: theme changes after open() are not yet fully supported');
+        }
+        break;
+
+      case 'fontSize':
+      case 'fontFamily':
+        if (this.renderer) {
+          console.warn('ghostty-web: font changes after open() are not yet fully supported');
+        }
+        break;
+
+      case 'cols':
+      case 'rows':
+        // Redirect to resize method
+        this.resize(this.options.cols, this.options.rows);
+        break;
+    }
   }
 
   // ==========================================================================
@@ -155,8 +252,12 @@ export class Terminal implements ITerminalCore {
   /**
    * Open terminal in a parent element
    * This initializes all components and starts rendering
+   *
+   * Note: This method is synchronous for xterm.js compatibility.
+   * WASM loading happens in the constructor, and terminal setup happens
+   * asynchronously in the background. Use onReady event to know when ready.
    */
-  async open(parent: HTMLElement): Promise<void> {
+  open(parent: HTMLElement): void {
     if (this.isOpen) {
       throw new Error('Terminal is already open');
     }
@@ -164,20 +265,36 @@ export class Terminal implements ITerminalCore {
       throw new Error('Terminal has been disposed');
     }
 
-    try {
-      // Store parent element
-      this.element = parent;
+    // Store parent element
+    this.element = parent;
 
+    // Mark as open immediately (terminal will become ready when WASM loads)
+    this.isOpen = true;
+
+    // Wait for WASM to load, then setup terminal
+    this.wasmLoadPromise!.then((ghostty) => {
+      this.ghostty = ghostty;
+      this.setupTerminal(parent);
+    }).catch((err) => {
+      console.error('Failed to load Ghostty WASM:', err);
+      this.isOpen = false;
+      throw new Error(`Failed to load Ghostty WASM: ${err}`);
+    });
+  }
+
+  /**
+   * Setup terminal once WASM is loaded
+   * This is called asynchronously after open() returns
+   */
+  private setupTerminal(parent: HTMLElement): void {
+    try {
       // Make parent focusable if it isn't already
       if (!parent.hasAttribute('tabindex')) {
         parent.setAttribute('tabindex', '0');
       }
 
-      // Load Ghostty WASM
-      this.ghostty = await Ghostty.load(this.options.wasmPath);
-
-      // Create WASM terminal
-      this.wasmTerm = this.ghostty.createTerminal(this.options.cols, this.options.rows);
+      // Create WASM terminal with current dimensions (may have been updated by FitAddon before ready)
+      this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows);
 
       // Create canvas element
       this.canvas = document.createElement('canvas');
@@ -221,7 +338,7 @@ export class Terminal implements ITerminalCore {
 
       // Create input handler
       this.inputHandler = new InputHandler(
-        this.ghostty,
+        this.ghostty!,
         parent,
         (data: string) => {
           // Check if stdin is disabled
@@ -292,9 +409,6 @@ export class Terminal implements ITerminalCore {
       // Use capture phase to ensure we get the event before browser scrolling
       parent.addEventListener('wheel', this.handleWheel, { passive: false, capture: true });
 
-      // Mark as open
-      this.isOpen = true;
-
       // Render initial blank screen
       this.renderer.render(this.wasmTerm, true, this.viewportY, this, this.scrollbarOpacity);
 
@@ -303,6 +417,16 @@ export class Terminal implements ITerminalCore {
 
       // Focus input (auto-focus so user can start typing immediately)
       this.focus();
+
+      // Mark as ready and fire event (must be after all components initialized)
+      this.isReady = true;
+      this.readyEmitter.fire();
+
+      // Process any writes that came in before WASM was ready
+      while (this.pendingWrites.length > 0) {
+        const pending = this.pendingWrites.shift()!;
+        this.writeInternal(pending.data, pending.callback);
+      }
     } catch (error) {
       // Clean up on error
       this.cleanupComponents();
@@ -321,6 +445,25 @@ export class Terminal implements ITerminalCore {
       data = data.replace(/\n/g, '\r\n');
     }
 
+    // Queue writes if WASM not ready yet
+    if (!this.wasmTerm) {
+      this.pendingWrites.push({ data, callback });
+      return;
+    }
+
+    // Process any pending writes first (FIFO order)
+    while (this.pendingWrites.length > 0) {
+      const pending = this.pendingWrites.shift()!;
+      this.writeInternal(pending.data, pending.callback);
+    }
+
+    this.writeInternal(data, callback);
+  }
+
+  /**
+   * Internal write implementation (extracted from write())
+   */
+  private writeInternal(data: string | Uint8Array, callback?: () => void): void {
     // Clear selection when writing new data (standard terminal behavior)
     if (this.selectionManager?.hasSelection()) {
       this.selectionManager.clearSelection();

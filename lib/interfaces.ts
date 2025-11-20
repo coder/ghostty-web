@@ -20,6 +20,10 @@ export interface ITerminalOptions {
 
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
+
+  // xterm.js compatibility options
+  windowsMode?: boolean; // Windows PTY mode - adjusts line wrapping for Windows backends (winpty, conpty) (default: false)
+  allowProposedApi?: boolean; // Enable experimental/proposed APIs (default: false)
 }
 
 export interface ITheme {
@@ -81,6 +85,13 @@ export interface IBufferRange {
 export interface IKeyEvent {
   key: string;
   domEvent: KeyboardEvent;
+}
+
+/**
+ * Unicode version provider (xterm.js compatibility)
+ */
+export interface IUnicodeVersionProvider {
+  readonly activeVersion: string;
 }
 
 // ============================================================================

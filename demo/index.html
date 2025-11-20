@@ -138,7 +138,7 @@
       let ws;
       let fitAddon;
 
-      async function initTerminal() {
+      function initTerminal() {
         term = new Terminal({
           cursorBlink: true,
           fontSize: 14,
@@ -153,7 +153,7 @@
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
 
-        await term.open(document.getElementById('terminal-container'));
+        term.open(document.getElementById('terminal-container'));
         fitAddon.fit();
 
         // Handle window resize
@@ -161,8 +161,13 @@
           fitAddon.fit();
         });
 
-        // Connect to PTY server
-        connectWebSocket();
+        // Handle terminal resize - MUST be registered before terminal becomes ready!
+        term.onResize((size) => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            // Send resize as control sequence (server expects this format)
+            ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
+          }
+        });
 
         // Handle user input
         term.onData((data) => {
@@ -175,6 +180,14 @@
         console.log('Terminal scrollback:', term.buffer?.scrollback?.length || 'N/A');
         term.onScroll((ydisp) => {
           console.log('Scroll position:', ydisp);
+        });
+
+        // Connect to PTY server AFTER terminal is ready
+        // This ensures term.cols/rows have been updated by FitAddon
+        // since the PTY server doesn't support dynamic resize
+        term.onReady(() => {
+          console.log('[Demo] Terminal ready, connecting with size:', term.cols, 'x', term.rows);
+          connectWebSocket();
         });
       }
 
@@ -210,14 +223,6 @@
             }
           }, 3000);
         };
-
-        // Handle terminal resize
-        term.onResize((size) => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send resize as control sequence (server expects this format)
-            ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
-          }
-        });
       }
 
       function updateConnectionStatus(connected) {
