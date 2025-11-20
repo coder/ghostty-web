@@ -448,7 +448,6 @@ function handlePTYSession(ws, req) {
       str = str.replace(/\x1b\]1;[^\x07]*\x07/g, ''); // OSC 1 - icon
       str = str.replace(/\x1b\]2;[^\x07]*\x07/g, ''); // OSC 2 - title
       
-      console.log('[PTY stdout]', str.length, 'bytes');
       ws.send(str);
     } catch (err) {
       // WebSocket may be closed
@@ -457,8 +456,8 @@ function handlePTYSession(ws, req) {
 
   ptyProcess.stderr.on('data', (data) => {
     try {
-      console.log('[PTY stderr]', data.length, 'bytes');
-      ws.send(data.toString());
+      // Send stderr in red (same as demo/server)
+      ws.send(`\\x1b[31m${data.toString()}\\x1b[0m`);
     } catch (err) {
       // WebSocket may be closed
     }
@@ -475,7 +474,6 @@ function handlePTYSession(ws, req) {
       }
     } catch {
       // Not JSON, treat as input
-      console.log('[PTY stdin] Received:', JSON.stringify(data), 'bytes:', data.length);
       try {
         ptyProcess.stdin.write(data);
       } catch (err) {
