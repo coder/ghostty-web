@@ -169,6 +169,7 @@ export class InputHandler {
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
   private pasteListener: ((e: ClipboardEvent) => void) | null = null;
   private isDisposed = false;
+  private windowsMode = false;
 
   /**
    * Create a new InputHandler
@@ -492,6 +493,14 @@ export class InputHandler {
     // Note: For bracketed paste mode, we would wrap this in \x1b[200~ ... \x1b[201~
     // but for now, send raw text
     this.onDataCallback(text);
+  }
+
+  /**
+   * Set Windows PTY mode (for xterm.js compatibility)
+   * @param enabled Whether to enable Windows mode
+   */
+  public setWindowsMode(enabled: boolean): void {
+    this.windowsMode = enabled;
   }
 
   /**

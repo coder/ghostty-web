@@ -44,12 +44,25 @@ export class FitAddon implements ITerminalAddon {
   private _lastCols?: number;
   private _lastRows?: number;
   private _isResizing: boolean = false;
+  private _pendingFit: boolean = false;
+  private _readyDisposable?: { dispose: () => void };
 
   /**
    * Activate the addon (called by Terminal.loadAddon)
    */
   public activate(terminal: ITerminalCore): void {
     this._terminal = terminal;
+
+    // Subscribe to onReady event if available (xterm.js compatibility)
+    const terminalWithEvents = terminal as any;
+    if (terminalWithEvents.onReady && typeof terminalWithEvents.onReady === 'function') {
+      this._readyDisposable = terminalWithEvents.onReady(() => {
+        // Terminal is ready - always call fit when ready
+        // This handles the case where fit() was called before terminal was ready
+        this._pendingFit = false;
+        this.fit();
+      });
+    }
   }
 
   /**
@@ -66,6 +79,12 @@ export class FitAddon implements ITerminalAddon {
     if (this._resizeDebounceTimer) {
       clearTimeout(this._resizeDebounceTimer);
       this._resizeDebounceTimer = undefined;
+    }
+
+    // Dispose onReady subscription
+    if (this._readyDisposable) {
+      this._readyDisposable.dispose();
+      this._readyDisposable = undefined;
     }
 
     // Clear stored dimensions
@@ -89,8 +108,17 @@ export class FitAddon implements ITerminalAddon {
 
     const dims = this.proposeDimensions();
     if (!dims || !this._terminal) {
+      // Check if terminal exists but renderer isn't ready yet
+      const terminal = this._terminal as any;
+      if (this._terminal && terminal.element && !terminal.renderer) {
+        // Mark fit as pending - will be called from onReady handler
+        this._pendingFit = true;
+      }
       return;
     }
+
+    // Clear pending flag if we get here
+    this._pendingFit = false;
 
     // Access terminal to check current dimensions
     const terminal = this._terminal as any;

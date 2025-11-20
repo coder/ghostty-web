@@ -17,6 +17,7 @@ export type {
   IEvent,
   IBufferRange,
   IKeyEvent,
+  IUnicodeVersionProvider,
 } from './interfaces';
 
 // Ghostty WASM components (for advanced usage)

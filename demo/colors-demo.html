@@ -163,7 +163,7 @@
       // Initialization
       // =========================================================================
 
-      async function init() {
+      function init() {
         try {
           // Create terminal with dark theme
           term = new Terminal({
@@ -201,7 +201,7 @@
 
           // Open terminal
           const container = document.getElementById('terminal-container');
-          await term.open(container);
+          term.open(container);
           fitAddon.fit();
 
           // Handle resize
