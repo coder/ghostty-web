@@ -167,48 +167,161 @@ describe('FitAddon', () => {
 // ==========================================================================
 
 describe('onReady Auto-Retry', () => {
-  test('subscribes to onReady if available', () => {
-    const mockTerminalWithReady = {
-      ...terminal,
+  let addon: FitAddon;
+
+  beforeEach(() => {
+    addon = new FitAddon();
+  });
+
+  afterEach(() => {
+    addon.dispose();
+  });
+
+  test('subscribes to onReady during activation', () => {
+    let subscribed = false;
+
+    const mockTerminal = {
+      cols: 80,
+      rows: 24,
       onReady: (listener: () => void) => {
-        // Mock disposable
+        subscribed = true;
         return { dispose: () => {} };
       },
     };
 
-    expect(() => addon.activate(mockTerminalWithReady as any)).not.toThrow();
+    addon.activate(mockTerminal as any);
+    expect(subscribed).toBe(true);
   });
 
-  test('calls fit() when terminal becomes ready', () => {
+  test('calls fit() when onReady fires', () => {
     let readyCallback: (() => void) | null = null;
+    let fitCallCount = 0;
 
-    const mockTerminalWithReady = {
-      ...terminal,
-      element: document.createElement('div'),
+    // Create a mock element with computed dimensions
+    const mockElement = document.createElement('div');
+    Object.defineProperty(mockElement, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(mockElement, 'clientHeight', { value: 400, configurable: true });
+
+    const mockTerminal = {
+      cols: 80,
+      rows: 24,
+      element: mockElement,
+      renderer: {
+        getMetrics: () => ({ width: 9, height: 16, baseline: 12 }),
+      },
+      resize: (cols: number, rows: number) => {
+        fitCallCount++;
+        mockTerminal.cols = cols;
+        mockTerminal.rows = rows;
+      },
       onReady: (listener: () => void) => {
         readyCallback = listener;
         return { dispose: () => {} };
       },
     };
 
-    addon.activate(mockTerminalWithReady as any);
-    addon.fit(); // Mark as pending
+    addon.activate(mockTerminal as any);
+
+    // Before ready, fit() may not resize (depending on implementation)
+    const initialFitCount = fitCallCount;
 
     // Simulate terminal becoming ready
     if (readyCallback) {
       readyCallback();
     }
 
-    // fit() should have been called (hard to verify without side effects)
-    expect(readyCallback).not.toBeNull();
+    // fit() should have been called via onReady handler
+    expect(fitCallCount).toBeGreaterThan(initialFitCount);
+  });
+
+  test('disposes onReady subscription on dispose()', () => {
+    let disposed = false;
+
+    const mockTerminal = {
+      cols: 80,
+      rows: 24,
+      onReady: (listener: () => void) => {
+        return {
+          dispose: () => {
+            disposed = true;
+          },
+        };
+      },
+    };
+
+    addon.activate(mockTerminal as any);
+    expect(disposed).toBe(false);
+
+    addon.dispose();
+    expect(disposed).toBe(true);
   });
 
   test('handles terminal without onReady gracefully', () => {
     const terminalWithoutReady = {
-      ...terminal,
+      cols: 80,
+      rows: 24,
+      resize: () => {},
     };
 
     expect(() => addon.activate(terminalWithoutReady as any)).not.toThrow();
     expect(() => addon.fit()).not.toThrow();
+    expect(() => addon.dispose()).not.toThrow();
+  });
+
+  test('fit() calculates correct dimensions from container', () => {
+    // Create a mock element with known dimensions
+    // FitAddon subtracts 15px for scrollbar, so we need to account for that
+    const mockElement = document.createElement('div');
+    Object.defineProperty(mockElement, 'clientWidth', { value: 900, configurable: true });
+    Object.defineProperty(mockElement, 'clientHeight', { value: 480, configurable: true });
+
+    let resizedCols = 0;
+    let resizedRows = 0;
+
+    const mockTerminal = {
+      cols: 80,
+      rows: 24,
+      element: mockElement,
+      renderer: {
+        // 9px wide chars, 16px tall
+        getMetrics: () => ({ width: 9, height: 16, baseline: 12 }),
+      },
+      resize: (cols: number, rows: number) => {
+        resizedCols = cols;
+        resizedRows = rows;
+        mockTerminal.cols = cols;
+        mockTerminal.rows = rows;
+      },
+    };
+
+    addon.activate(mockTerminal as any);
+    addon.fit();
+
+    // Expected: (900 - 15 scrollbar) / 9 = 98 cols, 480 / 16 = 30 rows
+    expect(resizedCols).toBe(98);
+    expect(resizedRows).toBe(30);
+  });
+
+  test('proposeDimensions returns correct values', () => {
+    // FitAddon subtracts 15px for scrollbar width
+    const mockElement = document.createElement('div');
+    Object.defineProperty(mockElement, 'clientWidth', { value: 720, configurable: true });
+    Object.defineProperty(mockElement, 'clientHeight', { value: 384, configurable: true });
+
+    const mockTerminal = {
+      cols: 80,
+      rows: 24,
+      element: mockElement,
+      renderer: {
+        getMetrics: () => ({ width: 8, height: 16, baseline: 12 }),
+      },
+      resize: () => {},
+    };
+
+    addon.activate(mockTerminal as any);
+    const dims = addon.proposeDimensions();
+
+    // Expected: (720 - 15 scrollbar) / 8 = 88 cols, 384 / 16 = 24 rows
+    expect(dims).toEqual({ cols: 88, rows: 24 });
   });
 });

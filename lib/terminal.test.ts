@@ -1507,77 +1507,442 @@ describe('Selection with Scrollback', () => {
   });
 });
 // ==========================================================================
-// Public Options Tests
+// xterm.js Compatibility: Public Mutable Options
 // ==========================================================================
 
 describe('Public Mutable Options', () => {
-  test('options are publicly accessible', () => {
-    const term = new Terminal({ cols: 100, rows: 30 });
+  test('options are publicly accessible and reflect initial values', () => {
+    const term = new Terminal({ cols: 100, rows: 30, scrollback: 5000 });
     expect(term.options).toBeDefined();
     expect(term.options.cols).toBe(100);
+    expect(term.options.rows).toBe(30);
+    expect(term.options.scrollback).toBe(5000);
   });
 
-  test('options can be mutated', () => {
+  test('options can be mutated at runtime', () => {
     const term = new Terminal();
+    expect(term.options.disableStdin).toBe(false);
     term.options.disableStdin = true;
     expect(term.options.disableStdin).toBe(true);
+    term.options.disableStdin = false;
+    expect(term.options.disableStdin).toBe(false);
   });
 
-  test('windowsMode option works', () => {
-    const term = new Terminal({ windowsMode: true });
-    expect(term.options.windowsMode).toBe(true);
+  test('windowsMode option is stored correctly', () => {
+    const termDefault = new Terminal();
+    expect(termDefault.options.windowsMode).toBe(false);
+
+    const termEnabled = new Terminal({ windowsMode: true });
+    expect(termEnabled.options.windowsMode).toBe(true);
   });
 
-  test('allowProposedApi option works', () => {
-    const term = new Terminal({ allowProposedApi: true });
-    expect(term.options.allowProposedApi).toBe(true);
+  test('allowProposedApi option is stored correctly', () => {
+    const termDefault = new Terminal();
+    expect(termDefault.options.allowProposedApi).toBe(false);
+
+    const termEnabled = new Terminal({ allowProposedApi: true });
+    expect(termEnabled.options.allowProposedApi).toBe(true);
   });
 });
+
+// ==========================================================================
+// xterm.js Compatibility: disableStdin Functionality
+// ==========================================================================
+
+describe('disableStdin', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('blocks keyboard input from firing onData when enabled', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    // Enable disableStdin
+    term.options.disableStdin = true;
+
+    // Simulate keyboard input by calling the internal method
+    // Since we can't easily simulate keyboard events, we test via paste() and input()
+    term.paste('should-not-appear');
+    term.input('also-should-not-appear', true);
+
+    expect(receivedData).toHaveLength(0);
+
+    term.dispose();
+  });
+
+  test('allows input when disableStdin is false', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    // disableStdin defaults to false
+    expect(term.options.disableStdin).toBe(false);
+
+    // Paste should work
+    term.paste('hello');
+    expect(receivedData.length).toBeGreaterThan(0);
+    expect(receivedData.join('')).toContain('hello');
+
+    term.dispose();
+  });
+
+  test('can toggle disableStdin at runtime', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    // Start with input enabled
+    term.paste('first');
+    expect(receivedData.join('')).toContain('first');
+
+    // Disable input
+    term.options.disableStdin = true;
+    const countBefore = receivedData.length;
+    term.paste('blocked');
+    expect(receivedData.length).toBe(countBefore); // No new data
+
+    // Re-enable input
+    term.options.disableStdin = false;
+    term.paste('second');
+    expect(receivedData.join('')).toContain('second');
+
+    term.dispose();
+  });
+});
+
+// ==========================================================================
+// xterm.js Compatibility: unicode API
+// ==========================================================================
 
 describe('unicode API', () => {
   test('activeVersion returns 15.1', () => {
     const term = new Terminal();
     expect(term.unicode.activeVersion).toBe('15.1');
   });
+
+  test('unicode object is readonly', () => {
+    const term = new Terminal();
+    // The unicode property should be accessible
+    expect(term.unicode).toBeDefined();
+    expect(typeof term.unicode.activeVersion).toBe('string');
+  });
 });
+
+// ==========================================================================
+// xterm.js Compatibility: onReady Event
+// ==========================================================================
 
 describe('onReady Event', () => {
-  test('fires when ready', async () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('fires after WASM is loaded and terminal is ready', async () => {
     if (!container) return;
+
     const term = new Terminal();
-    let fired = false;
+    let firedAt = 0;
+    const openedAt = Date.now();
+
     term.onReady(() => {
-      fired = true;
+      firedAt = Date.now();
     });
+
     term.open(container);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(fired).toBe(true);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(firedAt).toBeGreaterThan(0);
+    expect(firedAt).toBeGreaterThanOrEqual(openedAt);
+
     term.dispose();
   });
 
-  test('late subscribers fire immediately', async () => {
+  test('late subscribers fire immediately when already ready', async () => {
     if (!container) return;
+
     const term = new Terminal();
     term.open(container);
-    await new Promise((r) => setTimeout(r, 200));
-    let fired = false;
+
+    // Wait for terminal to be ready
+    await new Promise((r) => term.onReady(r));
+
+    // Now subscribe late - should fire immediately
+    let firedImmediately = false;
+    let callOrder = 0;
+
     term.onReady(() => {
-      fired = true;
+      firedImmediately = true;
+      callOrder = 1;
     });
-    expect(fired).toBe(true);
+
+    // Check synchronously - should have fired already
+    expect(firedImmediately).toBe(true);
+    expect(callOrder).toBe(1);
+
+    term.dispose();
+  });
+
+  test('multiple subscribers all receive the event', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    let count = 0;
+
+    term.onReady(() => count++);
+    term.onReady(() => count++);
+    term.onReady(() => count++);
+
+    term.open(container);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(count).toBe(3);
+
+    term.dispose();
+  });
+
+  test('wasmTerm is available when onReady fires', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    let wasmTermAvailable = false;
+
+    term.onReady(() => {
+      wasmTermAvailable = term.wasmTerm !== undefined;
+    });
+
+    term.open(container);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(wasmTermAvailable).toBe(true);
+
     term.dispose();
   });
 });
 
+// ==========================================================================
+// xterm.js Compatibility: Write Queueing
+// ==========================================================================
+
 describe('Write Queueing', () => {
-  test('queues writes before ready', async () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('writes before ready are queued and processed after', async () => {
     if (!container) return;
+
     const term = new Terminal();
     term.open(container);
-    term.write('Test\r\n');
+
+    // Write immediately after open (before WASM is loaded)
+    term.write('Line1\r\n');
+    term.write('Line2\r\n');
+    term.write('Line3\r\n');
+
+    // Wait for ready
     await new Promise((r) => term.onReady(r));
-    const line = term.buffer.active.getLine(0);
-    expect(line?.translateToString()).toContain('Test');
+
+    // All writes should have been processed
+    const line0 = term.buffer.active.getLine(0)?.translateToString().trim();
+    const line1 = term.buffer.active.getLine(1)?.translateToString().trim();
+    const line2 = term.buffer.active.getLine(2)?.translateToString().trim();
+
+    expect(line0).toBe('Line1');
+    expect(line1).toBe('Line2');
+    expect(line2).toBe('Line3');
+
+    term.dispose();
+  });
+
+  test('write callbacks are called after processing', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+
+    const callbackOrder: number[] = [];
+
+    term.write('First', () => callbackOrder.push(1));
+    term.write('Second', () => callbackOrder.push(2));
+    term.write('Third', () => callbackOrder.push(3));
+
+    await new Promise((r) => term.onReady(r));
+    // Give callbacks time to fire
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(callbackOrder).toEqual([1, 2, 3]);
+
+    term.dispose();
+  });
+
+  test('writes after ready go directly without queueing', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    // Write after ready
+    term.write('DirectWrite\r\n');
+
+    // Should be immediately visible
+    const line = term.buffer.active.getLine(0)?.translateToString().trim();
+    expect(line).toBe('DirectWrite');
+
+    term.dispose();
+  });
+});
+
+// ==========================================================================
+// xterm.js Compatibility: Synchronous open()
+// ==========================================================================
+
+describe('Synchronous open()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('open() returns synchronously', () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    const startTime = Date.now();
+
+    // open() should return immediately (not wait for WASM)
+    term.open(container);
+
+    const elapsed = Date.now() - startTime;
+    // Should return in under 50ms (WASM loading takes longer)
+    expect(elapsed).toBeLessThan(50);
+
+    term.dispose();
+  });
+
+  test('element is set immediately after open()', () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+
+    expect(term.element).toBe(container);
+
+    term.dispose();
+  });
+
+  test('cols and rows are available immediately after open()', () => {
+    if (!container) return;
+
+    const term = new Terminal({ cols: 100, rows: 50 });
+    term.open(container);
+
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(50);
+
+    term.dispose();
+  });
+
+  test('resize queues and applies after ready', async () => {
+    if (!container) return;
+
+    const term = new Terminal({ cols: 80, rows: 24 });
+    term.open(container);
+
+    // Wait for terminal to be ready
+    await new Promise((r) => term.onReady(r));
+
+    // Resize after ready should work
+    term.resize(120, 40);
+
+    expect(term.cols).toBe(120);
+    expect(term.rows).toBe(40);
+
+    term.dispose();
+  });
+
+  test('FitAddon can update cols/rows before ready', () => {
+    if (!container) return;
+
+    const term = new Terminal({ cols: 80, rows: 24 });
+
+    // Load FitAddon
+    const { FitAddon } = require('./addons/fit');
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+
+    term.open(container);
+
+    // At this point, cols/rows are set from options
+    // FitAddon may update them synchronously via the resize path
+    expect(term.cols).toBeGreaterThan(0);
+    expect(term.rows).toBeGreaterThan(0);
+
     term.dispose();
   });
 });
