@@ -1506,3 +1506,78 @@ describe('Selection with Scrollback', () => {
     term.dispose();
   });
 });
+// ==========================================================================
+// Public Options Tests
+// ==========================================================================
+
+describe('Public Mutable Options', () => {
+  test('options are publicly accessible', () => {
+    const term = new Terminal({ cols: 100, rows: 30 });
+    expect(term.options).toBeDefined();
+    expect(term.options.cols).toBe(100);
+  });
+
+  test('options can be mutated', () => {
+    const term = new Terminal();
+    term.options.disableStdin = true;
+    expect(term.options.disableStdin).toBe(true);
+  });
+
+  test('windowsMode option works', () => {
+    const term = new Terminal({ windowsMode: true });
+    expect(term.options.windowsMode).toBe(true);
+  });
+
+  test('allowProposedApi option works', () => {
+    const term = new Terminal({ allowProposedApi: true });
+    expect(term.options.allowProposedApi).toBe(true);
+  });
+});
+
+describe('unicode API', () => {
+  test('activeVersion returns 15.1', () => {
+    const term = new Terminal();
+    expect(term.unicode.activeVersion).toBe('15.1');
+  });
+});
+
+describe('onReady Event', () => {
+  test('fires when ready', async () => {
+    if (!container) return;
+    const term = new Terminal();
+    let fired = false;
+    term.onReady(() => {
+      fired = true;
+    });
+    term.open(container);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(fired).toBe(true);
+    term.dispose();
+  });
+
+  test('late subscribers fire immediately', async () => {
+    if (!container) return;
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => setTimeout(r, 200));
+    let fired = false;
+    term.onReady(() => {
+      fired = true;
+    });
+    expect(fired).toBe(true);
+    term.dispose();
+  });
+});
+
+describe('Write Queueing', () => {
+  test('queues writes before ready', async () => {
+    if (!container) return;
+    const term = new Terminal();
+    term.open(container);
+    term.write('Test\r\n');
+    await new Promise((r) => term.onReady(r));
+    const line = term.buffer.active.getLine(0);
+    expect(line?.translateToString()).toContain('Test');
+    term.dispose();
+  });
+});

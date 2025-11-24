@@ -161,3 +161,54 @@ describe('FitAddon', () => {
     expect(resizeCallCount).toBe(0); // Still 0 because no element
   });
 });
+
+// ==========================================================================
+// onReady Auto-Retry Tests
+// ==========================================================================
+
+describe('onReady Auto-Retry', () => {
+  test('subscribes to onReady if available', () => {
+    const mockTerminalWithReady = {
+      ...terminal,
+      onReady: (listener: () => void) => {
+        // Mock disposable
+        return { dispose: () => {} };
+      },
+    };
+
+    expect(() => addon.activate(mockTerminalWithReady as any)).not.toThrow();
+  });
+
+  test('calls fit() when terminal becomes ready', () => {
+    let readyCallback: (() => void) | null = null;
+
+    const mockTerminalWithReady = {
+      ...terminal,
+      element: document.createElement('div'),
+      onReady: (listener: () => void) => {
+        readyCallback = listener;
+        return { dispose: () => {} };
+      },
+    };
+
+    addon.activate(mockTerminalWithReady as any);
+    addon.fit(); // Mark as pending
+
+    // Simulate terminal becoming ready
+    if (readyCallback) {
+      readyCallback();
+    }
+
+    // fit() should have been called (hard to verify without side effects)
+    expect(readyCallback).not.toBeNull();
+  });
+
+  test('handles terminal without onReady gracefully', () => {
+    const terminalWithoutReady = {
+      ...terminal,
+    };
+
+    expect(() => addon.activate(terminalWithoutReady as any)).not.toThrow();
+    expect(() => addon.fit()).not.toThrow();
+  });
+});

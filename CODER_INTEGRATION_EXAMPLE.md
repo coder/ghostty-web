@@ -37,7 +37,7 @@ export class WorkspaceTerminal {
 
     // Open terminal
     this.terminal.open(container);
-    
+
     // Fit to container
     this.fitAddon.fit();
 
@@ -64,11 +64,13 @@ export class WorkspaceTerminal {
     // Handle terminal resize (send to PTY)
     this.terminal.onResize(({ cols, rows }) => {
       if (this.socket?.readyState === WebSocket.OPEN) {
-        this.socket.send(JSON.stringify({
-          type: 'resize',
-          cols,
-          rows,
-        }));
+        this.socket.send(
+          JSON.stringify({
+            type: 'resize',
+            cols,
+            rows,
+          })
+        );
       }
     });
   }
@@ -128,8 +130,8 @@ export class WorkspaceTerminal {
         background: '#1e1e1e',
         foreground: '#d4d4d4',
       },
-      windowsMode: options.isWindows,      // ✅ Now supported!
-      allowProposedApi: false,              // ✅ Now supported!
+      windowsMode: options.isWindows, // ✅ Now supported!
+      allowProposedApi: false, // ✅ Now supported!
     });
 
     // Load addons - IDENTICAL
@@ -140,7 +142,7 @@ export class WorkspaceTerminal {
 
     // Open terminal - IDENTICAL (no await needed!)
     this.terminal.open(container);
-    
+
     // Fit to container - IDENTICAL
     this.fitAddon.fit();
 
@@ -167,11 +169,13 @@ export class WorkspaceTerminal {
     // Handle terminal resize - IDENTICAL
     this.terminal.onResize(({ cols, rows }) => {
       if (this.socket?.readyState === WebSocket.OPEN) {
-        this.socket.send(JSON.stringify({
-          type: 'resize',
-          cols,
-          rows,
-        }));
+        this.socket.send(
+          JSON.stringify({
+            type: 'resize',
+            cols,
+            rows,
+          })
+        );
       }
     });
   }
@@ -246,12 +250,12 @@ The **ONLY** change needed:
       this.terminal.loadAddon(this.fitAddon);
 -     this.terminal.loadAddon(new WebLinksAddon());
 +     // Built-in link detection (OSC8 + URL regex)
-      
+
 -     this.terminal.open(container);
 +     this.terminal.open(container);        // Already synchronous! No change needed
-      
+
       this.fitAddon.fit();
-      
+
       // ... rest is IDENTICAL ...
     }
 ```
