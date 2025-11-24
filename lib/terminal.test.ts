@@ -12,6 +12,15 @@ import { Terminal } from './terminal';
 // Mock DOM environment for basic tests
 // Note: Some tests will be skipped if DOM is not fully available
 
+/**
+ * Helper to open terminal and wait for WASM to be ready.
+ * Use this when tests need to access wasmTerm or WASM-dependent features.
+ */
+async function openAndWaitForReady(term: Terminal, container: HTMLElement): Promise<void> {
+  term.open(container);
+  await new Promise<void>((resolve) => term.onReady(resolve));
+}
+
 describe('Terminal', () => {
   let container: HTMLElement | null = null;
 
@@ -74,7 +83,7 @@ describe('Terminal', () => {
 
     test('cannot write after disposal', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
       term.dispose();
 
       expect(() => term.write('test')).toThrow('Terminal has been disposed');
@@ -82,18 +91,20 @@ describe('Terminal', () => {
 
     test('cannot open twice', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
-      await expect(term.open(container)).rejects.toThrow('already open');
+      // open() is synchronous and throws immediately
+      expect(() => term.open(container!)).toThrow('already open');
 
       term.dispose();
     });
 
-    test('cannot open after disposal', async () => {
+    test('cannot open after disposal', () => {
       const term = new Terminal();
       term.dispose();
 
-      await expect(term.open(container)).rejects.toThrow('has been disposed');
+      // open() is synchronous and throws immediately
+      expect(() => term.open(container!)).toThrow('has been disposed');
     });
   });
 
@@ -108,7 +119,7 @@ describe('Terminal', () => {
       const term = new Terminal();
       expect(term.element).toBeUndefined();
 
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
       expect(term.element).toBe(container);
 
       term.dispose();
@@ -142,7 +153,7 @@ describe('Terminal', () => {
 
     test('onResize fires when terminal is resized', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let resizeEvent: { cols: number; rows: number } | null = null;
       term.onResize((e) => {
@@ -160,7 +171,7 @@ describe('Terminal', () => {
 
     test('onBell fires on bell character', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let bellFired = false;
       term.onBell(() => {
@@ -181,7 +192,7 @@ describe('Terminal', () => {
   describe('Writing', () => {
     test('write() does not throw after open', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.write('Hello, World!')).not.toThrow();
 
@@ -190,7 +201,7 @@ describe('Terminal', () => {
 
     test('write() accepts string', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.write('test string')).not.toThrow();
 
@@ -199,7 +210,7 @@ describe('Terminal', () => {
 
     test('write() accepts Uint8Array', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const data = new TextEncoder().encode('test');
       expect(() => term.write(data)).not.toThrow();
@@ -209,7 +220,7 @@ describe('Terminal', () => {
 
     test('writeln() adds newline', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.writeln('test line')).not.toThrow();
 
@@ -220,7 +231,7 @@ describe('Terminal', () => {
   describe('Resizing', () => {
     test('resize() updates dimensions', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.resize(100, 30);
 
@@ -232,7 +243,7 @@ describe('Terminal', () => {
 
     test('resize() with same dimensions is no-op', async () => {
       const term = new Terminal({ cols: 80, rows: 24 });
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let resizeCount = 0;
       term.onResize(() => resizeCount++);
@@ -253,7 +264,7 @@ describe('Terminal', () => {
   describe('Control Methods', () => {
     test('clear() does not throw', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.clear()).not.toThrow();
 
@@ -262,7 +273,7 @@ describe('Terminal', () => {
 
     test('reset() does not throw', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.reset()).not.toThrow();
 
@@ -271,7 +282,7 @@ describe('Terminal', () => {
 
     test('focus() does not throw', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.focus()).not.toThrow();
 
@@ -287,7 +298,7 @@ describe('Terminal', () => {
   describe('Addons', () => {
     test('loadAddon() accepts addon', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const mockAddon = {
         activate: (terminal: any) => {
@@ -305,7 +316,7 @@ describe('Terminal', () => {
 
     test('loadAddon() calls activate', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let activateCalled = false;
       const mockAddon = {
@@ -324,7 +335,7 @@ describe('Terminal', () => {
 
     test('dispose() calls addon dispose', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let disposeCalled = false;
       const mockAddon = {
@@ -344,7 +355,7 @@ describe('Terminal', () => {
   describe('Integration', () => {
     test('can write ANSI sequences', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       // Should not throw on ANSI escape sequences
       expect(() => term.write('\x1b[1;31mRed bold text\x1b[0m')).not.toThrow();
@@ -356,7 +367,7 @@ describe('Terminal', () => {
 
     test('can handle cursor movement sequences', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.write('\x1b[5;10H')).not.toThrow(); // Move cursor
       expect(() => term.write('\x1b[2A')).not.toThrow(); // Move up 2
@@ -367,7 +378,7 @@ describe('Terminal', () => {
 
     test('multiple write calls work', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => {
         term.write('Line 1\r\n');
@@ -382,7 +393,7 @@ describe('Terminal', () => {
   describe('Disposal', () => {
     test('dispose() can be called multiple times', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.dispose();
       expect(() => term.dispose()).not.toThrow();
@@ -390,7 +401,7 @@ describe('Terminal', () => {
 
     test('dispose() cleans up canvas element', async () => {
       const term = new Terminal();
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const initialChildCount = container.children.length;
       expect(initialChildCount).toBeGreaterThan(0);
@@ -425,7 +436,7 @@ describe('paste()', () => {
       if (!container) return;
       const term = new Terminal({ cols: 80, rows: 24 });
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedData = '';
       term.onData((data) => {
@@ -442,7 +453,7 @@ describe('paste()', () => {
       const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedData = '';
       term.onData((data) => {
@@ -485,7 +496,7 @@ describe('blur()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(() => term.blur()).not.toThrow();
       term.dispose();
@@ -501,7 +512,7 @@ describe('blur()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const blurSpy = { called: false };
       if (term.element) {
@@ -541,7 +552,7 @@ describe('input()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.input('test data');
 
@@ -555,7 +566,7 @@ describe('input()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedData = '';
       term.onData((data) => {
@@ -572,7 +583,7 @@ describe('input()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedData = '';
       term.onData((data) => {
@@ -589,7 +600,7 @@ describe('input()', () => {
       const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedData = '';
       term.onData((data) => {
@@ -626,7 +637,7 @@ describe('select()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.select(0, 0, 10);
 
@@ -638,7 +649,7 @@ describe('select()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       // Select 100 chars starting at column 0 (wraps to next line)
       term.select(0, 0, 100);
@@ -654,7 +665,7 @@ describe('select()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let fired = false;
       term.onSelectionChange(() => {
@@ -671,7 +682,7 @@ describe('select()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       // Create a selection
       term.select(0, 0, 10);
@@ -714,7 +725,7 @@ describe('selectLines()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.selectLines(0, 2);
 
@@ -731,7 +742,7 @@ describe('selectLines()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.selectLines(5, 2); // End before start
 
@@ -746,7 +757,7 @@ describe('selectLines()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let fired = false;
       term.onSelectionChange(() => {
@@ -783,7 +794,7 @@ describe('getSelectionPosition()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const pos = term.getSelectionPosition();
 
@@ -795,7 +806,7 @@ describe('getSelectionPosition()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.select(5, 3, 10);
       const pos = term.getSelectionPosition();
@@ -810,7 +821,7 @@ describe('getSelectionPosition()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.select(0, 0, 10);
       term.clearSelection();
@@ -844,7 +855,7 @@ describe('onKey event', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(term.onKey).toBeTruthy();
       expect(typeof term.onKey).toBe('function');
@@ -855,7 +866,7 @@ describe('onKey event', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let keyEvent: any = null;
       term.onKey((e) => {
@@ -896,7 +907,7 @@ describe('onTitleChange event', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       expect(term.onTitleChange).toBeTruthy();
       expect(typeof term.onTitleChange).toBe('function');
@@ -907,7 +918,7 @@ describe('onTitleChange event', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedTitle = '';
       term.onTitleChange((title) => {
@@ -925,7 +936,7 @@ describe('onTitleChange event', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedTitle = '';
       term.onTitleChange((title) => {
@@ -943,7 +954,7 @@ describe('onTitleChange event', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let receivedTitle = '';
       term.onTitleChange((title) => {
@@ -981,7 +992,7 @@ describe('attachCustomKeyEventHandler()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const handler = (e: KeyboardEvent) => false;
       expect(() => term.attachCustomKeyEventHandler(handler)).not.toThrow();
@@ -992,7 +1003,7 @@ describe('attachCustomKeyEventHandler()', () => {
       const term = new Terminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       const handler = (e: KeyboardEvent) => false;
       expect(() => term.attachCustomKeyEventHandler(handler)).not.toThrow();
@@ -1023,7 +1034,7 @@ describe('Terminal Options', () => {
       const term = new Terminal({ cols: 80, rows: 24, convertEol: true });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       term.write('line1\nline2');
 
@@ -1038,7 +1049,7 @@ describe('Terminal Options', () => {
       const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let received = false;
       term.onData(() => {
@@ -1055,7 +1066,7 @@ describe('Terminal Options', () => {
       const term = new Terminal({ cols: 80, rows: 24, disableStdin: true });
       // Using shared container from beforeEach
       if (!container) return;
-      await term.open(container);
+      await openAndWaitForReady(term, container!);
 
       let received = false;
       term.onData(() => {
@@ -1092,14 +1103,14 @@ describe('Buffer Access API', () => {
   test('isAlternateScreen() starts false', async () => {
     if (!container) throw new Error('DOM environment not available - check happydom setup');
 
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
     expect(term.wasmTerm?.isAlternateScreen()).toBe(false);
   });
 
   test('isAlternateScreen() detects alternate screen mode', async () => {
     if (!container) throw new Error('DOM environment not available - check happydom setup');
 
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Enter alternate screen (DEC Private Mode 1049 - like vim does)
     term.write('\x1b[?1049h');
@@ -1113,7 +1124,7 @@ describe('Buffer Access API', () => {
   test('isRowWrapped() returns false for normal line breaks', async () => {
     if (!container) throw new Error('DOM environment not available - check happydom setup');
 
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
     term.write('Line 1\r\nLine 2\r\n');
 
     expect(term.wasmTerm?.isRowWrapped(0)).toBe(false);
@@ -1127,7 +1138,7 @@ describe('Buffer Access API', () => {
     // Create narrow terminal to force wrapping
     const narrowTerm = new Terminal({ cols: 20, rows: 10 });
     const narrowContainer = document.createElement('div');
-    await narrowTerm.open(narrowContainer);
+    await openAndWaitForReady(narrowTerm, narrowContainer);
 
     try {
       // Write text longer than terminal width (no newline)
@@ -1146,7 +1157,7 @@ describe('Buffer Access API', () => {
   test('isRowWrapped() handles edge cases', async () => {
     if (!container) throw new Error('DOM environment not available - check happydom setup');
 
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Row 0 can never be wrapped (nothing to wrap from)
     expect(term.wasmTerm?.isRowWrapped(0)).toBe(false);
@@ -1162,7 +1173,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     expect(term.hasBracketedPaste()).toBe(false);
     term.write('\x1b[?2004h');
@@ -1177,7 +1188,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     let receivedData = '';
     term.onData((data) => {
@@ -1198,7 +1209,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     expect(term.getMode(25)).toBe(true); // Cursor visible
     term.write('\x1b[?25l');
@@ -1211,7 +1222,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     expect(term.hasFocusEvents()).toBe(false);
     term.write('\x1b[?1004h');
@@ -1224,7 +1235,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     expect(term.hasMouseTracking()).toBe(false);
     term.write('\x1b[?1000h');
@@ -1237,7 +1248,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     expect(term.getMode(4, true)).toBe(false); // Insert mode
     term.write('\x1b[4h');
@@ -1250,7 +1261,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     term.write('\x1b[?2004h\x1b[?1004h\x1b[?1000h');
     expect(term.hasBracketedPaste()).toBe(true);
@@ -1274,7 +1285,7 @@ describe('Terminal Modes', () => {
     if (typeof document === 'undefined') return;
     const term = new Terminal({ cols: 80, rows: 24 });
     const container = document.createElement('div');
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     expect(term.getMode(1049)).toBe(false);
     term.write('\x1b[?1049h');
@@ -1305,7 +1316,7 @@ describe('Selection with Scrollback', () => {
     if (!container) return;
 
     const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Write 100 lines with unique identifiable content
     // Lines 0-99, where each line has "Line XXX: content"
@@ -1358,7 +1369,7 @@ describe('Selection with Scrollback', () => {
     if (!container) return;
 
     const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Write 100 lines
     for (let i = 0; i < 100; i++) {
@@ -1398,7 +1409,7 @@ describe('Selection with Scrollback', () => {
     if (!container) return;
 
     const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Write 100 lines
     for (let i = 0; i < 100; i++) {
@@ -1429,7 +1440,7 @@ describe('Selection with Scrollback', () => {
     if (!container) return;
 
     const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Write 100 simple numbered lines
     for (let i = 0; i < 100; i++) {
@@ -1471,7 +1482,7 @@ describe('Selection with Scrollback', () => {
     if (!container) return;
 
     const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container!);
 
     // Write 100 lines
     for (let i = 0; i < 100; i++) {

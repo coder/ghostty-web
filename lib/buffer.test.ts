@@ -5,6 +5,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Terminal } from './terminal';
 
+/**
+ * Helper to open terminal and wait for WASM to be ready.
+ */
+async function openAndWaitForReady(term: Terminal, container: HTMLElement): Promise<void> {
+  term.open(container);
+  await new Promise<void>((resolve) => term.onReady(resolve));
+}
+
 describe('Buffer API', () => {
   let term: Terminal | null = null;
   let container: HTMLElement | null = null;
@@ -15,7 +23,7 @@ describe('Buffer API', () => {
       container = document.createElement('div');
       document.body.appendChild(container);
       term = new Terminal({ cols: 80, rows: 24 });
-      await term.open(container);
+      await openAndWaitForReady(term, container);
     }
   });
 

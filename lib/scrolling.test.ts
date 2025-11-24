@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Terminal } from './terminal';
 
+/**
+ * Helper to open terminal and wait for WASM to be ready.
+ */
+async function openAndWaitForReady(term: Terminal, container: HTMLElement): Promise<void> {
+  term.open(container);
+  await new Promise<void>((resolve) => term.onReady(resolve));
+}
+
 describe('Terminal Scrolling', () => {
   let terminal: Terminal;
   let container: HTMLElement;
@@ -9,7 +17,7 @@ describe('Terminal Scrolling', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     terminal = new Terminal({ cols: 80, rows: 24 });
-    await terminal.open(container);
+    await openAndWaitForReady(terminal, container);
   });
 
   afterEach(() => {
@@ -337,7 +345,7 @@ describe('Scrolling Methods', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container);
   });
 
   afterEach(() => {
@@ -491,12 +499,12 @@ describe('Scroll Events', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container);
   });
 
   afterEach(() => {
-    term.dispose();
-    document.body.removeChild(container);
+    term!.dispose();
+    document.body.removeChild(container!);
     term = null;
     container = null;
   });
@@ -588,12 +596,12 @@ describe('Custom Wheel Event Handler', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await term.open(container);
+    await openAndWaitForReady(term, container);
   });
 
   afterEach(() => {
-    term.dispose();
-    document.body.removeChild(container);
+    term!.dispose();
+    document.body.removeChild(container!);
     term = null;
     container = null;
   });
