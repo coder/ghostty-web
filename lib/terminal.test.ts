@@ -1538,21 +1538,127 @@ describe('Public Mutable Options', () => {
     term.options.disableStdin = false;
     expect(term.options.disableStdin).toBe(false);
   });
+});
 
-  test('windowsMode option is stored correctly', () => {
-    const termDefault = new Terminal();
-    expect(termDefault.options.windowsMode).toBe(false);
+// ==========================================================================
+// xterm.js Compatibility: Options Proxy Triggering handleOptionChange
+// ==========================================================================
 
-    const termEnabled = new Terminal({ windowsMode: true });
-    expect(termEnabled.options.windowsMode).toBe(true);
+describe('Options Proxy handleOptionChange', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
   });
 
-  test('allowProposedApi option is stored correctly', () => {
-    const termDefault = new Terminal();
-    expect(termDefault.options.allowProposedApi).toBe(false);
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
 
-    const termEnabled = new Terminal({ allowProposedApi: true });
-    expect(termEnabled.options.allowProposedApi).toBe(true);
+  test('changing cursorStyle updates renderer', async () => {
+    if (!container) return;
+
+    const term = new Terminal({ cursorStyle: 'block' });
+    await openAndWaitForReady(term, container);
+
+    // Verify initial state
+    expect(term.options.cursorStyle).toBe('block');
+
+    // Change cursor style via options proxy
+    term.options.cursorStyle = 'underline';
+
+    // Verify option was updated
+    expect(term.options.cursorStyle).toBe('underline');
+
+    // Access renderer to verify it was updated
+    // @ts-ignore - accessing private for test
+    const renderer = term.renderer;
+    expect(renderer).toBeDefined();
+    // @ts-ignore - accessing private for test
+    expect(renderer.cursorStyle).toBe('underline');
+
+    term.dispose();
+  });
+
+  test('changing cursorBlink starts/stops blink timer', async () => {
+    if (!container) return;
+
+    const term = new Terminal({ cursorBlink: false });
+    await openAndWaitForReady(term, container);
+
+    // Verify initial state
+    expect(term.options.cursorBlink).toBe(false);
+
+    // Enable cursor blink
+    term.options.cursorBlink = true;
+    expect(term.options.cursorBlink).toBe(true);
+
+    // @ts-ignore - accessing private for test
+    const renderer = term.renderer;
+    // @ts-ignore - accessing private for test
+    expect(renderer.cursorBlink).toBe(true);
+    // @ts-ignore - accessing private for test
+    expect(renderer.cursorBlinkInterval).toBeDefined();
+
+    // Disable cursor blink
+    term.options.cursorBlink = false;
+    expect(term.options.cursorBlink).toBe(false);
+    // @ts-ignore - accessing private for test
+    expect(renderer.cursorBlink).toBe(false);
+
+    term.dispose();
+  });
+
+  test('changing cols/rows triggers resize', async () => {
+    if (!container) return;
+
+    const term = new Terminal({ cols: 80, rows: 24 });
+    await openAndWaitForReady(term, container);
+
+    let resizeEventFired = false;
+    let resizedCols = 0;
+    let resizedRows = 0;
+
+    term.onResize(({ cols, rows }) => {
+      resizeEventFired = true;
+      resizedCols = cols;
+      resizedRows = rows;
+    });
+
+    // Change dimensions via options proxy
+    term.options.cols = 100;
+
+    expect(resizeEventFired).toBe(true);
+    expect(resizedCols).toBe(100);
+    expect(term.cols).toBe(100);
+
+    // Reset and test rows
+    resizeEventFired = false;
+    term.options.rows = 40;
+
+    expect(resizeEventFired).toBe(true);
+    expect(resizedRows).toBe(40);
+    expect(term.rows).toBe(40);
+
+    term.dispose();
+  });
+
+  test('handleOptionChange not called before terminal is open', () => {
+    const term = new Terminal({ cursorStyle: 'block' });
+
+    // Changing options before open() should not throw
+    // (handleOptionChange checks isOpen internally)
+    expect(() => {
+      term.options.cursorStyle = 'underline';
+    }).not.toThrow();
+
+    expect(term.options.cursorStyle).toBe('underline');
   });
 });
 
@@ -1645,6 +1751,106 @@ describe('disableStdin', () => {
     term.options.disableStdin = false;
     term.paste('second');
     expect(receivedData.join('')).toContain('second');
+
+    term.dispose();
+  });
+
+  test('blocks real keyboard events when disableStdin is true', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    // Enable disableStdin
+    term.options.disableStdin = true;
+
+    // Simulate a real keyboard event on the container
+    const keyEvent = new KeyboardEvent('keydown', {
+      key: 'a',
+      code: 'KeyA',
+      keyCode: 65,
+      bubbles: true,
+      cancelable: true,
+    });
+    container.dispatchEvent(keyEvent);
+
+    // No data should be received
+    expect(receivedData).toHaveLength(0);
+
+    term.dispose();
+  });
+
+  test('allows real keyboard events when disableStdin is false', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    // disableStdin defaults to false
+    expect(term.options.disableStdin).toBe(false);
+
+    // Simulate a real keyboard event on the container
+    const keyEvent = new KeyboardEvent('keydown', {
+      key: 'a',
+      code: 'KeyA',
+      keyCode: 65,
+      bubbles: true,
+      cancelable: true,
+    });
+    container.dispatchEvent(keyEvent);
+
+    // Data should be received
+    expect(receivedData.length).toBeGreaterThan(0);
+
+    term.dispose();
+  });
+
+  test('keyboard events blocked after toggling disableStdin on', async () => {
+    if (!container) return;
+
+    const term = new Terminal();
+    term.open(container);
+    await new Promise((r) => term.onReady(r));
+
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    // First verify keyboard works
+    const keyEvent1 = new KeyboardEvent('keydown', {
+      key: 'a',
+      code: 'KeyA',
+      keyCode: 65,
+      bubbles: true,
+      cancelable: true,
+    });
+    container.dispatchEvent(keyEvent1);
+    expect(receivedData.length).toBeGreaterThan(0);
+
+    const countBefore = receivedData.length;
+
+    // Now disable stdin
+    term.options.disableStdin = true;
+
+    // Send another key
+    const keyEvent2 = new KeyboardEvent('keydown', {
+      key: 'b',
+      code: 'KeyB',
+      keyCode: 66,
+      bubbles: true,
+      cancelable: true,
+    });
+    container.dispatchEvent(keyEvent2);
+
+    // Count should not have increased
+    expect(receivedData.length).toBe(countBefore);
 
     term.dispose();
   });

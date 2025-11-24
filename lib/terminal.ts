@@ -163,8 +163,6 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
-      windowsMode: options.windowsMode ?? false, // Windows PTY compatibility
-      allowProposedApi: options.allowProposedApi ?? false, // Experimental APIs
       wasmPath: options.wasmPath, // Optional - Ghostty.load() handles defaults
     };
 
@@ -208,12 +206,6 @@ export class Terminal implements ITerminalCore {
       case 'disableStdin':
         // Input handler already checks this.options.disableStdin dynamically
         // No action needed
-        break;
-
-      case 'windowsMode':
-        if (this.inputHandler) {
-          this.inputHandler.setWindowsMode(newValue);
-        }
         break;
 
       case 'cursorBlink':
