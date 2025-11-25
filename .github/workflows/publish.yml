@@ -209,7 +209,7 @@ jobs:
           if [[ "${{ steps.detect.outputs.is_tag }}" == "true" ]]; then
             NPM_VERSION="${BASE_VERSION}"
             NPM_TAG="latest"
-            GHOSTTY_WEB_DEP="^${BASE_VERSION}"
+            GHOSTTY_WEB_DEP="latest"
           else
             GIT_COMMIT=$(git rev-parse --short HEAD)
             COMMITS_SINCE_TAG=$(git rev-list --count HEAD ^$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD) 2>/dev/null || echo "0")
