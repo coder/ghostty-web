@@ -2,7 +2,7 @@
  * Unit tests for InputHandler
  */
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { Ghostty } from './ghostty';
 import { InputHandler } from './input-handler';
 import { Key, KeyAction, Mods } from './types';
@@ -127,13 +127,10 @@ describe('InputHandler', () => {
   let dataReceived: string[];
   let bellCalled: boolean;
 
-  beforeAll(async () => {
-    // Load WASM once for all tests (expensive operation)
-    // wasmPath is now optional - auto-detected
+  beforeEach(async () => {
+    // Create a fresh Ghostty WASM instance for complete test isolation
     ghostty = await Ghostty.load();
-  });
 
-  beforeEach(() => {
     // Create mock container for each test
     container = createMockContainer();
 

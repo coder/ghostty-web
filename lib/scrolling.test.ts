@@ -1,20 +1,22 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { init } from './index';
-import { Terminal } from './terminal';
+/**
+ * Terminal Scrolling Tests
+ *
+ * Test Isolation Pattern:
+ * Uses createIsolatedTerminal() to ensure each test gets its own WASM instance.
+ */
 
-// Initialize ghostty-web before all tests
-beforeAll(async () => {
-  await init();
-});
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import type { Terminal } from './terminal';
+import { createIsolatedTerminal } from './test-helpers';
 
 describe('Terminal Scrolling', () => {
   let terminal: Terminal;
   let container: HTMLElement;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     container = document.createElement('div');
     document.body.appendChild(container);
-    terminal = new Terminal({ cols: 80, rows: 24 });
+    terminal = await createIsolatedTerminal({ cols: 80, rows: 24 });
     terminal.open(container);
   });
 
@@ -28,7 +30,7 @@ describe('Terminal Scrolling', () => {
   });
 
   describe('Normal Screen Mode', () => {
-    test('should scroll viewport on wheel event in normal mode', () => {
+    test('should scroll viewport on wheel event in normal mode', async () => {
       // Fill with enough lines to create scrollback
       for (let i = 0; i < 50; i++) {
         terminal.write(`Line ${i}\r\n`);
@@ -49,7 +51,7 @@ describe('Terminal Scrolling', () => {
       expect(terminal.viewportY).toBeGreaterThan(initialViewportY);
     });
 
-    test('should scroll down on positive deltaY', () => {
+    test('should scroll down on positive deltaY', async () => {
       // Fill with scrollback
       for (let i = 0; i < 50; i++) {
         terminal.write(`Line ${i}\r\n`);
@@ -71,7 +73,7 @@ describe('Terminal Scrolling', () => {
       expect(terminal.viewportY).toBeLessThan(scrolledUpViewportY);
     });
 
-    test('should not send data to application in normal mode', () => {
+    test('should not send data to application in normal mode', async () => {
       const dataSent: string[] = [];
       terminal.onData((data) => dataSent.push(data));
 
@@ -89,16 +91,16 @@ describe('Terminal Scrolling', () => {
   });
 
   describe('Alternate Screen Mode', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       // Enter alternate screen mode (vim, less, htop, etc.)
       terminal.write('\x1B[?1049h');
     });
 
-    test('should detect alternate screen mode', () => {
+    test('should detect alternate screen mode', async () => {
       expect(terminal.wasmTerm?.isAlternateScreen()).toBe(true);
     });
 
-    test('should send arrow up sequences on wheel up in alternate screen', () => {
+    test('should send arrow up sequences on wheel up in alternate screen', async () => {
       const dataSent: string[] = [];
       terminal.onData((data) => dataSent.push(data));
 
@@ -116,7 +118,7 @@ describe('Terminal Scrolling', () => {
       expect(dataSent.length).toBeCloseTo(3, 1); // ~3 arrows per click
     });
 
-    test('should send arrow down sequences on wheel down in alternate screen', () => {
+    test('should send arrow down sequences on wheel down in alternate screen', async () => {
       const dataSent: string[] = [];
       terminal.onData((data) => dataSent.push(data));
 
@@ -134,7 +136,7 @@ describe('Terminal Scrolling', () => {
       expect(dataSent.length).toBeCloseTo(3, 1); // ~3 arrows per click
     });
 
-    test('should not scroll viewport in alternate screen', () => {
+    test('should not scroll viewport in alternate screen', async () => {
       const initialViewportY = terminal.viewportY;
 
       // Simulate wheel event
@@ -149,7 +151,7 @@ describe('Terminal Scrolling', () => {
       expect(terminal.viewportY).toBe(initialViewportY);
     });
 
-    test('should cap arrow count at 5 per wheel event', () => {
+    test('should cap arrow count at 5 per wheel event', async () => {
       const dataSent: string[] = [];
       terminal.onData((data) => dataSent.push(data));
 
@@ -167,7 +169,7 @@ describe('Terminal Scrolling', () => {
   });
 
   describe('Mode Transitions', () => {
-    test('should switch behavior when entering alternate screen', () => {
+    test('should switch behavior when entering alternate screen', async () => {
       // Start in normal mode
       for (let i = 0; i < 30; i++) {
         terminal.write(`Line ${i}\r\n`);
@@ -204,7 +206,7 @@ describe('Terminal Scrolling', () => {
       expect(dataSent[0]).toBe('\x1B[A');
     });
 
-    test('should switch back to viewport scrolling when exiting alternate screen', () => {
+    test('should switch back to viewport scrolling when exiting alternate screen', async () => {
       // Enter alternate screen
       terminal.write('\x1B[?1049h');
       expect(terminal.wasmTerm?.isAlternateScreen()).toBe(true);
@@ -238,7 +240,7 @@ describe('Terminal Scrolling', () => {
   });
 
   describe('Custom Wheel Handler', () => {
-    test('should respect custom wheel handler in both modes', () => {
+    test('should respect custom wheel handler in both modes', async () => {
       let customHandlerCalled = false;
       terminal.attachCustomWheelEventHandler(() => {
         customHandlerCalled = true;
@@ -255,7 +257,7 @@ describe('Terminal Scrolling', () => {
       expect(customHandlerCalled).toBe(true);
     });
 
-    test('custom handler can delegate to default behavior', () => {
+    test('custom handler can delegate to default behavior', async () => {
       terminal.attachCustomWheelEventHandler(() => {
         return false; // Don't override, use default
       });
@@ -280,7 +282,7 @@ describe('Terminal Scrolling', () => {
   });
 
   describe('Edge Cases', () => {
-    test('should handle zero deltaY gracefully', () => {
+    test('should handle zero deltaY gracefully', async () => {
       const dataSent: string[] = [];
       terminal.onData((data) => dataSent.push(data));
 
@@ -295,7 +297,7 @@ describe('Terminal Scrolling', () => {
       expect(dataSent.length).toBe(0);
     });
 
-    test('should handle very small deltaY values', () => {
+    test('should handle very small deltaY values', async () => {
       const dataSent: string[] = [];
       terminal.onData((data) => dataSent.push(data));
 
@@ -313,8 +315,8 @@ describe('Terminal Scrolling', () => {
       expect(dataSent.length).toBe(0);
     });
 
-    test('should handle terminal not yet opened', () => {
-      const closedTerminal = new Terminal({ cols: 80, rows: 24 });
+    test('should handle terminal not yet opened', async () => {
+      const closedTerminal = await createIsolatedTerminal({ cols: 80, rows: 24 });
 
       // Should not crash when handleWheel is called without wasmTerm
       expect(() => {
@@ -339,10 +341,10 @@ describe('Scrolling Methods', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     container = document.createElement('div');
     document.body.appendChild(container);
-    term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+    term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
     term.open(container);
   });
 
@@ -353,7 +355,7 @@ describe('Scrolling Methods', () => {
     container = null;
   });
 
-  test('scrollLines() should scroll viewport up', () => {
+  test('scrollLines() should scroll viewport up', async () => {
     // Write some content to create scrollback
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -366,7 +368,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(5);
   });
 
-  test('scrollLines() should scroll viewport down', () => {
+  test('scrollLines() should scroll viewport down', async () => {
     // Write content and scroll up first
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -380,7 +382,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(5);
   });
 
-  test('scrollLines() should not scroll beyond bounds', () => {
+  test('scrollLines() should not scroll beyond bounds', async () => {
     // Write limited content
     for (let i = 0; i < 10; i++) {
       term.write(`Line ${i}\r\n`);
@@ -394,7 +396,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBeLessThanOrEqual(scrollbackLength);
   });
 
-  test('scrollLines() should not scroll below bottom', () => {
+  test('scrollLines() should not scroll below bottom', async () => {
     // Write content and scroll up
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -408,7 +410,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(0);
   });
 
-  test('scrollPages() should scroll by page', () => {
+  test('scrollPages() should scroll by page', async () => {
     // Write content
     for (let i = 0; i < 100; i++) {
       term.write(`Line ${i}\r\n`);
@@ -421,7 +423,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(2 * term.rows);
   });
 
-  test('scrollToTop() should scroll to top of buffer', () => {
+  test('scrollToTop() should scroll to top of buffer', async () => {
     // Write content
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -435,7 +437,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(scrollbackLength);
   });
 
-  test('scrollToBottom() should scroll to bottom', () => {
+  test('scrollToBottom() should scroll to bottom', async () => {
     // Write content and scroll up
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -449,7 +451,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(0);
   });
 
-  test('scrollToLine() should scroll to specific line', () => {
+  test('scrollToLine() should scroll to specific line', async () => {
     // Write content
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -461,7 +463,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBe(15);
   });
 
-  test('scrollToLine() should clamp to valid range', () => {
+  test('scrollToLine() should clamp to valid range', async () => {
     // Write limited content
     for (let i = 0; i < 10; i++) {
       term.write(`Line ${i}\r\n`);
@@ -475,7 +477,7 @@ describe('Scrolling Methods', () => {
     expect((term as any).viewportY).toBeLessThanOrEqual(scrollbackLength);
   });
 
-  test('scrollToLine() should handle negative values', () => {
+  test('scrollToLine() should handle negative values', async () => {
     // Write content
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);
@@ -493,10 +495,10 @@ describe('Scroll Events', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     container = document.createElement('div');
     document.body.appendChild(container);
-    term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+    term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
     term.open(container);
   });
 
@@ -507,7 +509,7 @@ describe('Scroll Events', () => {
     container = null;
   });
 
-  test('onScroll should fire when scrolling', () => {
+  test('onScroll should fire when scrolling', async () => {
     let scrollPosition = -1;
     let fireCount = 0;
 
@@ -528,7 +530,7 @@ describe('Scroll Events', () => {
     expect(scrollPosition).toBe(5);
   });
 
-  test('onScroll should not fire if position unchanged', () => {
+  test('onScroll should not fire if position unchanged', async () => {
     let fireCount = 0;
 
     term.onScroll(() => {
@@ -541,7 +543,7 @@ describe('Scroll Events', () => {
     expect(fireCount).toBe(0);
   });
 
-  test('onScroll should fire multiple times for multiple scrolls', () => {
+  test('onScroll should fire multiple times for multiple scrolls', async () => {
     const positions: number[] = [];
 
     term.onScroll((position) => {
@@ -590,10 +592,10 @@ describe('Custom Wheel Event Handler', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     container = document.createElement('div');
     document.body.appendChild(container);
-    term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+    term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
     term.open(container);
   });
 
@@ -604,14 +606,14 @@ describe('Custom Wheel Event Handler', () => {
     container = null;
   });
 
-  test('attachCustomWheelEventHandler() should set handler', () => {
+  test('attachCustomWheelEventHandler() should set handler', async () => {
     const handler = () => true;
     term.attachCustomWheelEventHandler(handler);
 
     expect((term as any).customWheelEventHandler).toBe(handler);
   });
 
-  test('attachCustomWheelEventHandler() should allow clearing handler', () => {
+  test('attachCustomWheelEventHandler() should allow clearing handler', async () => {
     const handler = () => true;
     term.attachCustomWheelEventHandler(handler);
     term.attachCustomWheelEventHandler(undefined);
@@ -619,7 +621,7 @@ describe('Custom Wheel Event Handler', () => {
     expect((term as any).customWheelEventHandler).toBeUndefined();
   });
 
-  test('custom wheel handler should block default scrolling when returning true', () => {
+  test('custom wheel handler should block default scrolling when returning true', async () => {
     let handlerCalled = false;
 
     term.attachCustomWheelEventHandler(() => {
@@ -641,7 +643,7 @@ describe('Custom Wheel Event Handler', () => {
     expect((term as any).viewportY).toBe(0);
   });
 
-  test('custom wheel handler should allow default scrolling when returning false', () => {
+  test('custom wheel handler should allow default scrolling when returning false', async () => {
     let handlerCalled = false;
 
     term.attachCustomWheelEventHandler(() => {
@@ -663,7 +665,7 @@ describe('Custom Wheel Event Handler', () => {
     // Note: Due to scrolling at bottom, it won't change. Let's scroll up first.
   });
 
-  test('wheel events should scroll terminal by default', () => {
+  test('wheel events should scroll terminal by default', async () => {
     // Write content
     for (let i = 0; i < 50; i++) {
       term.write(`Line ${i}\r\n`);

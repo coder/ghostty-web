@@ -7,16 +7,14 @@
  * - Selection clearing behavior
  * - Auto-scroll during drag selection
  * - Copy functionality with scrollback
+ *
+ * Test Isolation Pattern:
+ * Uses createIsolatedTerminal() to ensure each test gets its own WASM instance.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { init } from './index';
-import { Terminal } from './terminal';
-
-// Initialize ghostty-web before all tests
-beforeAll(async () => {
-  await init();
-});
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import type { Terminal } from './terminal';
+import { createIsolatedTerminal } from './test-helpers';
 
 /**
  * Helper to set selection using absolute coordinates
@@ -47,7 +45,7 @@ function viewportToAbsolute(term: Terminal, viewportRow: number): number {
 describe('SelectionManager', () => {
   let container: HTMLElement | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     if (typeof document !== 'undefined') {
       container = document.createElement('div');
       document.body.appendChild(container);
@@ -62,8 +60,8 @@ describe('SelectionManager', () => {
   });
 
   describe('Construction', () => {
-    test('creates without errors', () => {
-      const term = new Terminal({ cols: 80, rows: 24 });
+    test('creates without errors', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       expect(term).toBeDefined();
     });
   });
@@ -72,7 +70,7 @@ describe('SelectionManager', () => {
     test('has required public methods', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       const selMgr = (term as any).selectionManager;
@@ -93,7 +91,7 @@ describe('SelectionManager', () => {
     test('hasSelection returns false when no selection', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       const selMgr = (term as any).selectionManager;
@@ -105,7 +103,7 @@ describe('SelectionManager', () => {
     test('hasSelection returns true when selection exists', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Hello World\r\n');
@@ -122,7 +120,7 @@ describe('SelectionManager', () => {
     test('hasSelection returns false for single cell selection', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       // Same start and end = no real selection
@@ -137,7 +135,7 @@ describe('SelectionManager', () => {
     test('clearSelection clears selection and marks rows dirty', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
@@ -163,7 +161,7 @@ describe('SelectionManager', () => {
     test('getSelection returns empty string when no selection', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       const selMgr = (term as any).selectionManager;
@@ -175,7 +173,7 @@ describe('SelectionManager', () => {
     test('getSelection extracts text from screen buffer', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Hello World\r\n');
@@ -193,7 +191,7 @@ describe('SelectionManager', () => {
     test('getSelection extracts multi-line text', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
@@ -215,7 +213,7 @@ describe('SelectionManager', () => {
     test('getSelection extracts text from scrollback', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
       term.open(container);
 
       // Write enough lines to create scrollback
@@ -242,7 +240,7 @@ describe('SelectionManager', () => {
     test('getSelection extracts text spanning scrollback and screen', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
       term.open(container);
 
       // Write enough lines to fill scrollback and screen
@@ -270,7 +268,7 @@ describe('SelectionManager', () => {
     test('selection coordinates are preserved when scrolling', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
       term.open(container);
 
       // Write content
@@ -301,7 +299,7 @@ describe('SelectionManager', () => {
     test('selection coords convert correctly after scrolling', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
       term.open(container);
 
       // Write content
@@ -337,7 +335,7 @@ describe('SelectionManager', () => {
     test('selection outside viewport returns null coords but preserves text', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
       term.open(container);
 
       // Write content
@@ -370,7 +368,7 @@ describe('SelectionManager', () => {
     test('getDirtySelectionRows returns empty set initially', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       const selMgr = (term as any).selectionManager;
@@ -382,7 +380,7 @@ describe('SelectionManager', () => {
     test('clearSelection marks selection rows as dirty', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Test content\r\n');
@@ -402,7 +400,7 @@ describe('SelectionManager', () => {
     test('clearDirtySelectionRows clears the set', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Test\r\n');
@@ -427,7 +425,7 @@ describe('SelectionManager', () => {
     test('handles selection from right to left', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Hello World\r\n');
@@ -447,7 +445,7 @@ describe('SelectionManager', () => {
     test('handles selection from bottom to top', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
@@ -471,7 +469,7 @@ describe('SelectionManager', () => {
     test('selectAll selects entire viewport', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Hello\r\nWorld\r\n');
@@ -495,7 +493,7 @@ describe('SelectionManager', () => {
     test('select() creates selection at specified position', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Hello World\r\n');
@@ -514,7 +512,7 @@ describe('SelectionManager', () => {
     test('selectLines() selects entire lines', async () => {
       if (!container) return;
 
-      const term = new Terminal({ cols: 80, rows: 24 });
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
