@@ -1,23 +1,21 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { init } from './index';
 import { Terminal } from './terminal';
 
-/**
- * Helper to open terminal and wait for WASM to be ready.
- */
-async function openAndWaitForReady(term: Terminal, container: HTMLElement): Promise<void> {
-  term.open(container);
-  await new Promise<void>((resolve) => term.onReady(resolve));
-}
+// Initialize ghostty-web before all tests
+beforeAll(async () => {
+  await init();
+});
 
 describe('Terminal Scrolling', () => {
   let terminal: Terminal;
   let container: HTMLElement;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     terminal = new Terminal({ cols: 80, rows: 24 });
-    await openAndWaitForReady(terminal, container);
+    terminal.open(container);
   });
 
   afterEach(() => {
@@ -341,11 +339,11 @@ describe('Scrolling Methods', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await openAndWaitForReady(term, container);
+    term.open(container);
   });
 
   afterEach(() => {
@@ -495,11 +493,11 @@ describe('Scroll Events', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await openAndWaitForReady(term, container);
+    term.open(container);
   });
 
   afterEach(() => {
@@ -592,11 +590,11 @@ describe('Custom Wheel Event Handler', () => {
   let term: Terminal | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-    await openAndWaitForReady(term, container);
+    term.open(container);
   });
 
   afterEach(() => {

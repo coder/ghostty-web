@@ -2,6 +2,8 @@
  * xterm.js-compatible interfaces
  */
 
+import type { Ghostty } from './ghostty';
+
 export interface ITerminalOptions {
   cols?: number; // Default: 80
   rows?: number; // Default: 24
@@ -12,7 +14,6 @@ export interface ITerminalOptions {
   fontSize?: number; // Default: 15
   fontFamily?: string; // Default: 'monospace'
   allowTransparency?: boolean;
-  wasmPath?: string; // Optional: custom WASM path (auto-detected by default)
 
   // Phase 1 additions
   convertEol?: boolean; // Convert \n to \r\n (default: false)
@@ -20,6 +21,10 @@ export interface ITerminalOptions {
 
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
+
+  // Internal: Ghostty WASM instance (optional, for test isolation)
+  // If not provided, uses the module-level instance from init()
+  ghostty?: Ghostty;
 }
 
 export interface ITheme {

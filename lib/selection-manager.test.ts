@@ -9,16 +9,14 @@
  * - Copy functionality with scrollback
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { init } from './index';
 import { Terminal } from './terminal';
 
-/**
- * Helper to open terminal and wait for WASM to be ready.
- */
-async function openAndWaitForReady(term: Terminal, container: HTMLElement): Promise<void> {
-  term.open(container);
-  await new Promise<void>((resolve) => term.onReady(resolve));
-}
+// Initialize ghostty-web before all tests
+beforeAll(async () => {
+  await init();
+});
 
 /**
  * Helper to set selection using absolute coordinates
@@ -75,7 +73,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       const selMgr = (term as any).selectionManager;
       expect(typeof selMgr.getSelection).toBe('function');
@@ -96,7 +94,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       const selMgr = (term as any).selectionManager;
       expect(selMgr.hasSelection()).toBe(false);
@@ -108,7 +106,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Hello World\r\n');
 
@@ -125,7 +123,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       // Same start and end = no real selection
       setSelectionAbsolute(term, 5, 0, 5, 0);
@@ -140,7 +138,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
 
@@ -166,7 +164,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       const selMgr = (term as any).selectionManager;
       expect(selMgr.getSelection()).toBe('');
@@ -178,7 +176,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Hello World\r\n');
 
@@ -196,7 +194,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
 
@@ -218,7 +216,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       // Write enough lines to create scrollback
       for (let i = 0; i < 50; i++) {
@@ -245,7 +243,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       // Write enough lines to fill scrollback and screen
       for (let i = 0; i < 50; i++) {
@@ -273,7 +271,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       // Write content
       for (let i = 0; i < 50; i++) {
@@ -304,7 +302,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       // Write content
       for (let i = 0; i < 50; i++) {
@@ -340,7 +338,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       // Write content
       for (let i = 0; i < 100; i++) {
@@ -373,7 +371,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       const selMgr = (term as any).selectionManager;
       expect(selMgr.getDirtySelectionRows().size).toBe(0);
@@ -385,7 +383,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Test content\r\n');
 
@@ -405,7 +403,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Test\r\n');
 
@@ -430,7 +428,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Hello World\r\n');
 
@@ -450,7 +448,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
 
@@ -474,7 +472,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Hello\r\nWorld\r\n');
 
@@ -498,7 +496,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Hello World\r\n');
 
@@ -517,7 +515,7 @@ describe('SelectionManager', () => {
       if (!container) return;
 
       const term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term.open(container);
 
       term.write('Line 1\r\nLine 2\r\nLine 3\r\n');
 

@@ -1,29 +1,32 @@
 /**
  * Buffer API tests
+ *
+ * Test Isolation Pattern:
+ * Each test creates its own Ghostty WASM instance to ensure complete isolation.
+ * This allows tests to run in parallel without shared state, and ensures a
+ * clean slate for each test without worrying about previous test side effects.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { Ghostty } from './ghostty';
 import { Terminal } from './terminal';
-
-/**
- * Helper to open terminal and wait for WASM to be ready.
- */
-async function openAndWaitForReady(term: Terminal, container: HTMLElement): Promise<void> {
-  term.open(container);
-  await new Promise<void>((resolve) => term.onReady(resolve));
-}
 
 describe('Buffer API', () => {
   let term: Terminal | null = null;
   let container: HTMLElement | null = null;
+  let ghostty: Ghostty | null = null;
 
   beforeEach(async () => {
+    // Create a fresh Ghostty WASM instance for complete test isolation.
+    // This ensures no shared state between tests and allows parallel execution.
+    ghostty = await Ghostty.load();
+
     // Create a container element if document is available
     if (typeof document !== 'undefined') {
       container = document.createElement('div');
       document.body.appendChild(container);
-      term = new Terminal({ cols: 80, rows: 24 });
-      await openAndWaitForReady(term, container);
+      term = new Terminal({ cols: 80, rows: 24, ghostty });
+      term.open(container);
     }
   });
 

@@ -35,8 +35,10 @@
     <div id="terminal"></div>
 
     <script type="module">
-      import { Terminal } from '../lib/terminal.ts';
+      import { init, Terminal } from '../lib/index.ts';
       import { FitAddon } from '../lib/addons/fit.ts';
+
+      await init();
 
       const term = new Terminal({
         fontSize: 14,

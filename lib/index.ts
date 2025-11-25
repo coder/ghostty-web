@@ -4,6 +4,56 @@
  * Main entry point following xterm.js conventions
  */
 
+import { Ghostty } from './ghostty';
+
+// Module-level Ghostty instance (initialized by init())
+let ghosttyInstance: Ghostty | null = null;
+
+/**
+ * Initialize the ghostty-web library by loading the WASM module.
+ * Must be called before creating any Terminal instances.
+ *
+ * This creates a shared WASM instance that all Terminal instances will use.
+ * For test isolation, pass a Ghostty instance directly to Terminal constructor.
+ *
+ * @example
+ * ```typescript
+ * import { init, Terminal } from 'ghostty-web';
+ *
+ * await init();
+ * const term = new Terminal();
+ * term.open(document.getElementById('terminal'));
+ * ```
+ */
+export async function init(): Promise<void> {
+  if (ghosttyInstance) {
+    return; // Already initialized
+  }
+  ghosttyInstance = await Ghostty.load();
+}
+
+/**
+ * Get the initialized Ghostty instance.
+ * Throws if init() hasn't been called.
+ * @internal
+ */
+export function getGhostty(): Ghostty {
+  if (!ghosttyInstance) {
+    throw new Error(
+      'ghostty-web not initialized. Call init() before creating Terminal instances.\n' +
+        'Example:\n' +
+        '  import { init, Terminal } from "ghostty-web";\n' +
+        '  await init();\n' +
+        '  const term = new Terminal();\n\n' +
+        'For tests, pass a Ghostty instance directly:\n' +
+        '  import { Ghostty, Terminal } from "ghostty-web";\n' +
+        '  const ghostty = await Ghostty.load();\n' +
+        '  const term = new Terminal({ ghostty });'
+    );
+  }
+  return ghosttyInstance;
+}
+
 // Main Terminal class
 export { Terminal } from './terminal';
 

@@ -163,10 +163,10 @@ describe('FitAddon', () => {
 });
 
 // ==========================================================================
-// onReady Auto-Retry Tests
+// Dimension Calculation Tests
 // ==========================================================================
 
-describe('onReady Auto-Retry', () => {
+describe('Dimension Calculation', () => {
   let addon: FitAddon;
 
   beforeEach(() => {
@@ -175,97 +175,6 @@ describe('onReady Auto-Retry', () => {
 
   afterEach(() => {
     addon.dispose();
-  });
-
-  test('subscribes to onReady during activation', () => {
-    let subscribed = false;
-
-    const mockTerminal = {
-      cols: 80,
-      rows: 24,
-      onReady: (listener: () => void) => {
-        subscribed = true;
-        return { dispose: () => {} };
-      },
-    };
-
-    addon.activate(mockTerminal as any);
-    expect(subscribed).toBe(true);
-  });
-
-  test('calls fit() when onReady fires', () => {
-    let readyCallback: (() => void) | null = null;
-    let fitCallCount = 0;
-
-    // Create a mock element with computed dimensions
-    const mockElement = document.createElement('div');
-    Object.defineProperty(mockElement, 'clientWidth', { value: 800, configurable: true });
-    Object.defineProperty(mockElement, 'clientHeight', { value: 400, configurable: true });
-
-    const mockTerminal = {
-      cols: 80,
-      rows: 24,
-      element: mockElement,
-      renderer: {
-        getMetrics: () => ({ width: 9, height: 16, baseline: 12 }),
-      },
-      resize: (cols: number, rows: number) => {
-        fitCallCount++;
-        mockTerminal.cols = cols;
-        mockTerminal.rows = rows;
-      },
-      onReady: (listener: () => void) => {
-        readyCallback = listener;
-        return { dispose: () => {} };
-      },
-    };
-
-    addon.activate(mockTerminal as any);
-
-    // Before ready, fit() may not resize (depending on implementation)
-    const initialFitCount = fitCallCount;
-
-    // Simulate terminal becoming ready
-    if (readyCallback) {
-      readyCallback();
-    }
-
-    // fit() should have been called via onReady handler
-    expect(fitCallCount).toBeGreaterThan(initialFitCount);
-  });
-
-  test('disposes onReady subscription on dispose()', () => {
-    let disposed = false;
-
-    const mockTerminal = {
-      cols: 80,
-      rows: 24,
-      onReady: (listener: () => void) => {
-        return {
-          dispose: () => {
-            disposed = true;
-          },
-        };
-      },
-    };
-
-    addon.activate(mockTerminal as any);
-    expect(disposed).toBe(false);
-
-    addon.dispose();
-    expect(disposed).toBe(true);
-  });
-
-  test('handles terminal without onReady gracefully', () => {
-    const terminalWithoutReady = {
-      cols: 80,
-      rows: 24,
-      resize: () => {},
-    };
-
-    expect(() => addon.activate(terminalWithoutReady as any)).not.toThrow();
-    expect(() => addon.fit()).not.toThrow();
-    expect(() => addon.dispose()).not.toThrow();
   });
 
   test('fit() calculates correct dimensions from container', () => {

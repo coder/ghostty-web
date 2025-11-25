@@ -56,9 +56,11 @@ After install, using `ghostty-web` is as simple as
   <body>
     <div id="terminal"></div>
     <script type="module">
-      import { Terminal } from 'ghostty-web';
+      import { init, Terminal } from 'ghostty-web';
+
+      await init();
       const term = new Terminal();
-      await term.open(document.getElementById('terminal'));
+      term.open(document.getElementById('terminal'));
       term.write('Hello from \x1B[1;3;31mghostty-web\x1B[0m $ ');
     </script>
   </body>
@@ -108,7 +110,10 @@ machine, and screen buffer) to WebAssembly, providing:
 ### Basic Terminal
 
 ```typescript
-import { Terminal, FitAddon } from 'ghostty-web';
+import { init, Terminal, FitAddon } from 'ghostty-web';
+
+// Initialize WASM (call once at app startup)
+await init();
 
 const term = new Terminal({
   cursorBlink: true,
@@ -122,7 +127,7 @@ const term = new Terminal({
 const fitAddon = new FitAddon();
 term.loadAddon(fitAddon);
 
-await term.open(document.getElementById('terminal'));
+term.open(document.getElementById('terminal'));
 fitAddon.fit();
 
 // Handle user input

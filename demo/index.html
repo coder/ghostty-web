@@ -131,7 +131,7 @@
     </div>
 
     <script type="module">
-      import { Terminal } from '../lib/terminal.ts';
+      import { init, Terminal } from '../lib/index.ts';
       import { FitAddon } from '../lib/addons/fit.ts';
 
       let term;
@@ -139,6 +139,9 @@
       let fitAddon;
 
       async function initTerminal() {
+        // Initialize WASM
+        await init();
+
         term = new Terminal({
           cursorBlink: true,
           fontSize: 14,
@@ -153,7 +156,7 @@
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
 
-        await term.open(document.getElementById('terminal-container'));
+        term.open(document.getElementById('terminal-container'));
         fitAddon.fit();
         fitAddon.observeResize(); // Auto-fit when container resizes
 
@@ -162,7 +165,7 @@
           fitAddon.fit();
         });
 
-        // Handle terminal resize - MUST be registered before terminal becomes ready!
+        // Handle terminal resize
         term.onResize((size) => {
           if (ws && ws.readyState === WebSocket.OPEN) {
             // Send resize as control sequence (server expects this format)
@@ -183,13 +186,9 @@
           console.log('Scroll position:', ydisp);
         });
 
-        // Connect to PTY server AFTER terminal is ready
-        // This ensures term.cols/rows have been updated by FitAddon
-        // since the PTY server doesn't support dynamic resize
-        term.onReady(() => {
-          console.log('[Demo] Terminal ready, connecting with size:', term.cols, 'x', term.rows);
-          connectWebSocket();
-        });
+        // Connect to PTY server - terminal is ready immediately after open()
+        console.log('[Demo] Terminal ready, connecting with size:', term.cols, 'x', term.rows);
+        connectWebSocket();
       }
 
       function connectWebSocket() {

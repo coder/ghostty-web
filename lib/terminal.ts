@@ -5,8 +5,11 @@
  *
  * Usage:
  * ```typescript
- * const term = new Terminal({ cols: 80, rows: 24 });
- * term.open(document.getElementById('container')); // Synchronous - no await needed!
+ * import { init, Terminal } from 'ghostty-web';
+ *
+ * await init();
+ * const term = new Terminal();
+ * term.open(document.getElementById('container'));
  * term.write('Hello, World!\n');
  * term.onData(data => console.log('User typed:', data));
  * ```
@@ -14,7 +17,8 @@
 
 import { BufferNamespace } from './buffer';
 import { EventEmitter } from './event-emitter';
-import { Ghostty, type GhosttyCell, type GhosttyTerminal } from './ghostty';
+import type { Ghostty, GhosttyCell, GhosttyTerminal } from './ghostty';
+import { getGhostty } from './index';
 import { InputHandler } from './input-handler';
 import type {
   IBufferNamespace,
@@ -56,13 +60,7 @@ export class Terminal implements ITerminalCore {
   };
 
   // Options (public for xterm.js compatibility)
-  public readonly options!: Required<Omit<ITerminalOptions, 'wasmPath'>> & {
-    wasmPath?: string;
-  };
-
-  // WASM loading state (for synchronous open())
-  private wasmLoadPromise?: Promise<Ghostty>;
-  private pendingWrites: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
+  public readonly options!: Required<ITerminalOptions>;
 
   // Components (created on open())
   private ghostty?: Ghostty;
@@ -88,8 +86,6 @@ export class Terminal implements ITerminalCore {
   private scrollEmitter = new EventEmitter<number>();
   private renderEmitter = new EventEmitter<{ start: number; end: number }>();
   private cursorMoveEmitter = new EventEmitter<void>();
-  private readyEmitter = new EventEmitter<void>();
-
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
   public readonly onResize: IEvent<{ cols: number; rows: number }> = this.resizeEmitter.event;
@@ -101,20 +97,8 @@ export class Terminal implements ITerminalCore {
   public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
   public readonly onCursorMove: IEvent<void> = this.cursorMoveEmitter.event;
 
-  // onReady is special - fires immediately if terminal is already ready
-  // This is critical for FitAddon which may subscribe before or after terminal is ready
-  public readonly onReady: IEvent<void> = (listener: () => void) => {
-    if (this.isReady) {
-      // Terminal already ready, fire immediately for late subscribers
-      listener();
-    }
-    // Also subscribe for future events
-    return this.readyEmitter.event(listener);
-  };
-
   // Lifecycle state
   private isOpen = false;
-  private isReady = false;
   private isDisposed = false;
   private animationFrameId?: number;
 
@@ -149,7 +133,10 @@ export class Terminal implements ITerminalCore {
   private readonly SCROLLBAR_FADE_DURATION_MS = 200; // 200ms fade animation
 
   constructor(options: ITerminalOptions = {}) {
-    // Create base options object with all defaults
+    // Use provided Ghostty instance (for test isolation) or get module-level instance
+    this.ghostty = options.ghostty ?? getGhostty();
+
+    // Create base options object with all defaults (excluding ghostty)
     const baseOptions = {
       cols: options.cols ?? 80,
       rows: options.rows ?? 24,
@@ -163,7 +150,6 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
-      wasmPath: options.wasmPath, // Optional - Ghostty.load() handles defaults
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -186,9 +172,6 @@ export class Terminal implements ITerminalCore {
 
     // Initialize buffer API
     this.buffer = new BufferNamespace(this);
-
-    // Start WASM loading immediately (makes open() synchronous)
-    this.wasmLoadPromise = Ghostty.load(this.options.wasmPath);
   }
 
   // ==========================================================================
@@ -243,11 +226,9 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Open terminal in a parent element
-   * This initializes all components and starts rendering
    *
-   * Note: This method is synchronous for xterm.js compatibility.
-   * WASM loading happens in the constructor, and terminal setup happens
-   * asynchronously in the background. Use onReady event to know when ready.
+   * Initializes all components and starts rendering.
+   * Requires a pre-loaded Ghostty instance passed to the constructor.
    */
   open(parent: HTMLElement): void {
     if (this.isOpen) {
@@ -259,33 +240,15 @@ export class Terminal implements ITerminalCore {
 
     // Store parent element
     this.element = parent;
-
-    // Mark as open immediately (terminal will become ready when WASM loads)
     this.isOpen = true;
 
-    // Wait for WASM to load, then setup terminal
-    this.wasmLoadPromise!.then((ghostty) => {
-      this.ghostty = ghostty;
-      this.setupTerminal(parent);
-    }).catch((err) => {
-      console.error('Failed to load Ghostty WASM:', err);
-      this.isOpen = false;
-      throw new Error(`Failed to load Ghostty WASM: ${err}`);
-    });
-  }
-
-  /**
-   * Setup terminal once WASM is loaded
-   * This is called asynchronously after open() returns
-   */
-  private setupTerminal(parent: HTMLElement): void {
     try {
       // Make parent focusable if it isn't already
       if (!parent.hasAttribute('tabindex')) {
         parent.setAttribute('tabindex', '0');
       }
 
-      // Create WASM terminal with current dimensions (may have been updated by FitAddon before ready)
+      // Create WASM terminal with current dimensions
       this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows);
 
       // Create canvas element
@@ -409,18 +372,9 @@ export class Terminal implements ITerminalCore {
 
       // Focus input (auto-focus so user can start typing immediately)
       this.focus();
-
-      // Mark as ready and fire event (must be after all components initialized)
-      this.isReady = true;
-      this.readyEmitter.fire();
-
-      // Process any writes that came in before WASM was ready
-      while (this.pendingWrites.length > 0) {
-        const pending = this.pendingWrites.shift()!;
-        this.writeInternal(pending.data, pending.callback);
-      }
     } catch (error) {
       // Clean up on error
+      this.isOpen = false;
       this.cleanupComponents();
       throw new Error(`Failed to open terminal: ${error}`);
     }
@@ -435,18 +389,6 @@ export class Terminal implements ITerminalCore {
     // Handle convertEol option
     if (this.options.convertEol && typeof data === 'string') {
       data = data.replace(/\n/g, '\r\n');
-    }
-
-    // Queue writes if WASM not ready yet
-    if (!this.wasmTerm) {
-      this.pendingWrites.push({ data, callback });
-      return;
-    }
-
-    // Process any pending writes first (FIFO order)
-    while (this.pendingWrites.length > 0) {
-      const pending = this.pendingWrites.shift()!;
-      this.writeInternal(pending.data, pending.callback);
     }
 
     this.writeInternal(data, callback);
