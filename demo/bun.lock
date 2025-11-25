@@ -6,7 +6,7 @@
       "name": "@ghostty-web/demo",
       "dependencies": {
         "@lydell/node-pty": "^1.0.1",
-        "ghostty-web": "^0.2.1",
+        "ghostty-web": "latest",
       },
     },
   },

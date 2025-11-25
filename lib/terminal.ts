@@ -67,7 +67,7 @@ export class Terminal implements ITerminalCore {
   // Components (created on open())
   private ghostty?: Ghostty;
   public wasmTerm?: GhosttyTerminal; // Made public for link providers
-  private renderer?: CanvasRenderer;
+  public renderer?: CanvasRenderer; // Made public for FitAddon
   private inputHandler?: InputHandler;
   private selectionManager?: SelectionManager;
   private canvas?: HTMLCanvasElement;

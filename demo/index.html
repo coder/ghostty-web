@@ -138,7 +138,7 @@
       let ws;
       let fitAddon;
 
-      function initTerminal() {
+      async function initTerminal() {
         term = new Terminal({
           cursorBlink: true,
           fontSize: 14,
@@ -153,10 +153,11 @@
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
 
-        term.open(document.getElementById('terminal-container'));
+        await term.open(document.getElementById('terminal-container'));
         fitAddon.fit();
+        fitAddon.observeResize(); // Auto-fit when container resizes
 
-        // Handle window resize
+        // Handle window resize (for browsers that don't trigger ResizeObserver on window resize)
         window.addEventListener('resize', () => {
           fitAddon.fit();
         });
