@@ -4,8 +4,8 @@
 
 `ghostty-web` is a web terminal developed for [mux](https://github.com/coder/mux) using
 [mux](https://github.com/coder/mux) that leverages [Ghostty's](https://github.com/ghostty-org/ghostty)
-terminal emulation core via WebAssembly. By leveraging Ghostty's production-tested VT100 parser
-and state machine, `ghostty-web` delivers fast, robust terminal emulation in the browser. The intent is
+terminal emulation core via WebAssembly. Because it leans on Ghostty to handle the complexity of terminal
+emulation, `ghostty-web` can deliver fast, robust terminal emulation in the browser. The intent is
 for this project to become a drop-in replacement for xterm.js. If it's not obvious, this repo is currently
 under heavy development.
 
