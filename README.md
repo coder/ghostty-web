@@ -2,25 +2,27 @@
 
 ![ghostty](https://github.com/user-attachments/assets/aceee7eb-d57b-4d89-ac3d-ee1885d0187a)
 
-`ghostty-web` is a fully-featured web terminal built on [Ghostty's](https://github.com/ghostty-org/ghostty)
-terminal emulation core compiled to WebAssembly. By leveraging Ghostty's production-tested VT100 parser
-and state machine, `ghostty-web` delivers fast, robust terminal emulation in the browser. For many use
-cases it is a drop-in replacement for xterm.js.
+`ghostty-web` is a web terminal developed for [mux](https://github.com/coder/mux) using
+[mux](https://github.com/coder/mux) that leverages [Ghostty's](https://github.com/ghostty-org/ghostty)
+terminal emulation core via WebAssembly. By leveraging Ghostty's production-tested VT100 parser
+and state machine, `ghostty-web` delivers fast, robust terminal emulation in the browser. The intent is
+for this project to become a drop-in replacement for xterm.js. If it's not obvious, this repo is currently
+under heavy development.
 
 ## Live Demo
 
-Try ghostty-web instantly with:
+Try ghostty-web yourself with:
 
 ```bash
 npx @ghostty-web/demo
 ```
 
-This starts a local demo server with a real shell session. Works on Linux, macOS, and Windows.
+This starts a local demo server with a real shell session. Works on Linux the best but you can also try
+it on macOS. Windows is not supported (yet).
 
 <details>
 <summary>Development setup (building from source)</summary>
 
-> [!NOTE]
 > Requires Zig and Bun, see [Development](#development)
 
 ```bash
@@ -28,14 +30,7 @@ git clone https://github.com/coder/ghostty-web
 cd ghostty-web
 bun install
 bun run build # Builds the WASM module and library
-
-# Terminal 1: Start PTY Server
-cd demo
-bun install
-bun run dev
-
-# Terminal 2: Start web server
-bun run dev # http://localhost:8000/demo/
+bun run demo:dev # http://localhost:8000/demo/
 ```
 
 </details>
@@ -99,12 +94,6 @@ machine, and screen buffer) to WebAssembly, providing:
 - Zero runtime dependencies (just ghostty-web + bundled WASM)
 - Parser/state machine from Ghostty
 
-## Why ghostty-web?
-
-- **Don't reimplement VT100 parsing** – it's thousands of edge cases refined over years. Instead, leverage Ghostty's battle-tested terminal emulator that's proven by thousands of daily users.
-- **Drop-in xterm.js replacement** – for many use cases, ghostty-web can replace xterm.js with minimal code changes
-- **Modern & maintained** – Built on Ghostty, an actively developed modern terminal emulator, ensuring continued improvements and bug fixes.
-
 ## Usage Examples
 
 ### Basic Terminal
@@ -146,8 +135,8 @@ term.onData((data) => {
 
 ### Building WASM
 
-`ghostty-web` builds a custom WASM binary from Ghostty's source with patches to expose additional
-browser-specific functionality
+`ghostty-web` builds a custom WASM binary from Ghostty's source with a patch to expose additional
+functionality
 
 ```bash
 bun run build
