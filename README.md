@@ -2,12 +2,11 @@
 
 ![ghostty](https://github.com/user-attachments/assets/aceee7eb-d57b-4d89-ac3d-ee1885d0187a)
 
-`ghostty-web` is a web terminal developed for [mux](https://github.com/coder/mux) using
-[mux](https://github.com/coder/mux) that leverages [Ghostty's](https://github.com/ghostty-org/ghostty)
+`ghostty-web` is a web terminal developed for [mux](https://github.com/coder/mux) that leverages
+[Ghostty's](https://github.com/ghostty-org/ghostty)
 terminal emulation core via WebAssembly. Because it leans on Ghostty to handle the complexity of terminal
 emulation, `ghostty-web` can deliver fast, robust terminal emulation in the browser. The intent is
-for this project to become a drop-in replacement for xterm.js. If it's not obvious, this repo is currently
-under heavy development.
+for this project to become a drop-in replacement for xterm.js. Under heavy development, no compatibility guarantees yet.
 
 ## Live Demo
 
@@ -18,7 +17,7 @@ npx @ghostty-web/demo@next
 ```
 
 This starts a local demo server with a real shell session. The demo server works best when run from Linux, but you can also try
-it on macOS. Windows is not supported (yet). Chrome is the only supported browser at the moment.
+it on macOS. Windows is not supported (yet).
 
 <details>
 <summary>Development setup (building from source)</summary>
