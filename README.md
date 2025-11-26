@@ -14,11 +14,11 @@ under heavy development.
 Try ghostty-web yourself with:
 
 ```bash
-npx @ghostty-web/demo
+npx @ghostty-web/demo@next
 ```
 
-This starts a local demo server with a real shell session. Works on Linux the best but you can also try
-it on macOS. Windows is not supported (yet).
+This starts a local demo server with a real shell session. The demo server works best when run from Linux, but you can also try
+it on macOS. Windows is not supported (yet). Chrome is the only supported browser at the moment.
 
 <details>
 <summary>Development setup (building from source)</summary>
