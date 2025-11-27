@@ -817,6 +817,10 @@ index 000000000..e79702488
 +    // Initialize the persistent VT stream (must be done after terminal is set)
 +    wrapper.stream = wrapper.terminal.vtStream();
 +
++    // Enable linefeed mode so \n performs carriage return (moves cursor to column 0)
++    // Without this, \n only moves down without returning to column 0, causing staggered text
++    wrapper.terminal.modes.set(.linefeed, true);
++
 +    return @ptrCast(wrapper);
 +}
 +
