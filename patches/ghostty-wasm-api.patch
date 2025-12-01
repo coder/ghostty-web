@@ -622,7 +622,7 @@ new file mode 100644
 index 000000000..e79702488
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,638 @@
+@@ -0,0 +1,642 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a C-compatible interface to Ghostty's Terminal for WASM export.
