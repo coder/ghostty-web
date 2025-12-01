@@ -622,7 +622,7 @@ new file mode 100644
 index 000000000..e79702488
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,638 @@
+@@ -0,0 +1,642 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a C-compatible interface to Ghostty's Terminal for WASM export.
@@ -816,6 +816,10 @@ index 000000000..e79702488
 +
 +    // Initialize the persistent VT stream (must be done after terminal is set)
 +    wrapper.stream = wrapper.terminal.vtStream();
++
++    // Enable linefeed mode so \n performs carriage return (moves cursor to column 0)
++    // Without this, \n only moves down without returning to column 0, causing staggered text
++    wrapper.terminal.modes.set(.linefeed, true);
 +
 +    return @ptrCast(wrapper);
 +}
