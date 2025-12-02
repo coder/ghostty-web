@@ -325,6 +325,17 @@ export class Terminal implements ITerminalCore {
         parent.setAttribute('tabindex', '0');
       }
 
+      // Mark as contenteditable so browser extensions (Vimium, etc.) recognize
+      // this as an input element and don't intercept keyboard events.
+      parent.setAttribute('contenteditable', 'true');
+      // Prevent actual content editing - we handle input ourselves
+      parent.addEventListener('beforeinput', (e) => e.preventDefault());
+
+      // Add accessibility attributes for screen readers and extensions
+      parent.setAttribute('role', 'textbox');
+      parent.setAttribute('aria-label', 'Terminal input');
+      parent.setAttribute('aria-multiline', 'true');
+
       // Create WASM terminal with current dimensions and theme config
       const wasmConfig = this.buildWasmConfig();
       this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, wasmConfig);
@@ -1113,6 +1124,12 @@ export class Terminal implements ITerminalCore {
       this.element.removeEventListener('mousemove', this.handleMouseMove);
       this.element.removeEventListener('mouseleave', this.handleMouseLeave);
       this.element.removeEventListener('click', this.handleClick);
+
+      // Remove contenteditable and accessibility attributes added in open()
+      this.element.removeAttribute('contenteditable');
+      this.element.removeAttribute('role');
+      this.element.removeAttribute('aria-label');
+      this.element.removeAttribute('aria-multiline');
     }
 
     // Remove document-level listeners (only if opened)
