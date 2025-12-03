@@ -345,28 +345,41 @@ export class Terminal implements ITerminalCore {
       this.canvas.style.display = 'block';
       parent.appendChild(this.canvas);
 
-      // Create hidden textarea for clipboard operations (xterm.js pattern)
-      // This textarea will be positioned under the mouse cursor during right-clicks
-      // to enable the browser's native context menu with Copy/Paste options
+      // Create hidden textarea for keyboard input (must be inside parent for event bubbling)
       this.textarea = document.createElement('textarea');
       this.textarea.setAttribute('autocorrect', 'off');
       this.textarea.setAttribute('autocapitalize', 'off');
       this.textarea.setAttribute('spellcheck', 'false');
-      this.textarea.setAttribute('tabindex', '-1'); // Don't interfere with tab navigation
+      this.textarea.setAttribute('tabindex', '0'); // Allow focus for mobile keyboard
       this.textarea.setAttribute('aria-label', 'Terminal input');
+      // Use clip-path to completely hide the textarea and its caret
       this.textarea.style.position = 'absolute';
       this.textarea.style.left = '0';
       this.textarea.style.top = '0';
-      this.textarea.style.width = '0';
-      this.textarea.style.height = '0';
-      this.textarea.style.zIndex = '-10';
-      this.textarea.style.opacity = '0';
-      this.textarea.style.overflow = 'hidden';
-      this.textarea.style.pointerEvents = 'none'; // Don't interfere with mouse events normally
-      this.textarea.style.resize = 'none';
+      this.textarea.style.width = '1px';
+      this.textarea.style.height = '1px';
+      this.textarea.style.padding = '0';
       this.textarea.style.border = 'none';
-      this.textarea.style.outline = 'none';
+      this.textarea.style.margin = '0';
+      this.textarea.style.opacity = '0';
+      this.textarea.style.clipPath = 'inset(50%)'; // Clip everything including caret
+      this.textarea.style.overflow = 'hidden';
+      this.textarea.style.whiteSpace = 'nowrap';
+      this.textarea.style.resize = 'none';
       parent.appendChild(this.textarea);
+
+      // Focus textarea on interaction - preventDefault before focus
+      const textarea = this.textarea;
+      // Desktop: mousedown
+      this.canvas.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        textarea.focus();
+      });
+      // Mobile: touchend with preventDefault to suppress iOS caret
+      this.canvas.addEventListener('touchend', (ev) => {
+        ev.preventDefault();
+        textarea.focus();
+      });
 
       // Create renderer
       this.renderer = new CanvasRenderer(this.canvas, {
