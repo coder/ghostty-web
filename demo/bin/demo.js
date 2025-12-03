@@ -286,6 +286,33 @@ const HTML_TEMPLATE = `<!doctype html>
       window.addEventListener('resize', () => {
         fitAddon.fit();
       });
+
+      // Handle mobile keyboard showing/hiding using visualViewport API
+      if (window.visualViewport) {
+        const terminalContent = document.querySelector('.terminal-content');
+        const terminalWindow = document.querySelector('.terminal-window');
+        const originalHeight = terminalContent.style.height;
+        const body = document.body;
+
+        window.visualViewport.addEventListener('resize', () => {
+          const keyboardHeight = window.innerHeight - window.visualViewport.height;
+          if (keyboardHeight > 100) {
+            body.style.padding = '0';
+            body.style.alignItems = 'flex-start';
+            terminalWindow.style.borderRadius = '0';
+            terminalWindow.style.maxWidth = '100%';
+            terminalContent.style.height = (window.visualViewport.height - 60) + 'px';
+            window.scrollTo(0, 0);
+          } else {
+            body.style.padding = '40px 20px';
+            body.style.alignItems = 'center';
+            terminalWindow.style.borderRadius = '12px';
+            terminalWindow.style.maxWidth = '1000px';
+            terminalContent.style.height = originalHeight || '600px';
+          }
+          fitAddon.fit();
+        });
+      }
     </script>
   </body>
 </html>`;
