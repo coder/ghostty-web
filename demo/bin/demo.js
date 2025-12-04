@@ -525,16 +525,16 @@ if (DEV_MODE) {
       strictPort: true,
     },
   });
-  
+
   await vite.listen();
-  
+
   // Attach WebSocket handler AFTER Vite has fully initialized
   // Use prependListener (not prependOnceListener) so it runs for every request
   // This ensures our handler runs BEFORE Vite's handlers
   if (vite.httpServer) {
     vite.httpServer.prependListener('upgrade', (req, socket, head) => {
       const pathname = req.url?.split('?')[0] || req.url || '';
-      
+
       // ONLY handle /ws - everything else passes through unchanged to Vite
       if (pathname === '/ws') {
         if (!socket.destroyed && !socket.readableEnded) {
@@ -546,13 +546,13 @@ if (DEV_MODE) {
         // Don't call other listeners
         return;
       }
-      
+
       // For non-/ws paths, explicitly do nothing and let the event propagate
       // The key is: don't return, don't touch the socket, just let it pass through
       // Vite's handlers (which were added before ours via prependListener) will process it
     });
   }
-  
+
   printBanner(`http://localhost:${HTTP_PORT}/demo/`);
 } else {
   // Production mode: static file server
