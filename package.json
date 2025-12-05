@@ -46,6 +46,7 @@
     "dev": "vite --port 8000",
     "demo": "node demo/bin/demo.js",
     "demo:dev": "node demo/bin/demo.js --dev",
+    "prebuild": "bun install",
     "build": "bun run clean && bun run build:wasm && bun run build:lib && bun run build:wasm-copy",
     "build:wasm": "./scripts/build-wasm.sh",
     "build:lib": "vite build",
