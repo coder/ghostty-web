@@ -140,7 +140,7 @@ export class CanvasRenderer {
 
   constructor(canvas: HTMLCanvasElement, options: RendererOptions = {}) {
     this.canvas = canvas;
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) {
       throw new Error('Failed to get 2D rendering context');
     }
