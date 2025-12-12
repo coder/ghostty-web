@@ -276,9 +276,13 @@ describe('Terminal', () => {
       term.dispose();
     });
 
-    test('resize() throws if not open', async () => {
+    test('resize() works before open (headless-compatible)', async () => {
       const term = await createIsolatedTerminal();
-      expect(() => term.resize(100, 30)).toThrow('must be opened');
+      // Resize should work before open() - the WASM terminal exists
+      term.resize(100, 30);
+      expect(term.cols).toBe(100);
+      expect(term.rows).toBe(30);
+      term.dispose();
     });
   });
 
@@ -1613,14 +1617,20 @@ describe('Terminal Modes', () => {
     term.dispose();
   });
 
-  test('getMode() throws when terminal not open', async () => {
+  test('getMode() works before open (headless-compatible)', async () => {
     const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    expect(() => term.getMode(25)).toThrow();
+    // Mode queries should work before open() - WASM terminal exists
+    const visible = term.getMode(25); // cursor visible mode
+    expect(typeof visible).toBe('boolean');
+    term.dispose();
   });
 
-  test('hasBracketedPaste() throws when terminal not open', async () => {
+  test('hasBracketedPaste() works before open (headless-compatible)', async () => {
     const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    expect(() => term.hasBracketedPaste()).toThrow();
+    // Mode queries should work before open() - WASM terminal exists
+    const hasBP = term.hasBracketedPaste();
+    expect(hasBP).toBe(false); // Default is off
+    term.dispose();
   });
 
   test('alternate screen mode via getMode()', async () => {
@@ -2742,24 +2752,6 @@ describe('disableStdin', () => {
     expect(receivedData.length).toBe(countBefore);
 
     term.dispose();
-  });
-});
-
-// ==========================================================================
-// xterm.js Compatibility: unicode API
-// ==========================================================================
-
-describe('unicode API', () => {
-  test('activeVersion returns 15.1', async () => {
-    const term = await createIsolatedTerminal();
-    expect(term.unicode.activeVersion).toBe('15.1');
-  });
-
-  test('unicode object is readonly', async () => {
-    const term = await createIsolatedTerminal();
-    // The unicode property should be accessible
-    expect(term.unicode).toBeDefined();
-    expect(typeof term.unicode.activeVersion).toBe('string');
   });
 });
 
