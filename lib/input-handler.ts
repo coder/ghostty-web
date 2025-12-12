@@ -506,10 +506,16 @@ export class InputHandler {
       return;
     }
 
-    // Send the text to the terminal
-    // Note: For bracketed paste mode, we would wrap this in \x1b[200~ ... \x1b[201~
-    // but for now, send raw text
-    this.onDataCallback(text);
+    // Check if bracketed paste mode is enabled (DEC mode 2004)
+    const hasBracketedPaste = this.getModeCallback?.(2004) ?? false;
+
+    if (hasBracketedPaste) {
+      // Wrap with bracketed paste sequences
+      this.onDataCallback('\x1b[200~' + text + '\x1b[201~');
+    } else {
+      // Send raw text
+      this.onDataCallback(text);
+    }
   }
 
   /**
