@@ -1749,13 +1749,18 @@ export class Terminal implements ITerminalCore {
    *
    * Without this, shells like nushell that rely on cursor position queries
    * will hang waiting for a response that never comes.
+   *
+   * Note: We loop to read all pending responses, not just one. This is important
+   * when multiple queries are processed in a single write() call (e.g., when
+   * buffered data is written all at once during terminal initialization).
    */
   private processTerminalResponses(): void {
     if (!this.wasmTerm) return;
 
-    // Read any pending responses from the WASM terminal
-    const response = this.wasmTerm.readResponse();
-    if (response) {
+    // Read all pending responses from the WASM terminal
+    // Multiple responses can be queued if a single write() contained multiple queries
+    let response: string | null;
+    while ((response = this.wasmTerm.readResponse()) !== null) {
       // Send response back to the PTY via onData
       // This is the same path as user keyboard input
       this.dataEmitter.fire(response);
