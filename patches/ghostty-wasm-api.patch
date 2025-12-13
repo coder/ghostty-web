@@ -396,7 +396,7 @@ new file mode 100644
 index 000000000..d57b4e405
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1004 @@
+@@ -0,0 +1,1025 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -419,6 +419,7 @@ index 000000000..d57b4e405
 +const Terminal = @import("../Terminal.zig");
 +const stream = @import("../stream.zig");
 +const Action = stream.Action;
++const ansi = @import("../ansi.zig");
 +const render = @import("../render.zig");
 +const RenderState = render.RenderState;
 +const color = @import("../color.zig");
@@ -456,6 +457,7 @@ index 000000000..d57b4e405
 +        switch (action) {
 +            // Device status reports - these need responses
 +            .device_status => try self.handleDeviceStatus(value.request),
++            .device_attributes => try self.handleDeviceAttributes(value),
 +
 +            // All the terminal state modifications (same as stream_readonly.zig)
 +            .print => try self.terminal.print(value.cp),
@@ -589,7 +591,6 @@ index 000000000..d57b4e405
 +            .request_mode_unknown,
 +            .size_report,
 +            .xtversion,
-+            .device_attributes,
 +            .kitty_keyboard_query,
 +            .window_title,
 +            .report_pwd,
@@ -628,6 +629,26 @@ index 000000000..d57b4e405
 +            },
 +            .color_scheme => {
 +                // Not supported in WASM context
++            },
++        }
++    }
++
++    fn handleDeviceAttributes(self: *ResponseHandler, req: ansi.DeviceAttributeReq) !void {
++        // Match main Ghostty behavior for device attribute responses
++        switch (req) {
++            .primary => {
++                // DA1 - Primary Device Attributes
++                // Report as VT220 with color support (simplified for WASM)
++                // 62 = Level 2 conformance, 22 = Color text
++                try self.response_buffer.appendSlice(self.alloc, "\x1B[?62;22c");
++            },
++            .secondary => {
++                // DA2 - Secondary Device Attributes
++                // Report firmware version 1.10.0 (matching main Ghostty)
++                try self.response_buffer.appendSlice(self.alloc, "\x1B[>1;10;0c");
++            },
++            else => {
++                // DA3 and other requests - not implemented in WASM context
 +            },
 +        }
 +    }
