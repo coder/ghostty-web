@@ -1759,8 +1759,9 @@ export class Terminal implements ITerminalCore {
 
     // Read all pending responses from the WASM terminal
     // Multiple responses can be queued if a single write() contained multiple queries
-    let response: string | null;
-    while ((response = this.wasmTerm.readResponse()) !== null) {
+    while (true) {
+      const response = this.wasmTerm.readResponse();
+      if (response === null) break;
       // Send response back to the PTY via onData
       // This is the same path as user keyboard input
       this.dataEmitter.fire(response);
