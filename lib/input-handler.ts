@@ -166,6 +166,7 @@ export class InputHandler {
   private onKeyCallback?: (keyEvent: IKeyEvent) => void;
   private customKeyEventHandler?: (event: KeyboardEvent) => boolean;
   private getModeCallback?: (mode: number) => boolean;
+  private onCopyCallback?: () => boolean;
   private keydownListener: ((e: KeyboardEvent) => void) | null = null;
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
   private pasteListener: ((e: ClipboardEvent) => void) | null = null;
@@ -184,6 +185,7 @@ export class InputHandler {
    * @param onKey - Optional callback for raw key events
    * @param customKeyEventHandler - Optional custom key event handler
    * @param getMode - Optional callback to query terminal mode state (for application cursor mode)
+   * @param onCopy - Optional callback to handle copy (Cmd+C/Ctrl+C with selection)
    */
   constructor(
     ghostty: Ghostty,
@@ -192,7 +194,8 @@ export class InputHandler {
     onBell: () => void,
     onKey?: (keyEvent: IKeyEvent) => void,
     customKeyEventHandler?: (event: KeyboardEvent) => boolean,
-    getMode?: (mode: number) => boolean
+    getMode?: (mode: number) => boolean,
+    onCopy?: () => boolean
   ) {
     this.encoder = ghostty.createKeyEncoder();
     this.container = container;
@@ -201,6 +204,7 @@ export class InputHandler {
     this.onKeyCallback = onKey;
     this.customKeyEventHandler = customKeyEventHandler;
     this.getModeCallback = getMode;
+    this.onCopyCallback = onCopy;
 
     // Attach event listeners
     this.attach();
@@ -327,11 +331,15 @@ export class InputHandler {
       return;
     }
 
-    // Allow Cmd+C for copy (on Mac, Cmd+C should copy, not send interrupt)
-    // SelectionManager handles the actual copying
+    // Handle Cmd+C for copy (on Mac, Cmd+C should copy, not send interrupt)
     // Note: Ctrl+C on all platforms sends interrupt signal (0x03)
     if (event.metaKey && event.code === 'KeyC') {
-      // Let browser/SelectionManager handle copy
+      // Try to copy selection via callback
+      // If there's a selection and copy succeeds, prevent default
+      // If no selection, let it fall through (browser may have other text selected)
+      if (this.onCopyCallback && this.onCopyCallback()) {
+        event.preventDefault();
+      }
       return;
     }
 
