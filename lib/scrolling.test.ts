@@ -315,19 +315,17 @@ describe('Terminal Scrolling', () => {
       expect(dataSent.length).toBe(0);
     });
 
-    test('should handle terminal not yet opened', async () => {
+    test('wasmTerm exists before open (headless-compatible)', async () => {
       const closedTerminal = await createIsolatedTerminal({ cols: 80, rows: 24 });
 
-      // Should not crash when handleWheel is called without wasmTerm
-      expect(() => {
-        const wheelEvent = new WheelEvent('wheel', {
-          deltaY: -100,
-          bubbles: true,
-          cancelable: true,
-        });
-        // Can't dispatch without container, but we can test the internal state
-        expect(closedTerminal.wasmTerm).toBeUndefined();
-      }).not.toThrow();
+      // With headless-compatible design, wasmTerm exists immediately
+      // This allows headless mode to work without open()
+      expect(closedTerminal.wasmTerm).toBeDefined();
+
+      // The terminal can process writes even before open()
+      closedTerminal.wasmTerm!.write('Test');
+      const line = closedTerminal.wasmTerm!.getLine(0);
+      expect(line).toBeDefined();
 
       closedTerminal.dispose();
     });

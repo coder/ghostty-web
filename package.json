@@ -3,14 +3,19 @@
   "version": "0.3.0",
   "description": "Web-based terminal emulator using Ghostty's VT100 parser via WebAssembly",
   "type": "module",
-  "main": "./dist/ghostty-web.umd.cjs",
-  "module": "./dist/ghostty-web.js",
+  "main": "./dist/ghostty-web.cjs.js",
+  "module": "./dist/ghostty-web.es.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/ghostty-web.js",
-      "require": "./dist/ghostty-web.umd.cjs"
+      "import": "./dist/ghostty-web.es.js",
+      "require": "./dist/ghostty-web.cjs.js"
+    },
+    "./headless": {
+      "types": "./dist/headless.d.ts",
+      "import": "./dist/headless.es.js",
+      "require": "./dist/headless.cjs.js"
     },
     "./ghostty-vt.wasm": "./ghostty-vt.wasm"
   },

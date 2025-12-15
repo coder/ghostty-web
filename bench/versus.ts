@@ -1,7 +1,7 @@
-import { Terminal as XTerm } from '@xterm/xterm';
+import { Terminal as XTermHeadless } from '@xterm/headless';
 import { bench, group, run } from 'mitata';
-import { Ghostty, Terminal as GhosttyTerminal } from '../lib';
-import '../happydom';
+import { Ghostty } from '../lib/ghostty';
+import { Terminal as GhosttyHeadless } from '../lib/headless';
 
 function generateColorText(lines: number): string {
   const colors = [31, 32, 33, 34, 35, 36];
@@ -49,67 +49,69 @@ function generateCursorMovement(ops: number): string {
   return output;
 }
 
-const withTerminals = async (fn: (term: GhosttyTerminal | XTerm) => Promise<void>) => {
-  const ghostty = await Ghostty.load();
-  bench('ghostty-web', async () => {
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const term = new GhosttyTerminal({ ghostty });
-    await term.open(container);
+// Load Ghostty WASM once for all benchmarks
+const ghostty = await Ghostty.load();
+
+const withTerminals = (fn: (term: GhosttyHeadless | XTermHeadless) => Promise<void>) => {
+  bench('ghostty-web/headless', async () => {
+    const term = new GhosttyHeadless({ ghostty });
     await fn(term);
-    await term.dispose();
+    term.dispose();
   });
-  bench('xterm.js', async () => {
-    const xterm = new XTerm();
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    await xterm.open(container);
-    await fn(xterm);
-    await xterm.dispose();
+  bench('@xterm/headless', async () => {
+    const term = new XTermHeadless({
+      allowProposedApi: true,
+    });
+    await fn(term);
+    term.dispose();
   });
 };
 
-const throughput = async (prefix: string, data: Record<string, Uint8Array | string>) => {
-  await Promise.all(
-    Object.entries(data).map(async ([name, data]) => {
-      await group(`${prefix}: ${name}`, async () => {
-        await withTerminals(async (term) => {
-          await new Promise<void>((resolve) => {
-            term.write(data, resolve);
-          });
+const throughput = (prefix: string, data: Record<string, Uint8Array | string>) => {
+  for (const [name, payload] of Object.entries(data)) {
+    group(`${prefix}: ${name}`, () => {
+      withTerminals(async (term) => {
+        await new Promise<void>((resolve) => {
+          term.write(payload, resolve);
         });
       });
-    })
-  );
+    });
+  }
 };
 
-await throughput('raw bytes', {
+throughput('raw bytes', {
   '1KB': generateRawBytes(1024),
   '10KB': generateRawBytes(10 * 1024),
   '100KB': generateRawBytes(100 * 1024),
   '1MB': generateRawBytes(1024 * 1024),
 });
 
-await throughput('color text', {
+throughput('color text', {
   '100 lines': generateColorText(100),
   '1000 lines': generateColorText(1000),
   '10000 lines': generateColorText(10000),
 });
 
-await throughput('complex VT', {
+throughput('complex VT', {
   '100 lines': generateComplexVT(100),
   '1000 lines': generateComplexVT(1000),
   '10000 lines': generateComplexVT(10000),
 });
 
-await throughput('cursor movement', {
+throughput('cursor movement', {
   '1000 operations': generateCursorMovement(1000),
   '10000 operations': generateCursorMovement(10000),
   '100000 operations': generateCursorMovement(100000),
 });
 
-await group('read full viewport', async () => {
-  await withTerminals(async (term) => {
+group('read full viewport', () => {
+  withTerminals(async (term) => {
+    // Write some content first
+    await new Promise<void>((resolve) => {
+      term.write(generateColorText(100), resolve);
+    });
+
+    // Then read it back
     const lines = term.rows;
     for (let i = 0; i < lines; i++) {
       const line = term.buffer.active.getLine(i);
