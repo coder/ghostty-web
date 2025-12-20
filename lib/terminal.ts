@@ -19,7 +19,7 @@ import { BufferNamespace } from './buffer';
 import { EventEmitter } from './event-emitter';
 import type { Ghostty, GhosttyCell, GhosttyTerminal, GhosttyTerminalConfig } from './ghostty';
 import { getGhostty } from './index';
-import { InputHandler } from './input-handler';
+import { InputHandler, type MouseTrackingConfig } from './input-handler';
 import type {
   IBufferNamespace,
   IBufferRange,
@@ -421,6 +421,23 @@ export class Terminal implements ITerminalCore {
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
 
+      // Create mouse tracking configuration
+      const canvas = this.canvas;
+      const renderer = this.renderer;
+      const wasmTerm = this.wasmTerm;
+      const mouseConfig: MouseTrackingConfig = {
+        hasMouseTracking: () => wasmTerm?.hasMouseTracking() ?? false,
+        hasSgrMouseMode: () => wasmTerm?.getMode(1006, false) ?? true, // SGR extended mode
+        getCellDimensions: () => ({
+          width: renderer.charWidth,
+          height: renderer.charHeight,
+        }),
+        getCanvasOffset: () => {
+          const rect = canvas.getBoundingClientRect();
+          return { left: rect.left, top: rect.top };
+        },
+      };
+
       // Create input handler
       this.inputHandler = new InputHandler(
         this.ghostty!,
@@ -445,7 +462,12 @@ export class Terminal implements ITerminalCore {
         (mode: number) => {
           // Query terminal mode state (e.g., mode 1 for application cursor mode)
           return this.wasmTerm?.getMode(mode, false) ?? false;
-        }
+        },
+        () => {
+          // Handle Cmd+C copy - returns true if there was a selection to copy
+          return this.copySelection();
+        },
+        mouseConfig
       );
 
       // Create selection manager (pass textarea for context menu positioning)
@@ -753,6 +775,14 @@ export class Terminal implements ITerminalCore {
    */
   public clearSelection(): void {
     this.selectionManager?.clearSelection();
+  }
+
+  /**
+   * Copy the current selection to clipboard
+   * @returns true if there was text to copy, false otherwise
+   */
+  public copySelection(): boolean {
+    return this.selectionManager?.copySelection() || false;
   }
 
   /**

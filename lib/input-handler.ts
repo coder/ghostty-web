@@ -158,6 +158,20 @@ const KEY_MAP: Record<string, Key> = {
  * Attaches keyboard event listeners to a container and converts
  * keyboard events to terminal input data
  */
+/**
+ * Mouse tracking configuration
+ */
+export interface MouseTrackingConfig {
+  /** Check if any mouse tracking mode is enabled */
+  hasMouseTracking: () => boolean;
+  /** Check if SGR extended mouse mode is enabled (mode 1006) */
+  hasSgrMouseMode: () => boolean;
+  /** Get cell dimensions for pixel to cell conversion */
+  getCellDimensions: () => { width: number; height: number };
+  /** Get canvas/container offset for accurate position calculation */
+  getCanvasOffset: () => { left: number; top: number };
+}
+
 export class InputHandler {
   private encoder: KeyEncoder;
   private container: HTMLElement;
@@ -166,14 +180,21 @@ export class InputHandler {
   private onKeyCallback?: (keyEvent: IKeyEvent) => void;
   private customKeyEventHandler?: (event: KeyboardEvent) => boolean;
   private getModeCallback?: (mode: number) => boolean;
+  private onCopyCallback?: () => boolean;
+  private mouseConfig?: MouseTrackingConfig;
   private keydownListener: ((e: KeyboardEvent) => void) | null = null;
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
   private pasteListener: ((e: ClipboardEvent) => void) | null = null;
   private compositionStartListener: ((e: CompositionEvent) => void) | null = null;
   private compositionUpdateListener: ((e: CompositionEvent) => void) | null = null;
   private compositionEndListener: ((e: CompositionEvent) => void) | null = null;
+  private mousedownListener: ((e: MouseEvent) => void) | null = null;
+  private mouseupListener: ((e: MouseEvent) => void) | null = null;
+  private mousemoveListener: ((e: MouseEvent) => void) | null = null;
+  private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
   private isDisposed = false;
+  private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
 
   /**
    * Create a new InputHandler
@@ -184,6 +205,8 @@ export class InputHandler {
    * @param onKey - Optional callback for raw key events
    * @param customKeyEventHandler - Optional custom key event handler
    * @param getMode - Optional callback to query terminal mode state (for application cursor mode)
+   * @param onCopy - Optional callback to handle copy (Cmd+C/Ctrl+C with selection)
+   * @param mouseConfig - Optional mouse tracking configuration
    */
   constructor(
     ghostty: Ghostty,
@@ -192,7 +215,9 @@ export class InputHandler {
     onBell: () => void,
     onKey?: (keyEvent: IKeyEvent) => void,
     customKeyEventHandler?: (event: KeyboardEvent) => boolean,
-    getMode?: (mode: number) => boolean
+    getMode?: (mode: number) => boolean,
+    onCopy?: () => boolean,
+    mouseConfig?: MouseTrackingConfig
   ) {
     this.encoder = ghostty.createKeyEncoder();
     this.container = container;
@@ -201,6 +226,8 @@ export class InputHandler {
     this.onKeyCallback = onKey;
     this.customKeyEventHandler = customKeyEventHandler;
     this.getModeCallback = getMode;
+    this.onCopyCallback = onCopy;
+    this.mouseConfig = mouseConfig;
 
     // Attach event listeners
     this.attach();
@@ -246,6 +273,19 @@ export class InputHandler {
 
     this.compositionEndListener = this.handleCompositionEnd.bind(this);
     this.container.addEventListener('compositionend', this.compositionEndListener);
+
+    // Mouse event listeners (for terminal mouse tracking)
+    this.mousedownListener = this.handleMouseDown.bind(this);
+    this.container.addEventListener('mousedown', this.mousedownListener);
+
+    this.mouseupListener = this.handleMouseUp.bind(this);
+    this.container.addEventListener('mouseup', this.mouseupListener);
+
+    this.mousemoveListener = this.handleMouseMove.bind(this);
+    this.container.addEventListener('mousemove', this.mousemoveListener);
+
+    this.wheelListener = this.handleWheel.bind(this);
+    this.container.addEventListener('wheel', this.wheelListener, { passive: false });
   }
 
   /**
@@ -327,11 +367,15 @@ export class InputHandler {
       return;
     }
 
-    // Allow Cmd+C for copy (on Mac, Cmd+C should copy, not send interrupt)
-    // SelectionManager handles the actual copying
+    // Handle Cmd+C for copy (on Mac, Cmd+C should copy, not send interrupt)
     // Note: Ctrl+C on all platforms sends interrupt signal (0x03)
     if (event.metaKey && event.code === 'KeyC') {
-      // Let browser/SelectionManager handle copy
+      // Try to copy selection via callback
+      // If there's a selection and copy succeeds, prevent default
+      // If no selection, let it fall through (browser may have other text selected)
+      if (this.onCopyCallback && this.onCopyCallback()) {
+        event.preventDefault();
+      }
       return;
     }
 
@@ -562,6 +606,199 @@ export class InputHandler {
     }
   }
 
+  // ==========================================================================
+  // Mouse Event Handling (for terminal mouse tracking)
+  // ==========================================================================
+
+  /**
+   * Convert pixel coordinates to terminal cell coordinates
+   */
+  private pixelToCell(event: MouseEvent): { col: number; row: number } | null {
+    if (!this.mouseConfig) return null;
+
+    const dims = this.mouseConfig.getCellDimensions();
+    const offset = this.mouseConfig.getCanvasOffset();
+
+    if (dims.width <= 0 || dims.height <= 0) return null;
+
+    const x = event.clientX - offset.left;
+    const y = event.clientY - offset.top;
+
+    // Convert to 1-based cell coordinates (terminal uses 1-based)
+    const col = Math.floor(x / dims.width) + 1;
+    const row = Math.floor(y / dims.height) + 1;
+
+    // Clamp to valid range (at least 1)
+    return {
+      col: Math.max(1, col),
+      row: Math.max(1, row),
+    };
+  }
+
+  /**
+   * Get modifier flags for mouse event
+   */
+  private getMouseModifiers(event: MouseEvent): number {
+    let mods = 0;
+    if (event.shiftKey) mods |= 4;
+    if (event.metaKey) mods |= 8; // Meta (Cmd on Mac)
+    if (event.ctrlKey) mods |= 16;
+    return mods;
+  }
+
+  /**
+   * Encode mouse event as SGR sequence
+   * SGR format: \x1b[<Btn;Col;RowM (press/motion) or \x1b[<Btn;Col;Rowm (release)
+   */
+  private encodeMouseSGR(
+    button: number,
+    col: number,
+    row: number,
+    isRelease: boolean,
+    modifiers: number
+  ): string {
+    const btn = button + modifiers;
+    const suffix = isRelease ? 'm' : 'M';
+    return `\x1b[<${btn};${col};${row}${suffix}`;
+  }
+
+  /**
+   * Encode mouse event as X10/normal sequence (legacy format)
+   * Format: \x1b[M<Btn+32><Col+32><Row+32>
+   */
+  private encodeMouseX10(
+    button: number,
+    col: number,
+    row: number,
+    modifiers: number
+  ): string {
+    // X10 format adds 32 to all values and encodes as characters
+    // Button encoding: 0=left, 1=middle, 2=right, 3=release
+    const btn = button + modifiers + 32;
+    const colChar = String.fromCharCode(Math.min(col + 32, 255));
+    const rowChar = String.fromCharCode(Math.min(row + 32, 255));
+    return `\x1b[M${String.fromCharCode(btn)}${colChar}${rowChar}`;
+  }
+
+  /**
+   * Send mouse event to terminal
+   */
+  private sendMouseEvent(
+    button: number,
+    col: number,
+    row: number,
+    isRelease: boolean,
+    event: MouseEvent
+  ): void {
+    const modifiers = this.getMouseModifiers(event);
+
+    // Check if SGR extended mode is enabled (mode 1006)
+    const useSGR = this.mouseConfig?.hasSgrMouseMode?.() ?? true;
+
+    let sequence: string;
+    if (useSGR) {
+      sequence = this.encodeMouseSGR(button, col, row, isRelease, modifiers);
+    } else {
+      // X10/normal mode doesn't support release events directly
+      // Button 3 means release in X10 mode
+      const x10Button = isRelease ? 3 : button;
+      sequence = this.encodeMouseX10(x10Button, col, row, modifiers);
+    }
+
+    this.onDataCallback(sequence);
+  }
+
+  /**
+   * Handle mousedown event
+   */
+  private handleMouseDown(event: MouseEvent): void {
+    if (this.isDisposed) return;
+    if (!this.mouseConfig?.hasMouseTracking()) return;
+
+    const cell = this.pixelToCell(event);
+    if (!cell) return;
+
+    // Map browser button to terminal button
+    // event.button: 0=left, 1=middle, 2=right
+    // Terminal: 0=left, 1=middle, 2=right
+    const button = event.button;
+
+    // Track pressed buttons for motion events
+    this.mouseButtonsPressed |= 1 << button;
+
+    this.sendMouseEvent(button, cell.col, cell.row, false, event);
+
+    // Don't prevent default - let SelectionManager handle selection
+    // Only prevent if we actually handled the event
+    // event.preventDefault();
+  }
+
+  /**
+   * Handle mouseup event
+   */
+  private handleMouseUp(event: MouseEvent): void {
+    if (this.isDisposed) return;
+    if (!this.mouseConfig?.hasMouseTracking()) return;
+
+    const cell = this.pixelToCell(event);
+    if (!cell) return;
+
+    const button = event.button;
+
+    // Clear pressed button
+    this.mouseButtonsPressed &= ~(1 << button);
+
+    this.sendMouseEvent(button, cell.col, cell.row, true, event);
+  }
+
+  /**
+   * Handle mousemove event
+   */
+  private handleMouseMove(event: MouseEvent): void {
+    if (this.isDisposed) return;
+    if (!this.mouseConfig?.hasMouseTracking()) return;
+
+    // Check if button motion mode or any-event tracking is enabled
+    // Mode 1002 = button motion, Mode 1003 = any motion
+    const hasButtonMotion = this.getModeCallback?.(1002) ?? false;
+    const hasAnyMotion = this.getModeCallback?.(1003) ?? false;
+
+    if (!hasButtonMotion && !hasAnyMotion) return;
+
+    // In button motion mode, only report if a button is pressed
+    if (hasButtonMotion && !hasAnyMotion && this.mouseButtonsPressed === 0) return;
+
+    const cell = this.pixelToCell(event);
+    if (!cell) return;
+
+    // Determine which button to report (or 32 for motion with no button)
+    let button = 32; // Motion flag
+    if (this.mouseButtonsPressed & 1) button += 0; // Left
+    else if (this.mouseButtonsPressed & 2) button += 1; // Middle
+    else if (this.mouseButtonsPressed & 4) button += 2; // Right
+
+    this.sendMouseEvent(button, cell.col, cell.row, false, event);
+  }
+
+  /**
+   * Handle wheel event (scroll)
+   */
+  private handleWheel(event: WheelEvent): void {
+    if (this.isDisposed) return;
+    if (!this.mouseConfig?.hasMouseTracking()) return;
+
+    const cell = this.pixelToCell(event);
+    if (!cell) return;
+
+    // Wheel events: button 64 = scroll up, button 65 = scroll down
+    const button = event.deltaY < 0 ? 64 : 65;
+
+    this.sendMouseEvent(button, cell.col, cell.row, false, event);
+
+    // Prevent default scrolling when mouse tracking is active
+    event.preventDefault();
+  }
+
   /**
    * Dispose the InputHandler and remove event listeners
    */
@@ -596,6 +833,26 @@ export class InputHandler {
     if (this.compositionEndListener) {
       this.container.removeEventListener('compositionend', this.compositionEndListener);
       this.compositionEndListener = null;
+    }
+
+    if (this.mousedownListener) {
+      this.container.removeEventListener('mousedown', this.mousedownListener);
+      this.mousedownListener = null;
+    }
+
+    if (this.mouseupListener) {
+      this.container.removeEventListener('mouseup', this.mouseupListener);
+      this.mouseupListener = null;
+    }
+
+    if (this.mousemoveListener) {
+      this.container.removeEventListener('mousemove', this.mousemoveListener);
+      this.mousemoveListener = null;
+    }
+
+    if (this.wheelListener) {
+      this.container.removeEventListener('wheel', this.wheelListener);
+      this.wheelListener = null;
     }
 
     this.isDisposed = true;
