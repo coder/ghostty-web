@@ -217,6 +217,21 @@ export class SelectionManager {
   }
 
   /**
+   * Copy the current selection to clipboard
+   * @returns true if there was text to copy, false otherwise
+   */
+  copySelection(): boolean {
+    if (!this.hasSelection()) return false;
+
+    const text = this.getSelection();
+    if (text) {
+      this.copyToClipboard(text);
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Clear the selection
    */
   clearSelection(): void {
@@ -841,26 +856,72 @@ export class SelectionManager {
 
   /**
    * Copy text to clipboard
+   *
+   * Strategy (modern APIs first):
+   * 1. Try ClipboardItem API (works in Safari and modern browsers)
+   *    - Safari requires the ClipboardItem to be created synchronously within user gesture
+   * 2. Try navigator.clipboard.writeText (modern async API, may fail in Safari)
+   * 3. Fall back to execCommand (legacy, for older browsers)
    */
-  private async copyToClipboard(text: string): Promise<void> {
-    // First try: modern async clipboard API
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+  private copyToClipboard(text: string): void {
+    // First try: ClipboardItem API (modern, Safari-compatible)
+    // Safari allows this because we create the ClipboardItem synchronously
+    // within the user gesture, even though the write is async
+    if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
       try {
-        await navigator.clipboard.writeText(text);
+        const blob = new Blob([text], { type: 'text/plain' });
+        const clipboardItem = new ClipboardItem({
+          'text/plain': blob,
+        });
+        navigator.clipboard.write([clipboardItem]).catch((err) => {
+          console.warn('ClipboardItem write failed, trying writeText:', err);
+          // Try writeText as fallback
+          this.copyWithWriteText(text);
+        });
         return;
       } catch (err) {
-        // Clipboard API failed (common in non-HTTPS or non-focused contexts)
-        // Fall through to legacy method
+        // ClipboardItem not supported or failed, fall through
       }
     }
 
-    // Second try: legacy execCommand method via textarea
+    // Second try: basic async writeText (works in Chrome, may fail in Safari)
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch((err) => {
+        console.warn('Clipboard writeText failed, trying execCommand:', err);
+        // Fall back to execCommand
+        this.copyWithExecCommand(text);
+      });
+      return;
+    }
+
+    // Third try: legacy execCommand fallback
+    this.copyWithExecCommand(text);
+  }
+
+  /**
+   * Copy using navigator.clipboard.writeText
+   */
+  private copyWithWriteText(text: string): void {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch((err) => {
+        console.warn('Clipboard writeText failed, trying execCommand:', err);
+        this.copyWithExecCommand(text);
+      });
+    } else {
+      this.copyWithExecCommand(text);
+    }
+  }
+
+  /**
+   * Copy using legacy execCommand (fallback for older browsers)
+   */
+  private copyWithExecCommand(text: string): void {
     const previouslyFocused = document.activeElement as HTMLElement;
     try {
       // Position textarea offscreen but in a way that allows selection
       const textarea = this.textarea;
       textarea.value = text;
-      textarea.style.position = 'fixed'; // Avoid scrolling to bottom
+      textarea.style.position = 'fixed';
       textarea.style.left = '-9999px';
       textarea.style.top = '0';
       textarea.style.width = '1px';
@@ -880,11 +941,11 @@ export class SelectionManager {
       }
 
       if (!success) {
-        console.error('❌ execCommand copy failed');
+        console.warn('execCommand copy failed');
       }
     } catch (err) {
-      console.error('❌ Fallback copy failed:', err);
-      // Still try to restore focus even on error
+      console.warn('execCommand copy threw:', err);
+      // Restore focus on error
       if (previouslyFocused) {
         previouslyFocused.focus();
       }

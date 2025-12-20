@@ -445,6 +445,10 @@ export class Terminal implements ITerminalCore {
         (mode: number) => {
           // Query terminal mode state (e.g., mode 1 for application cursor mode)
           return this.wasmTerm?.getMode(mode, false) ?? false;
+        },
+        () => {
+          // Handle Cmd+C copy - returns true if there was a selection to copy
+          return this.copySelection();
         }
       );
 
@@ -753,6 +757,14 @@ export class Terminal implements ITerminalCore {
    */
   public clearSelection(): void {
     this.selectionManager?.clearSelection();
+  }
+
+  /**
+   * Copy the current selection to clipboard
+   * @returns true if there was text to copy, false otherwise
+   */
+  public copySelection(): boolean {
+    return this.selectionManager?.copySelection() || false;
   }
 
   /**
