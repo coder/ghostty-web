@@ -29,6 +29,14 @@ interface MockClipboardEvent {
   preventDefault: () => void;
   stopPropagation: () => void;
 }
+interface MockInputEvent {
+  type: string;
+  inputType: string;
+  data: string | null;
+  isComposing?: boolean;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}
 
 interface MockHTMLElement {
   addEventListener: (event: string, handler: (e: any) => void) => void;
@@ -75,6 +83,18 @@ function createClipboardEvent(text: string | null): MockClipboardEvent {
             },
           }
         : null,
+    preventDefault: mock(() => {}),
+    stopPropagation: mock(() => {}),
+  };
+}
+
+// Helper to create mock beforeinput event
+function createBeforeInputEvent(inputType: string, data: string | null): MockInputEvent {
+  return {
+    type: 'beforeinput',
+    inputType,
+    data,
+    isComposing: false,
     preventDefault: mock(() => {}),
     stopPropagation: mock(() => {}),
   };
@@ -397,6 +417,48 @@ describe('InputHandler', () => {
       // Should have removed the text node but kept the element node
       expect(container.childNodes.length).toBe(1);
       expect(container.childNodes[0]).toBe(elementNode);
+      expect(dataReceived).toEqual(['你好']);
+    });
+
+    test('avoids duplicate commit when compositionend fires before beforeinput', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        undefined,
+        inputElement as any
+      );
+
+      container.dispatchEvent(createCompositionEvent('compositionend', '你好'));
+      inputElement.dispatchEvent(createBeforeInputEvent('insertText', '你好'));
+
+      expect(dataReceived).toEqual(['你好']);
+    });
+
+    test('avoids duplicate commit when beforeinput fires before compositionend', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        undefined,
+        inputElement as any
+      );
+
+      inputElement.dispatchEvent(createBeforeInputEvent('insertText', '你好'));
+      container.dispatchEvent(createCompositionEvent('compositionend', '你好'));
+
       expect(dataReceived).toEqual(['你好']);
     });
   });
@@ -939,6 +1001,54 @@ describe('InputHandler', () => {
       expect(dataReceived[0]).toBe(pasteText);
     });
 
+    test('handles beforeinput insertFromPaste with data', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        undefined,
+        inputElement as any
+      );
+
+      const pasteText = 'Hello, beforeinput!';
+      const beforeInputEvent = createBeforeInputEvent('insertFromPaste', pasteText);
+
+      inputElement.dispatchEvent(beforeInputEvent);
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe(pasteText);
+    });
+
+    test('uses bracketed paste for beforeinput insertFromPaste', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode) => mode === 2004,
+        inputElement as any
+      );
+
+      const pasteText = 'Bracketed paste';
+      const beforeInputEvent = createBeforeInputEvent('insertFromPaste', pasteText);
+
+      inputElement.dispatchEvent(beforeInputEvent);
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe(`\x1b[200~${pasteText}\x1b[201~`);
+    });
+
     test('handles multi-line paste', () => {
       const handler = new InputHandler(
         ghostty,
@@ -952,6 +1062,58 @@ describe('InputHandler', () => {
       const pasteText = 'Line 1\nLine 2\nLine 3';
       const pasteEvent = createClipboardEvent(pasteText);
 
+      container.dispatchEvent(pasteEvent);
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe(pasteText);
+    });
+
+    test('ignores beforeinput insertFromPaste when paste already handled', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        undefined,
+        inputElement as any
+      );
+
+      const pasteText = 'Hello, World!';
+      const pasteEvent = createClipboardEvent(pasteText);
+      const beforeInputEvent = createBeforeInputEvent('insertFromPaste', pasteText);
+
+      container.dispatchEvent(pasteEvent);
+      inputElement.dispatchEvent(beforeInputEvent);
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe(pasteText);
+    });
+
+    test('ignores paste when beforeinput insertFromPaste already handled', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        undefined,
+        inputElement as any
+      );
+
+      const pasteText = 'Hello, World!';
+      const beforeInputEvent = createBeforeInputEvent('insertFromPaste', pasteText);
+      const pasteEvent = createClipboardEvent(pasteText);
+
+      inputElement.dispatchEvent(beforeInputEvent);
       container.dispatchEvent(pasteEvent);
 
       expect(dataReceived.length).toBe(1);

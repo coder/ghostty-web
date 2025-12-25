@@ -161,6 +161,7 @@ const KEY_MAP: Record<string, Key> = {
 export class InputHandler {
   private encoder: KeyEncoder;
   private container: HTMLElement;
+  private inputElement?: HTMLElement;
   private onDataCallback: (data: string) => void;
   private onBellCallback: () => void;
   private onKeyCallback?: (keyEvent: IKeyEvent) => void;
@@ -169,11 +170,22 @@ export class InputHandler {
   private keydownListener: ((e: KeyboardEvent) => void) | null = null;
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
   private pasteListener: ((e: ClipboardEvent) => void) | null = null;
+  private beforeInputListener: ((e: InputEvent) => void) | null = null;
   private compositionStartListener: ((e: CompositionEvent) => void) | null = null;
   private compositionUpdateListener: ((e: CompositionEvent) => void) | null = null;
   private compositionEndListener: ((e: CompositionEvent) => void) | null = null;
   private isComposing = false;
   private isDisposed = false;
+  private lastKeyDownData: string | null = null;
+  private lastKeyDownTime = 0;
+  private lastPasteData: string | null = null;
+  private lastPasteTime = 0;
+  private lastPasteSource: 'paste' | 'beforeinput' | null = null;
+  private lastCompositionData: string | null = null;
+  private lastCompositionTime = 0;
+  private lastBeforeInputData: string | null = null;
+  private lastBeforeInputTime = 0;
+  private static readonly BEFORE_INPUT_IGNORE_MS = 100;
 
   /**
    * Create a new InputHandler
@@ -192,10 +204,12 @@ export class InputHandler {
     onBell: () => void,
     onKey?: (keyEvent: IKeyEvent) => void,
     customKeyEventHandler?: (event: KeyboardEvent) => boolean,
-    getMode?: (mode: number) => boolean
+    getMode?: (mode: number) => boolean,
+    inputElement?: HTMLElement
   ) {
     this.encoder = ghostty.createKeyEncoder();
     this.container = container;
+    this.inputElement = inputElement;
     this.onDataCallback = onData;
     this.onBellCallback = onBell;
     this.onKeyCallback = onKey;
@@ -237,6 +251,14 @@ export class InputHandler {
 
     this.pasteListener = this.handlePaste.bind(this);
     this.container.addEventListener('paste', this.pasteListener);
+    if (this.inputElement && this.inputElement !== this.container) {
+      this.inputElement.addEventListener('paste', this.pasteListener);
+    }
+
+    if (this.inputElement) {
+      this.beforeInputListener = this.handleBeforeInput.bind(this);
+      this.inputElement.addEventListener('beforeinput', this.beforeInputListener);
+    }
 
     this.compositionStartListener = this.handleCompositionStart.bind(this);
     this.container.addEventListener('compositionstart', this.compositionStartListener);
@@ -340,6 +362,7 @@ export class InputHandler {
     if (this.isPrintableCharacter(event)) {
       event.preventDefault();
       this.onDataCallback(event.key);
+      this.recordKeyDownData(event.key);
       return;
     }
 
@@ -432,6 +455,7 @@ export class InputHandler {
       if (simpleOutput !== null) {
         event.preventDefault();
         this.onDataCallback(simpleOutput);
+        this.recordKeyDownData(simpleOutput);
         return;
       }
     }
@@ -474,6 +498,7 @@ export class InputHandler {
       // Emit the data
       if (data.length > 0) {
         this.onDataCallback(data);
+        this.recordKeyDownData(data);
       }
     } catch (error) {
       // Encoding failed - log but don't crash
@@ -506,15 +531,83 @@ export class InputHandler {
       return;
     }
 
-    // Check if bracketed paste mode is enabled (DEC mode 2004)
-    const hasBracketedPaste = this.getModeCallback?.(2004) ?? false;
+    if (this.shouldIgnorePasteEvent(text, 'paste')) {
+      return;
+    }
 
-    if (hasBracketedPaste) {
-      // Wrap with bracketed paste sequences
-      this.onDataCallback('\x1b[200~' + text + '\x1b[201~');
-    } else {
-      // Send raw text
-      this.onDataCallback(text);
+    this.emitPasteData(text);
+    this.recordPasteData(text, 'paste');
+  }
+
+  /**
+   * Handle beforeinput event (mobile/IME input)
+   * @param event - InputEvent
+   */
+  private handleBeforeInput(event: InputEvent): void {
+    if (this.isDisposed) return;
+
+    if (this.isComposing || event.isComposing) {
+      return;
+    }
+
+    const inputType = event.inputType;
+    const data = event.data ?? '';
+    let output: string | null = null;
+
+    switch (inputType) {
+      case 'insertText':
+      case 'insertReplacementText':
+        output = data.length > 0 ? data.replace(/\n/g, '\r') : null;
+        break;
+      case 'insertLineBreak':
+      case 'insertParagraph':
+        output = '\r';
+        break;
+      case 'deleteContentBackward':
+        output = '\x7F';
+        break;
+      case 'deleteContentForward':
+        output = '\x1B[3~';
+        break;
+      case 'insertFromPaste':
+        if (!data) {
+          return;
+        }
+        if (this.shouldIgnorePasteEvent(data, 'beforeinput')) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        this.emitPasteData(data);
+        this.recordPasteData(data, 'beforeinput');
+        return;
+      default:
+        return;
+    }
+
+    if (!output) {
+      return;
+    }
+
+    if (this.shouldIgnoreBeforeInput(output)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (data && this.shouldIgnoreBeforeInputFromComposition(data)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.onDataCallback(output);
+    if (data) {
+      this.recordBeforeInputData(data);
     }
   }
 
@@ -545,9 +638,21 @@ export class InputHandler {
 
     const data = event.data;
     if (data && data.length > 0) {
+      if (this.shouldIgnoreCompositionEnd(data)) {
+        this.cleanupCompositionTextNodes();
+        return;
+      }
       this.onDataCallback(data);
+      this.recordCompositionData(data);
     }
 
+    this.cleanupCompositionTextNodes();
+  }
+
+  /**
+   * Cleanup text nodes in container after composition
+   */
+  private cleanupCompositionTextNodes(): void {
     // Cleanup text nodes in container (fix for duplicate text display)
     // When the container is contenteditable, the browser might insert text nodes
     // upon composition end. We need to remove them to prevent duplicate display.
@@ -560,6 +665,131 @@ export class InputHandler {
         }
       }
     }
+  }
+
+  /**
+   * Emit paste data with bracketed paste support
+   */
+  private emitPasteData(text: string): void {
+    const hasBracketedPaste = this.getModeCallback?.(2004) ?? false;
+
+    if (hasBracketedPaste) {
+      this.onDataCallback('\x1b[200~' + text + '\x1b[201~');
+    } else {
+      this.onDataCallback(text);
+    }
+  }
+
+  /**
+   * Record keydown data for beforeinput de-duplication
+   */
+  private recordKeyDownData(data: string): void {
+    this.lastKeyDownData = data;
+    this.lastKeyDownTime = this.getNow();
+  }
+
+  /**
+   * Record paste data for beforeinput de-duplication
+   */
+  private recordPasteData(data: string, source: 'paste' | 'beforeinput'): void {
+    this.lastPasteData = data;
+    this.lastPasteTime = this.getNow();
+    this.lastPasteSource = source;
+  }
+
+  /**
+   * Check if beforeinput should be ignored due to a recent keydown
+   */
+  private shouldIgnoreBeforeInput(data: string): boolean {
+    if (!this.lastKeyDownData) {
+      return false;
+    }
+    const now = this.getNow();
+    const isDuplicate =
+      now - this.lastKeyDownTime < InputHandler.BEFORE_INPUT_IGNORE_MS &&
+      this.lastKeyDownData === data;
+    this.lastKeyDownData = null;
+    return isDuplicate;
+  }
+
+  /**
+   * Check if beforeinput text should be ignored due to a recent composition end
+   */
+  private shouldIgnoreBeforeInputFromComposition(data: string): boolean {
+    if (!this.lastCompositionData) {
+      return false;
+    }
+    const now = this.getNow();
+    const isDuplicate =
+      now - this.lastCompositionTime < InputHandler.BEFORE_INPUT_IGNORE_MS &&
+      this.lastCompositionData === data;
+    if (isDuplicate) {
+      this.lastCompositionData = null;
+    }
+    return isDuplicate;
+  }
+
+  /**
+   * Check if composition end should be ignored due to a recent beforeinput text
+   */
+  private shouldIgnoreCompositionEnd(data: string): boolean {
+    if (!this.lastBeforeInputData) {
+      return false;
+    }
+    const now = this.getNow();
+    const isDuplicate =
+      now - this.lastBeforeInputTime < InputHandler.BEFORE_INPUT_IGNORE_MS &&
+      this.lastBeforeInputData === data;
+    if (isDuplicate) {
+      this.lastBeforeInputData = null;
+    }
+    return isDuplicate;
+  }
+
+  /**
+   * Record beforeinput text for composition de-duplication
+   */
+  private recordBeforeInputData(data: string): void {
+    this.lastBeforeInputData = data;
+    this.lastBeforeInputTime = this.getNow();
+  }
+
+  /**
+   * Record composition end data for beforeinput de-duplication
+   */
+  private recordCompositionData(data: string): void {
+    this.lastCompositionData = data;
+    this.lastCompositionTime = this.getNow();
+  }
+
+  /**
+   * Check if paste should be ignored due to a recent paste event from another source
+   */
+  private shouldIgnorePasteEvent(data: string, source: 'paste' | 'beforeinput'): boolean {
+    if (!this.lastPasteData) {
+      return false;
+    }
+    if (this.lastPasteSource === source) {
+      return false;
+    }
+    const now = this.getNow();
+    const isDuplicate =
+      now - this.lastPasteTime < InputHandler.BEFORE_INPUT_IGNORE_MS &&
+      this.lastPasteData === data;
+    if (isDuplicate) {
+      this.lastPasteData = null;
+      this.lastPasteSource = null;
+    }
+    return isDuplicate;
+  }
+
+  /**
+   * Get current time in milliseconds
+   */
+  private getNow(): number {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
   }
 
   /**
@@ -580,7 +810,15 @@ export class InputHandler {
 
     if (this.pasteListener) {
       this.container.removeEventListener('paste', this.pasteListener);
+      if (this.inputElement && this.inputElement !== this.container) {
+        this.inputElement.removeEventListener('paste', this.pasteListener);
+      }
       this.pasteListener = null;
+    }
+
+    if (this.beforeInputListener && this.inputElement) {
+      this.inputElement.removeEventListener('beforeinput', this.beforeInputListener);
+      this.beforeInputListener = null;
     }
 
     if (this.compositionStartListener) {
