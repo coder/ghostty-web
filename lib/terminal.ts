@@ -357,7 +357,11 @@ export class Terminal implements ITerminalCore {
       // this as an input element and don't intercept keyboard events.
       parent.setAttribute('contenteditable', 'true');
       // Prevent actual content editing - we handle input ourselves
-      parent.addEventListener('beforeinput', (e) => e.preventDefault());
+      parent.addEventListener('beforeinput', (e) => {
+        if (e.target === parent) {
+          e.preventDefault();
+        }
+      });
 
       // Add accessibility attributes for screen readers and extensions
       parent.setAttribute('role', 'textbox');
@@ -445,7 +449,8 @@ export class Terminal implements ITerminalCore {
         (mode: number) => {
           // Query terminal mode state (e.g., mode 1 for application cursor mode)
           return this.wasmTerm?.getMode(mode, false) ?? false;
-        }
+        },
+        this.textarea
       );
 
       // Create selection manager (pass textarea for context menu positioning)
@@ -462,17 +467,6 @@ export class Terminal implements ITerminalCore {
       // Forward selection change events
       this.selectionManager.onSelectionChange(() => {
         this.selectionChangeEmitter.fire();
-      });
-
-      // Setup paste event handler on textarea
-      this.textarea.addEventListener('paste', (e: ClipboardEvent) => {
-        e.preventDefault();
-        e.stopPropagation(); // Prevent event from bubbling to parent (InputHandler)
-        const text = e.clipboardData?.getData('text');
-        if (text) {
-          // Use the paste() method which will handle bracketed paste mode in the future
-          this.paste(text);
-        }
       });
 
       // Initialize link detection system
