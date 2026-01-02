@@ -370,7 +370,11 @@ export class InputHandler {
           simpleOutput = '\r'; // Carriage return
           break;
         case Key.TAB:
-          simpleOutput = '\t'; // Tab
+          if (mods === Mods.SHIFT) {
+            simpleOutput = '\x1b[Z'; // Backtab
+          } else {
+            simpleOutput = '\t'; // Tab
+          }
           break;
         case Key.BACKSPACE:
           simpleOutput = '\x7F'; // DEL (most terminals use 0x7F for backspace)
