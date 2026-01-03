@@ -432,6 +432,7 @@ describe('InputHandler', () => {
         undefined,
         undefined,
         undefined,
+        undefined,
         inputElement as any
       );
 
@@ -450,6 +451,7 @@ describe('InputHandler', () => {
         () => {
           bellCalled = true;
         },
+        undefined,
         undefined,
         undefined,
         undefined,
@@ -1013,6 +1015,7 @@ describe('InputHandler', () => {
         undefined,
         undefined,
         undefined,
+        undefined,
         inputElement as any
       );
 
@@ -1037,6 +1040,7 @@ describe('InputHandler', () => {
         undefined,
         undefined,
         (mode) => mode === 2004,
+        undefined,
         inputElement as any
       );
 
@@ -1080,6 +1084,7 @@ describe('InputHandler', () => {
         undefined,
         undefined,
         undefined,
+        undefined,
         inputElement as any
       );
 
@@ -1103,6 +1108,7 @@ describe('InputHandler', () => {
         () => {
           bellCalled = true;
         },
+        undefined,
         undefined,
         undefined,
         undefined,
