@@ -209,11 +209,11 @@ export class SelectionManager {
   hasSelection(): boolean {
     if (!this.selectionStart || !this.selectionEnd) return false;
 
-    // Check if start and end are the same (single cell, no real selection)
-    return !(
-      this.selectionStart.col === this.selectionEnd.col &&
-      this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow
-    );
+    // Same start and end means no real selection
+    // Note: click-without-drag clears same-cell in mouseup handler,
+    // so any same-cell selection here is programmatic (e.g., triple-click single-char)
+    // which IS a valid selection
+    return true;
   }
 
   /**
@@ -550,6 +550,19 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
+        // Check if this was a click without drag (start == end)
+        // If so, clear the selection - a click shouldn't create a selection
+        if (
+          this.selectionStart &&
+          this.selectionEnd &&
+          this.selectionStart.col === this.selectionEnd.col &&
+          this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow
+        ) {
+          // Clear same-cell selection from click-without-drag
+          this.clearSelection();
+          return;
+        }
+
         if (this.hasSelection()) {
           const text = this.getSelection();
           if (text) {
@@ -561,21 +574,67 @@ export class SelectionManager {
     };
     document.addEventListener('mouseup', this.boundMouseUpHandler);
 
-    // Double-click - select word
-    canvas.addEventListener('dblclick', (e: MouseEvent) => {
-      const cell = this.pixelToCell(e.offsetX, e.offsetY);
-      const word = this.getWordAtCell(cell.col, cell.row);
+    // Handle click events for double-click (word) and triple-click (line) selection
+    // Use event.detail which browsers set to click count (1, 2, 3, etc.)
+    canvas.addEventListener('click', (e: MouseEvent) => {
+      // event.detail: 1 = single, 2 = double, 3 = triple click
+      if (e.detail === 2) {
+        // Double-click - select word
+        const cell = this.pixelToCell(e.offsetX, e.offsetY);
+        const word = this.getWordAtCell(cell.col, cell.row);
 
-      if (word) {
+        if (word) {
+          const absoluteRow = this.viewportRowToAbsolute(cell.row);
+          this.selectionStart = { col: word.startCol, absoluteRow };
+          this.selectionEnd = { col: word.endCol, absoluteRow };
+          this.requestRender();
+
+          const text = this.getSelection();
+          if (text) {
+            this.copyToClipboard(text);
+            this.selectionChangedEmitter.fire();
+          }
+        }
+      } else if (e.detail >= 3) {
+        // Triple-click (or more) - select line content (like native Ghostty)
+        const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
-        this.selectionStart = { col: word.startCol, absoluteRow };
-        this.selectionEnd = { col: word.endCol, absoluteRow };
-        this.requestRender();
 
-        const text = this.getSelection();
-        if (text) {
-          this.copyToClipboard(text);
-          this.selectionChangedEmitter.fire();
+        // Find actual line length (exclude trailing empty cells)
+        // Use scrollback-aware line retrieval (like getSelection does)
+        const scrollbackLength = this.wasmTerm.getScrollbackLength();
+        let line: GhosttyCell[] | null = null;
+        if (absoluteRow < scrollbackLength) {
+          // Row is in scrollback
+          line = this.wasmTerm.getScrollbackLine(absoluteRow);
+        } else {
+          // Row is in screen buffer
+          const screenRow = absoluteRow - scrollbackLength;
+          line = this.wasmTerm.getLine(screenRow);
+        }
+        // Find last non-empty cell (-1 means empty line)
+        let endCol = -1;
+        if (line) {
+          for (let i = line.length - 1; i >= 0; i--) {
+            if (line[i] && line[i].codepoint !== 0 && line[i].codepoint !== 32) {
+              endCol = i;
+              break;
+            }
+          }
+        }
+
+        // Only select if line has content (endCol >= 0)
+        if (endCol >= 0) {
+          // Select line content only (not trailing whitespace)
+          this.selectionStart = { col: 0, absoluteRow };
+          this.selectionEnd = { col: endCol, absoluteRow };
+          this.requestRender();
+
+          const text = this.getSelection();
+          if (text) {
+            this.copyToClipboard(text);
+            this.selectionChangedEmitter.fire();
+          }
         }
       }
     });
@@ -831,11 +890,13 @@ export class SelectionManager {
     const line = this.wasmTerm.getLine(row);
     if (!line) return null;
 
-    // Word characters: letters, numbers, underscore, dash
+    // Word characters: letters, numbers, and common path/URL characters
+    // Matches native Ghostty behavior where double-click selects entire paths
+    // Includes: / (path sep), . (extensions), ~ (home), : (line numbers), @ (emails)
     const isWordChar = (cell: GhosttyCell) => {
       if (!cell || cell.codepoint === 0) return false;
       const char = String.fromCodePoint(cell.codepoint);
-      return /[\w-]/.test(char);
+      return /[\w\-./~:@+]/.test(char);
     };
 
     // Only return if we're actually on a word character
