@@ -117,17 +117,18 @@ describe('SelectionManager', () => {
       term.dispose();
     });
 
-    test('hasSelection returns false for single cell selection', async () => {
+    test('hasSelection returns true for single cell programmatic selection', async () => {
       if (!container) return;
 
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container);
 
-      // Same start and end = no real selection
+      // Programmatic single-cell selection should be valid
+      // (e.g., triple-click on single-char line, or select(col, row, 1))
       setSelectionAbsolute(term, 5, 0, 5, 0);
 
       const selMgr = (term as any).selectionManager;
-      expect(selMgr.hasSelection()).toBe(false);
+      expect(selMgr.hasSelection()).toBe(true);
 
       term.dispose();
     });
