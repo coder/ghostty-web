@@ -102,6 +102,11 @@ export class Terminal implements ITerminalCore {
   private isDisposed = false;
   private animationFrameId?: number;
 
+  // Resize protection: queue writes during resize to prevent race conditions
+  private _isResizing = false;
+  private _writeQueue: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
+  private _resizeFlushFrameId?: number;
+
   // Addons
   private addons: ITerminalAddon[] = [];
 
@@ -541,6 +546,15 @@ export class Terminal implements ITerminalCore {
       data = data.replace(/\n/g, '\r\n');
     }
 
+    // Queue writes during resize to prevent WASM race conditions.
+    // Writes will be flushed after resize completes.
+    // Copy Uint8Array data to prevent mutation by caller before flush.
+    if (this._isResizing) {
+      const dataCopy = data instanceof Uint8Array ? new Uint8Array(data) : data;
+      this._writeQueue.push({ data: dataCopy, callback });
+      return;
+    }
+
     this.writeInternal(data, callback);
   }
 
@@ -652,6 +666,11 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Resize terminal
+   *
+   * Note: We pause the render loop and queue writes during resize to prevent
+   * race conditions. The WASM terminal reallocates internal buffers during
+   * resize, and if the render loop or writes access those buffers concurrently,
+   * it can cause a crash.
    */
   resize(cols: number, rows: number): void {
     this.assertOpen();
@@ -660,28 +679,81 @@ export class Terminal implements ITerminalCore {
       return; // No change
     }
 
-    // Update dimensions
-    this.cols = cols;
-    this.rows = rows;
+    // Cancel any pending resize flush from a previous resize - this resize supersedes it
+    if (this._resizeFlushFrameId) {
+      cancelAnimationFrame(this._resizeFlushFrameId);
+      this._resizeFlushFrameId = undefined;
+    }
 
-    // Resize WASM terminal
-    this.wasmTerm!.resize(cols, rows);
+    // Set resizing flag to queue any incoming writes
+    this._isResizing = true;
 
-    // Resize renderer
-    this.renderer!.resize(cols, rows);
+    // Pause render loop during resize to prevent race condition.
+    // The render loop reads from WASM buffers that are reallocated during resize.
+    // Without this, concurrent access can cause SIGSEGV crashes.
+    const wasRunning = this.animationFrameId !== undefined;
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = undefined;
+    }
 
-    // Update canvas dimensions
-    const metrics = this.renderer!.getMetrics();
-    this.canvas!.width = metrics.width * cols;
-    this.canvas!.height = metrics.height * rows;
-    this.canvas!.style.width = `${metrics.width * cols}px`;
-    this.canvas!.style.height = `${metrics.height * rows}px`;
+    try {
+      // Resize WASM terminal (this reallocates internal buffers)
+      this.wasmTerm!.resize(cols, rows);
 
-    // Fire resize event
-    this.resizeEmitter.fire({ cols, rows });
+      // Update dimensions after successful WASM resize
+      this.cols = cols;
+      this.rows = rows;
 
-    // Force full render
-    this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
+      // Resize renderer
+      this.renderer!.resize(cols, rows);
+
+      // Update canvas dimensions
+      const metrics = this.renderer!.getMetrics();
+      this.canvas!.width = metrics.width * cols;
+      this.canvas!.height = metrics.height * rows;
+      this.canvas!.style.width = `${metrics.width * cols}px`;
+      this.canvas!.style.height = `${metrics.height * rows}px`;
+
+      // Fire resize event
+      this.resizeEmitter.fire({ cols, rows });
+
+      // Force full render with new dimensions
+      this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
+    } catch (err) {
+      console.error('[ghostty-web] Resize error:', err);
+      // Still clear the flag so future resizes can proceed
+    }
+
+    // Restart render loop if it was running
+    if (wasRunning) {
+      this.startRenderLoop();
+    }
+
+    // Clear resizing flag and flush queued writes after a frame
+    // This ensures WASM state has fully settled before processing writes
+    // Track the frame ID so it can be canceled on dispose
+    this._resizeFlushFrameId = requestAnimationFrame(() => {
+      this._resizeFlushFrameId = undefined;
+      this._isResizing = false;
+      this.flushWriteQueue();
+    });
+  }
+
+  /**
+   * Flush queued writes that were blocked during resize
+   */
+  private flushWriteQueue(): void {
+    // Guard against flush after dispose
+    if (this.isDisposed || !this.isOpen) {
+      this._writeQueue = [];
+      return;
+    }
+    const queue = this._writeQueue;
+    this._writeQueue = [];
+    for (const { data, callback } of queue) {
+      this.writeInternal(data, callback);
+    }
   }
 
   /**
@@ -1079,6 +1151,14 @@ export class Terminal implements ITerminalCore {
       cancelAnimationFrame(this.scrollAnimationFrame);
       this.scrollAnimationFrame = undefined;
     }
+
+    // Cancel pending resize flush and clear write queue
+    if (this._resizeFlushFrameId) {
+      cancelAnimationFrame(this._resizeFlushFrameId);
+      this._resizeFlushFrameId = undefined;
+    }
+    this._writeQueue = [];
+    this._isResizing = false;
 
     // Clear mouse move throttle timeout
     if (this.mouseMoveThrottleTimeout) {

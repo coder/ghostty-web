@@ -785,5 +785,12 @@ export class GhosttyTerminal {
       this.viewportBufferPtr = 0;
       this.viewportBufferSize = 0;
     }
+    // Also invalidate grapheme buffer since WASM memory may have moved during resize.
+    // Typed array views become detached when the underlying ArrayBuffer is replaced.
+    if (this.graphemeBufferPtr) {
+      this.exports.ghostty_wasm_free_u8_array(this.graphemeBufferPtr, 16 * 4);
+      this.graphemeBufferPtr = 0;
+      this.graphemeBuffer = null;
+    }
   }
 }
