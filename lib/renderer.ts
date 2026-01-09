@@ -553,12 +553,8 @@ export class CanvasRenderer {
     // Check if this cell is selected
     const isSelected = this.isInSelection(x, y);
 
-    if (isSelected) {
-      // Draw selection background (solid color, not overlay)
-      this.ctx.fillStyle = this.theme.selectionBackground;
-      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
-      return; // Selection background replaces cell background
-    }
+    // For selected cells, we'll draw the selection overlay AFTER the normal background
+    // This creates a tinted effect like VS Code's editor selection
 
     // Extract background color and handle inverse
     let bg_r = cell.bg_r,
@@ -578,6 +574,17 @@ export class CanvasRenderer {
     if (!isDefaultBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
       this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+    }
+
+    // Draw selection overlay on top (semi-transparent like VS Code editor)
+    // This creates a tinted highlight effect that preserves text readability
+    // TODO: Make opacity configurable via theme.selectionOpacity (default 0.4)
+    if (isSelected && this.theme.selectionBackground) {
+      const selectionOpacity = 0.4; // Adjust for lighter/darker selection tint
+      this.ctx.globalAlpha = selectionOpacity;
+      this.ctx.fillStyle = this.theme.selectionBackground;
+      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+      this.ctx.globalAlpha = 1.0;
     }
   }
 
@@ -604,22 +611,24 @@ export class CanvasRenderer {
     if (cell.flags & CellFlags.BOLD) fontStyle += 'bold ';
     this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
 
-    // Set text color - use selection foreground if selected
-    if (isSelected) {
-      this.ctx.fillStyle = this.theme.selectionForeground;
+    // Extract colors and handle inverse
+    let fg_r = cell.fg_r,
+      fg_g = cell.fg_g,
+      fg_b = cell.fg_b;
+
+    if (cell.flags & CellFlags.INVERSE) {
+      // When inverted, foreground becomes background
+      fg_r = cell.bg_r;
+      fg_g = cell.bg_g;
+      fg_b = cell.bg_b;
+    }
+
+    // Set text color - use selection foreground only if explicitly defined
+    // Otherwise keep original text color (works better with semi-transparent overlay)
+    const selFg = this.theme.selectionForeground;
+    if (isSelected && selFg && selFg !== 'undefined') {
+      this.ctx.fillStyle = selFg;
     } else {
-      // Extract colors and handle inverse
-      let fg_r = cell.fg_r,
-        fg_g = cell.fg_g,
-        fg_b = cell.fg_b;
-
-      if (cell.flags & CellFlags.INVERSE) {
-        // When inverted, foreground becomes background
-        fg_r = cell.bg_r;
-        fg_g = cell.bg_g;
-        fg_b = cell.bg_b;
-      }
-
       this.ctx.fillStyle = this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
@@ -925,6 +934,7 @@ export class CanvasRenderer {
 
     return false;
   }
+
 
   /**
    * Set the currently hovered hyperlink ID for rendering underlines
