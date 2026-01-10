@@ -515,12 +515,16 @@ export class CanvasRenderer {
    */
   private renderLine(line: GhosttyCell[], y: number, cols: number): void {
     const lineY = y * this.metrics.height;
+    const lineWidth = cols * this.metrics.width;
 
-    // Clear line background with theme color.
+    // Clear line background then fill with theme color.
     // We clear just the cell area - glyph overflow is handled by also
     // redrawing adjacent rows (see render() method).
+    // clearRect is needed because fillRect composites rather than replaces,
+    // so transparent/translucent backgrounds wouldn't clear previous content.
+    this.ctx.clearRect(0, lineY, lineWidth, this.metrics.height);
     this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, lineY, cols * this.metrics.width, this.metrics.height);
+    this.ctx.fillRect(0, lineY, lineWidth, this.metrics.height);
 
     // PASS 1: Draw all cell backgrounds first
     // This ensures all backgrounds are painted before any text, allowing text
@@ -790,6 +794,7 @@ export class CanvasRenderer {
       this.theme.brightCyan,
       this.theme.brightWhite,
     ];
+
   }
 
   /**
@@ -854,6 +859,7 @@ export class CanvasRenderer {
     const scrollbarTrackHeight = canvasHeight - scrollbarPadding * 2;
 
     // Always clear the scrollbar area first (fixes ghosting when fading out)
+    ctx.clearRect(scrollbarX - 2, 0, scrollbarWidth + 6, canvasHeight);
     ctx.fillStyle = this.theme.background;
     ctx.fillRect(scrollbarX - 2, 0, scrollbarWidth + 6, canvasHeight);
 
@@ -966,6 +972,9 @@ export class CanvasRenderer {
    * Clear entire canvas
    */
   public clear(): void {
+    // clearRect first because fillRect composites rather than replaces,
+    // so transparent/translucent backgrounds wouldn't clear previous content.
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.ctx.fillStyle = this.theme.background;
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
   }
