@@ -605,9 +605,37 @@ export class GhosttyTerminal {
     return this.exports.ghostty_terminal_is_row_wrapped(this.handle, row) !== 0;
   }
 
-  /** Hyperlink URI not yet exposed in simplified API */
-  getHyperlinkUri(_id: number): string | null {
-    return null; // TODO: Add hyperlink support
+  /**
+   * Get the hyperlink URI for a cell at the given position.
+   * @param row Row index (0-based, in active viewport)
+   * @param col Column index (0-based)
+   * @returns The URI string, or null if no hyperlink at that position
+   */
+  getHyperlinkUri(row: number, col: number): string | null {
+    // Check if WASM has this function (requires rebuilt WASM with hyperlink support)
+    if (!this.exports.ghostty_terminal_get_hyperlink_uri) {
+      return null;
+    }
+
+    const bufSize = 2048; // URLs can be long
+    const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
+
+    try {
+      const bytesWritten = this.exports.ghostty_terminal_get_hyperlink_uri(
+        this.handle,
+        row,
+        col,
+        bufPtr,
+        bufSize
+      );
+
+      if (bytesWritten <= 0) return null;
+
+      const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesWritten);
+      return new TextDecoder().decode(bytes.slice());
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
+    }
   }
 
   /**

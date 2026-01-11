@@ -256,6 +256,26 @@ index 000000000..298ad36c1
 +bool ghostty_terminal_is_row_wrapped(GhosttyTerminal term, int y);
 +
 +/* ============================================================================
++ * Hyperlink API
++ * ========================================================================= */
++
++/**
++ * Get the hyperlink URI for a cell in the active viewport.
++ * @param row Row index (0-based)
++ * @param col Column index (0-based)
++ * @param out_buffer Buffer to receive URI bytes (UTF-8)
++ * @param buffer_size Size of buffer in bytes
++ * @return Number of bytes written, 0 if no hyperlink, -1 on error
++ */
++int ghostty_terminal_get_hyperlink_uri(
++    GhosttyTerminal term,
++    int row,
++    int col,
++    uint8_t* out_buffer,
++    size_t buffer_size
++);
++
++/* ============================================================================
 + * Response API - for DSR and other terminal queries
 + * ========================================================================= */
 +
@@ -322,10 +342,13 @@ index 03a883e20..f07bbd759 100644
 +        @export(&c.terminal_get_scrollback_grapheme, .{ .name = "ghostty_terminal_get_scrollback_grapheme" });
 +        @export(&c.terminal_is_row_wrapped, .{ .name = "ghostty_terminal_is_row_wrapped" });
 +
++        // Hyperlink API
++        @export(&c.terminal_get_hyperlink_uri, .{ .name = "ghostty_terminal_get_hyperlink_uri" });
++
 +        // Response API (for DSR and other queries)
 +        @export(&c.terminal_has_response, .{ .name = "ghostty_terminal_has_response" });
 +        @export(&c.terminal_read_response, .{ .name = "ghostty_terminal_read_response" });
- 
+
          // On Wasm we need to export our allocator convenience functions.
          if (builtin.target.cpu.arch.isWasm()) {
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
@@ -375,6 +398,9 @@ index bc92597f5..18503933f 100644
 +pub const terminal_get_scrollback_line = terminal.getScrollbackLine;
 +pub const terminal_get_scrollback_grapheme = terminal.getScrollbackGrapheme;
 +pub const terminal_is_row_wrapped = terminal.isRowWrapped;
++
++// Hyperlink API
++pub const terminal_get_hyperlink_uri = terminal.getHyperlinkUri;
 +
 +// Response API (for DSR and other queries)
 +pub const terminal_has_response = terminal.hasResponse;
@@ -1351,9 +1377,58 @@ index 000000000..d57b4e405
 +    // Get pin for this row in active area
 +    const pin = pages.pin(.{ .active = .{ .y = @intCast(y) } }) orelse return false;
 +    const rac = pin.rowAndCell();
-+    
++
 +    // wrap_continuation means this row continues from the previous row
 +    return rac.row.wrap_continuation;
++}
++
++// ============================================================================
++// Hyperlink API
++// ============================================================================
++
++/// Get the hyperlink URI for a cell in the active viewport.
++/// Returns number of bytes written, 0 if no hyperlink, -1 on error.
++pub fn getHyperlinkUri(
++    ptr: ?*anyopaque,
++    row: c_int,
++    col: c_int,
++    out: [*]u8,
++    buf_size: usize,
++) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
++    const t = &wrapper.terminal;
++
++    if (row < 0 or col < 0) return -1;
++
++    // Get the pin for this row from the terminal's active screen
++    const pages = &t.screens.active.pages;
++    const pin = pages.pin(.{ .active = .{ .y = @intCast(row) } }) orelse return -1;
++
++    const cells = pin.cells(.all);
++    const page = pin.node.data;
++    const x: usize = @intCast(col);
++
++    if (x >= cells.len) return -1;
++
++    const cell = &cells[x];
++
++    // Check if cell has a hyperlink
++    if (!cell.hyperlink) return 0;
++
++    // Look up the hyperlink ID from the page
++    const hyperlink_id = page.lookupHyperlink(cell) orelse return 0;
++
++    // Get the hyperlink entry from the set
++    const hyperlink_entry = page.hyperlink_set.get(page.memory, hyperlink_id);
++
++    // Get the URI bytes from the page memory
++    const uri = hyperlink_entry.uri.slice(page.memory);
++
++    if (uri.len == 0) return 0;
++    if (buf_size < uri.len) return -1;
++
++    @memcpy(out[0..uri.len], uri);
++    return @intCast(uri.len);
 +}
 +
 +// ============================================================================
