@@ -794,7 +794,6 @@ export class CanvasRenderer {
       this.theme.brightCyan,
       this.theme.brightWhite,
     ];
-
   }
 
   /**
