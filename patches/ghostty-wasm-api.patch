@@ -29,10 +29,10 @@ index 4f8fef88e..ca9fb1d4d 100644
  #include <ghostty/vt/key.h>
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
 new file mode 100644
-index 000000000..298ad36c1
+index 000000000..2c9dd99c7
 --- /dev/null
 +++ b/include/ghostty/vt/terminal.h
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,269 @@
 +/**
 + * @file terminal.h
 + *
@@ -256,6 +256,26 @@ index 000000000..298ad36c1
 +bool ghostty_terminal_is_row_wrapped(GhosttyTerminal term, int y);
 +
 +/* ============================================================================
++ * Hyperlink API
++ * ========================================================================= */
++
++/**
++ * Get the hyperlink URI for a cell in the active viewport.
++ * @param row Row index (0-based)
++ * @param col Column index (0-based)
++ * @param out_buffer Buffer to receive URI bytes (UTF-8)
++ * @param buffer_size Size of buffer in bytes
++ * @return Number of bytes written, 0 if no hyperlink, -1 on error
++ */
++int ghostty_terminal_get_hyperlink_uri(
++    GhosttyTerminal term,
++    int row,
++    int col,
++    uint8_t* out_buffer,
++    size_t buffer_size
++);
++
++/* ============================================================================
 + * Response API - for DSR and other terminal queries
 + * ========================================================================= */
 +
@@ -283,10 +303,10 @@ index 000000000..298ad36c1
 +
 +#endif /* GHOSTTY_VT_TERMINAL_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 03a883e20..f07bbd759 100644
+index 03a883e20..32d5f7c38 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -140,6 +140,41 @@ comptime {
+@@ -140,6 +140,44 @@ comptime {
          @export(&c.sgr_unknown_partial, .{ .name = "ghostty_sgr_unknown_partial" });
          @export(&c.sgr_attribute_tag, .{ .name = "ghostty_sgr_attribute_tag" });
          @export(&c.sgr_attribute_value, .{ .name = "ghostty_sgr_attribute_value" });
@@ -322,6 +342,9 @@ index 03a883e20..f07bbd759 100644
 +        @export(&c.terminal_get_scrollback_grapheme, .{ .name = "ghostty_terminal_get_scrollback_grapheme" });
 +        @export(&c.terminal_is_row_wrapped, .{ .name = "ghostty_terminal_is_row_wrapped" });
 +
++        // Hyperlink API
++        @export(&c.terminal_get_hyperlink_uri, .{ .name = "ghostty_terminal_get_hyperlink_uri" });
++
 +        // Response API (for DSR and other queries)
 +        @export(&c.terminal_has_response, .{ .name = "ghostty_terminal_has_response" });
 +        @export(&c.terminal_read_response, .{ .name = "ghostty_terminal_read_response" });
@@ -329,7 +352,7 @@ index 03a883e20..f07bbd759 100644
          // On Wasm we need to export our allocator convenience functions.
          if (builtin.target.cpu.arch.isWasm()) {
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index bc92597f5..18503933f 100644
+index bc92597f5..e352c150a 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
 @@ -4,6 +4,7 @@ pub const key_event = @import("key_event.zig");
@@ -340,7 +363,7 @@ index bc92597f5..18503933f 100644
  
  // The full C API, unexported.
  pub const osc_new = osc.new;
-@@ -52,6 +53,42 @@ pub const key_encoder_encode = key_encode.encode;
+@@ -52,6 +53,45 @@ pub const key_encoder_encode = key_encode.encode;
  
  pub const paste_is_safe = paste.is_safe;
  
@@ -376,6 +399,9 @@ index bc92597f5..18503933f 100644
 +pub const terminal_get_scrollback_grapheme = terminal.getScrollbackGrapheme;
 +pub const terminal_is_row_wrapped = terminal.isRowWrapped;
 +
++// Hyperlink API
++pub const terminal_get_hyperlink_uri = terminal.getHyperlinkUri;
++
 +// Response API (for DSR and other queries)
 +pub const terminal_has_response = terminal.hasResponse;
 +pub const terminal_read_response = terminal.readResponse;
@@ -383,7 +409,7 @@ index bc92597f5..18503933f 100644
  test {
      _ = color;
      _ = osc;
-@@ -59,6 +96,7 @@ test {
+@@ -59,6 +99,7 @@ test {
      _ = key_encode;
      _ = paste;
      _ = sgr;
@@ -393,10 +419,10 @@ index bc92597f5..18503933f 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 000000000..d57b4e405
+index 000000000..2eca7a93a
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1025 @@
+@@ -0,0 +1,1074 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -1354,6 +1380,55 @@ index 000000000..d57b4e405
 +    
 +    // wrap_continuation means this row continues from the previous row
 +    return rac.row.wrap_continuation;
++}
++
++// ============================================================================
++// Hyperlink API
++// ============================================================================
++
++/// Get the hyperlink URI for a cell in the active viewport.
++/// Returns number of bytes written, 0 if no hyperlink, -1 on error.
++pub fn getHyperlinkUri(
++    ptr: ?*anyopaque,
++    row: c_int,
++    col: c_int,
++    out: [*]u8,
++    buf_size: usize,
++) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
++    const t = &wrapper.terminal;
++
++    if (row < 0 or col < 0) return -1;
++
++    // Get the pin for this row from the terminal's active screen
++    const pages = &t.screens.active.pages;
++    const pin = pages.pin(.{ .active = .{ .y = @intCast(row) } }) orelse return -1;
++
++    const cells = pin.cells(.all);
++    const page = pin.node.data;
++    const x: usize = @intCast(col);
++
++    if (x >= cells.len) return -1;
++
++    const cell = &cells[x];
++
++    // Check if cell has a hyperlink
++    if (!cell.hyperlink) return 0;
++
++    // Look up the hyperlink ID from the page
++    const hyperlink_id = page.lookupHyperlink(cell) orelse return 0;
++
++    // Get the hyperlink entry from the set
++    const hyperlink_entry = page.hyperlink_set.get(page.memory, hyperlink_id);
++
++    // Get the URI bytes from the page memory
++    const uri = hyperlink_entry.uri.slice(page.memory);
++
++    if (uri.len == 0) return 0;
++    if (buf_size < uri.len) return -1;
++
++    @memcpy(out[0..uri.len], uri);
++    return @intCast(uri.len);
 +}
 +
 +// ============================================================================

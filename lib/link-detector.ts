@@ -40,7 +40,6 @@ export class LinkDetector {
    * @returns Link at position, or undefined if none
    */
   async getLinkAt(col: number, row: number): Promise<ILink | undefined> {
-    // First, check if this cell has a hyperlink_id (fast path for OSC 8)
     const line = this.terminal.buffer.active.getLine(row);
     if (!line || col < 0 || col >= line.length) {
       return undefined;
@@ -50,13 +49,11 @@ export class LinkDetector {
     if (!cell) {
       return undefined;
     }
-    const hyperlinkId = cell.getHyperlinkId();
 
-    if (hyperlinkId > 0) {
-      // Fast path: check cache by hyperlink_id
-      const cacheKey = `h${hyperlinkId}`;
-      if (this.linkCache.has(cacheKey)) {
-        return this.linkCache.get(cacheKey);
+    // Check if any cached link contains this position (fast path)
+    for (const link of this.linkCache.values()) {
+      if (this.isPositionInLink(col, row, link)) {
+        return link;
       }
     }
 
@@ -65,14 +62,7 @@ export class LinkDetector {
       await this.scanRow(row);
     }
 
-    // Check cache again (hyperlinkId or position-based)
-    if (hyperlinkId > 0) {
-      const cacheKey = `h${hyperlinkId}`;
-      const link = this.linkCache.get(cacheKey);
-      if (link) return link;
-    }
-
-    // Check if any cached link contains this position
+    // Check cache again after scanning
     for (const link of this.linkCache.values()) {
       if (this.isPositionInLink(col, row, link)) {
         return link;
@@ -109,31 +99,14 @@ export class LinkDetector {
 
   /**
    * Cache a link for fast lookup
+   *
+   * Note: We cache by position range, not hyperlink_id, because the WASM
+   * returns hyperlink_id as a boolean (0 or 1), not a unique identifier.
+   * The actual unique identifier is the URI which is retrieved separately.
    */
   private cacheLink(link: ILink): void {
-    // Try to get hyperlink_id for this link
-    const { start } = link.range;
-    const line = this.terminal.buffer.active.getLine(start.y);
-    if (line) {
-      const cell = line.getCell(start.x);
-      if (!cell) {
-        // Fallback: cache by position range
-        const { start: s, end: e } = link.range;
-        const cacheKey = `r${s.y}:${s.x}-${e.x}`;
-        this.linkCache.set(cacheKey, link);
-        return;
-      }
-      const hyperlinkId = cell.getHyperlinkId();
-
-      if (hyperlinkId > 0) {
-        // Cache by hyperlink_id (best case - stable across rows)
-        this.linkCache.set(`h${hyperlinkId}`, link);
-        return;
-      }
-    }
-
-    // Fallback: cache by position range
-    // Format: r${row}:${startX}-${endX}
+    // Cache by position range - this uniquely identifies links even when
+    // multiple OSC 8 links exist on the same line
     const { start: s, end: e } = link.range;
     const cacheKey = `r${s.y}:${s.x}-${e.x}`;
     this.linkCache.set(cacheKey, link);
