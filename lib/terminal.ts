@@ -717,15 +717,21 @@ export class Terminal implements ITerminalCore {
    * Focus terminal input
    */
   focus(): void {
-    if (this.isOpen && this.element) {
-      // Focus immediately for immediate keyboard/wheel event handling
-      this.element.focus();
+    if (this.isOpen) {
+      // Focus the textarea for keyboard/IME input.
+      // The textarea is the actual input element that receives keyboard events
+      // and IME composition events. Focusing the container doesn't work for IME
+      // because composition events fire on the focused element.
+      const target = this.textarea || this.element;
+      if (target) {
+        target.focus();
 
-      // Also schedule a delayed focus as backup to ensure it sticks
-      // (some browsers may need this if DOM isn't fully settled)
-      setTimeout(() => {
-        this.element?.focus();
-      }, 0);
+        // Also schedule a delayed focus as backup to ensure it sticks
+        // (some browsers may need this if DOM isn't fully settled)
+        setTimeout(() => {
+          target?.focus();
+        }, 0);
+      }
     }
   }
 

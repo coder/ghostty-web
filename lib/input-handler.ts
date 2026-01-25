@@ -288,14 +288,19 @@ export class InputHandler {
       this.inputElement.addEventListener('beforeinput', this.beforeInputListener);
     }
 
+    // Attach composition events to inputElement (textarea) if available.
+    // IME composition events fire on the focused element, and when using a hidden
+    // textarea for input (as ghostty-web does), the textarea receives focus,
+    // not the container. This fixes Korean/Chinese/Japanese IME input.
+    const compositionTarget = this.inputElement || this.container;
     this.compositionStartListener = this.handleCompositionStart.bind(this);
-    this.container.addEventListener('compositionstart', this.compositionStartListener);
+    compositionTarget.addEventListener('compositionstart', this.compositionStartListener);
 
     this.compositionUpdateListener = this.handleCompositionUpdate.bind(this);
-    this.container.addEventListener('compositionupdate', this.compositionUpdateListener);
+    compositionTarget.addEventListener('compositionupdate', this.compositionUpdateListener);
 
     this.compositionEndListener = this.handleCompositionEnd.bind(this);
-    this.container.addEventListener('compositionend', this.compositionEndListener);
+    compositionTarget.addEventListener('compositionend', this.compositionEndListener);
 
     // Mouse event listeners (for terminal mouse tracking)
     this.mousedownListener = this.handleMouseDown.bind(this);
@@ -1059,18 +1064,20 @@ export class InputHandler {
       this.beforeInputListener = null;
     }
 
+    // Remove composition listeners from the same element they were attached to
+    const compositionTarget = this.inputElement || this.container;
     if (this.compositionStartListener) {
-      this.container.removeEventListener('compositionstart', this.compositionStartListener);
+      compositionTarget.removeEventListener('compositionstart', this.compositionStartListener);
       this.compositionStartListener = null;
     }
 
     if (this.compositionUpdateListener) {
-      this.container.removeEventListener('compositionupdate', this.compositionUpdateListener);
+      compositionTarget.removeEventListener('compositionupdate', this.compositionUpdateListener);
       this.compositionUpdateListener = null;
     }
 
     if (this.compositionEndListener) {
-      this.container.removeEventListener('compositionend', this.compositionEndListener);
+      compositionTarget.removeEventListener('compositionend', this.compositionEndListener);
       this.compositionEndListener = null;
     }
 
