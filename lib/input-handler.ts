@@ -195,6 +195,7 @@ export class InputHandler {
   private mousemoveListener: ((e: MouseEvent) => void) | null = null;
   private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
+  private compositionJustEnded = false; // Block keydown briefly after composition ends
   private isDisposed = false;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
   private lastKeyDownData: string | null = null;
@@ -371,6 +372,13 @@ export class InputHandler {
     // Ignore keydown events during composition
     // Note: Some browsers send keyCode 229 for all keys during composition
     if (this.isComposing || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+
+    // Block the key that triggered composition end (e.g., space, period)
+    // This fixes the "세요" -> "세 요" bug where keydown fires before compositionend
+    if (this.compositionJustEnded) {
+      this.compositionJustEnded = false;
       return;
     }
 
@@ -689,6 +697,14 @@ export class InputHandler {
   private handleCompositionEnd(event: CompositionEvent): void {
     if (this.isDisposed) return;
     this.isComposing = false;
+
+    // Set flag to block the next keydown event (the key that triggered composition end)
+    // This prevents "세요" becoming "세 요" when space/period is pressed
+    this.compositionJustEnded = true;
+    // Clear flag after a short delay to allow normal keydown processing
+    setTimeout(() => {
+      this.compositionJustEnded = false;
+    }, 10);
 
     const data = event.data;
     if (data && data.length > 0) {
