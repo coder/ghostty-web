@@ -35,6 +35,7 @@ This research provides a comprehensive analysis of both the native Ghostty termi
 - Canvas rendering pipeline (web) and GPU rendering (native)
 - TTY-level data flow (PTY, parser, stream handler)
 - Comparison with xterm.js decoration/overlay systems
+- **Lessons from Hyper fork xterm.js implementation** (see [detailed analysis](research-2026-02-02-hyper-fork-xterm-customizations.md))
 - Detailed forking requirements analysis
 - macOS WebView overlay implementation specification
 
@@ -452,6 +453,8 @@ const loop = (currentTime: number) => {
 | Terminal Core | WASM (Zig) | Pure TypeScript |
 | Overlay System | None | Rich Decoration API |
 | Extension Points | Limited | Render layers, markers, decorations |
+| OSC Extensibility | Via WASM patch | Private API only |
+| Link Styling | Configurable | Hard-coded dashed underline |
 
 xterm.js has a rich decoration API:
 ```typescript
@@ -462,6 +465,134 @@ const decoration = terminal.registerDecoration({
 });
 decoration.onRender((element) => { /* Custom DOM */ });
 ```
+
+### Lessons from Hyper Fork xterm.js Implementation
+
+The Hyper fork (jlevy/kerm) implements the Kerm Codes protocol on xterm.js. This required extensive customizations revealing key architectural challenges. **See [full analysis](research-2026-02-02-hyper-fork-xterm-customizations.md).**
+
+#### Critical xterm.js Limitations Discovered
+
+**1. Hard-Coded Link Underline Style**
+
+xterm.js forces ALL OSC 8 links to use dashed underlines, regardless of application preference:
+
+```typescript
+// xterm.js ExtendedAttrs - problematic behavior
+get underlineStyle(): UnderlineStyle {
+  if (this._urlId) {
+    return UnderlineStyle.DASHED;  // Always forced!
+  }
+  return ((this._ext & 0x1c000000) >> 26) as UnderlineStyle;
+}
+```
+
+**Workaround:** Monkey-patch `ExtendedAttrs.underlineStyle` getter/setter at prototype level to ignore `_urlId` check. Extracts style from bits 26-31 of `_ext` field.
+
+**Lesson for ghostty-web:** Make link decoration style configurable, not hard-coded. Separate link detection from link rendering.
+
+**2. No Public OSC Handler Registration**
+
+xterm.js provides no public API to register custom OSC handlers. Implementing OSC 77 (Kerm Codes) requires:
+
+```typescript
+// Private API access required
+const core = terminal._core as CoreTerminalExt;
+core._inputHandler.registerOscHandler(77, (data) => { ... });
+```
+
+**Lesson for ghostty-web:** Expose `registerOscHandler(code: number, handler: (data: string) => boolean)` as a public API.
+
+**3. Service Replacement Complexity**
+
+Replacing xterm.js's link service requires patching TWO locations:
+
+```typescript
+// Must update both references!
+core._oscLinkService = customService;
+core._inputHandler._oscLinkService = customService;  // Also here!
+```
+
+**Lesson for ghostty-web:** Use dependency injection or a single service registry to avoid reference caching issues.
+
+**4. Wide Character Edge Cases**
+
+Pattern-based link detection across wrapped lines requires complex handling:
+- Wide characters (CJK, emoji) occupy 2 cells but 1-2 string positions
+- When wide char would extend past line end, terminal wraps entire char to next line
+- "Spacer" cells have `getChars() === ''` but `getWidth() === 1`
+
+**Lesson for ghostty-web:** Document coordinate systems clearly. Provide utilities for string index ↔ buffer position conversion.
+
+**5. Click vs Double-Click**
+
+xterm.js doesn't distinguish single-click from double-click on links:
+
+```typescript
+// Hyper fork solution
+class ClickTimer {
+  private _DOUBLE_CLICK_MS = 300;
+
+  onClick(singleFn: () => void, doubleFn: () => void): void {
+    // Measure time between clicks
+  }
+}
+```
+
+**Lesson for ghostty-web:** Provide both `onLinkClick` and `onLinkDoubleClick` events, or include event timing in callbacks.
+
+#### xterm.js Private API Surface Used
+
+| API Path | Purpose | Risk Level |
+|----------|---------|------------|
+| `_core._oscLinkService` | Replace link service | High |
+| `_core._inputHandler._oscLinkService` | Sync link service | High |
+| `_core._inputHandler.registerOscHandler` | Custom OSC handlers | Medium |
+| `_core._bufferService` | Buffer internals | High |
+| `_core._renderService.dimensions` | Cell metrics | Low |
+| `_core._linkProviderService.linkProviders` | Remove default provider | High |
+| `ExtendedAttrs` prototype | Patch underline logic | Very High |
+
+**Fragility:** xterm.js v4 → v5 broke several access patterns. Internal bit layouts could change without notice.
+
+#### Recommended ghostty-web Public APIs Based on Learnings
+
+```typescript
+// 1. Custom OSC handler registration
+terminal.registerOscHandler(code: number, handler: OscHandler): IDisposable;
+
+// 2. Configurable link decorations
+interface ILinkDecorations {
+  underline?: boolean | UnderlineStyle;  // Not forced!
+  pointerCursor?: boolean;
+  backgroundColor?: string;
+}
+
+// 3. Link provider with full control
+interface ILinkProvider {
+  provideLinks(line: number): ILink[];
+}
+interface ILink {
+  range: IBufferRange;
+  decorations: ILinkDecorations;  // Per-link styling
+  activate?: (event: MouseEvent) => void;
+  hover?: (event: MouseEvent) => void;
+  leave?: () => void;
+}
+
+// 4. Click timing in events
+interface ILinkEvent {
+  link: ILink;
+  event: MouseEvent;
+  clickCount: 1 | 2;  // Single or double
+}
+
+// 5. Coordinate conversion utilities
+terminal.bufferToPixel(col: number, row: number): {x: number, y: number};
+terminal.pixelToBuffer(x: number, y: number): {col: number, row: number};
+terminal.stringIndexToBuffer(line: number, index: number): {col: number};
+```
+
+These APIs would eliminate the need for private API hacking when implementing rich terminal features.
 
 ## Options Considered
 
@@ -1388,6 +1519,10 @@ Keyboard → ESC? → dismissOnEscape? → Dismiss
 | Link Detection | `lib/link-detector.ts` |
 | Buffer API | `lib/buffer.ts` |
 
+### Related Research
+
+- [Hyper Fork xterm.js Customizations](research-2026-02-02-hyper-fork-xterm-customizations.md) - Detailed analysis of xterm.js modifications for Kerm Codes
+
 ### External Resources
 
 - [Original Ghostty (Zig)](https://github.com/ghostty-org/ghostty)
@@ -1400,6 +1535,7 @@ Keyboard → ESC? → dismissOnEscape? → Dismiss
 - [OSC 8 Hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda)
 - [Kerm Codes Protocol (kash)](https://github.com/jlevy/kash/blob/main/src/kash/shell/output/kerm_codes.py) - OSC-based rich terminal UI protocol
 - [OSC8 Adoption Tracker](https://github.com/Alhadis/OSC8-Adoption)
+- [Hyper Fork (Kerm)](https://github.com/jlevy/kerm) - Hyper terminal fork with Kerm Codes implementation
 
 ---
 
