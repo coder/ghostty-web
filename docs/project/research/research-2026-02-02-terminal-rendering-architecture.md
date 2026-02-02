@@ -14,6 +14,7 @@ This research provides a comprehensive analysis of both the native Ghostty termi
 - Ghostty has a well-architected, modular rendering pipeline with clear separation of concerns
 - ghostty-web provides a browser-based implementation using WASM + Canvas 2D
 - The existing overlay/highlight systems provide extension points for many features
+- The "Kerm Codes" protocol (OSC 8 + KRI, OSC 77) provides a proven, backward-compatible approach for rich terminal UI
 - Some proposed features (iframe overlays, collapsible blocks) require significant changes
 - Font size variations within a terminal session would require fundamental changes to the grid model
 
@@ -517,17 +518,168 @@ decoration.onRender((element) => { /* Custom DOM */ });
 - Complex state management
 - Scroll handling complications
 
+### Option E: Kerm Codes Protocol (OSC-Based Rich UI)
+
+**Source:** [kash/kerm_codes.py](https://github.com/jlevy/kash/blob/main/src/kash/shell/output/kerm_codes.py)
+
+A proven approach that works with xterm.js today. The "Kerm codes" protocol enables rich terminal UI through standardized escape sequences.
+
+**Core Concepts:**
+
+1. **OSC 8 Extension with KRIs (Kerm Resource Identifiers)**
+   - Standard OSC 8 hyperlinks extended with `kui://` URI scheme
+   - Query string encodes JSON-serialized UI metadata
+   - Backward compatible: terminals that don't support KRIs render as regular links
+
+2. **OSC 77 for Standalone Elements**
+   - New (unused) OSC code for UI elements not attached to text
+   - JSON payload defines buttons, inputs, popovers
+   - Ignored by terminals that don't support it
+
+**Protocol Structure:**
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           Kerm Codes Protocol                             │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Text-Attached Elements (OSC 8 + KRI):                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  OSC 8 ; ; kui://?hover=<json>&click=<json> ST text OSC 8 ; ; ST   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  Standalone Elements (OSC 77):                                           │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  OSC 77 ; {"element_type":"button","text":"Run","action":...} ST   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**UI Element Types:**
+
+| Role | Element Type | Description |
+|------|--------------|-------------|
+| **Tooltips** | `text_tooltip` | Simple text tooltip on hover |
+| | `link_tooltip` | Preview of URL (title, description) |
+| | `iframe_tooltip` | Full iframe as tooltip |
+| **Popovers** | `iframe_popover` | Persistent iframe overlay |
+| **Output** | `chat_output` | Chat-style response element |
+| **Input** | `button` | Clickable button with action |
+| | `chat_input` | Chat-style input field |
+| | `multiple_choice` | Selection from options |
+
+**Action Types:**
+
+| Action | Description |
+|--------|-------------|
+| `paste_text` | Paste text into terminal |
+| `paste_href` | Paste the link URL |
+| `run_command` | Execute a command |
+| `open_iframe_popover` | Open an iframe overlay |
+
+**TextAttrs Schema (for KRIs):**
+
+```python
+class TextAttrs:
+    href: str | None           # Target URL if this is a link
+    hover: TooltipElement      # Tooltip to show on hover
+    click: UIAction            # Action on click
+    double_click: UIAction     # Action on double-click
+    display_style: DisplayStyle # plain, underline, highlight
+```
+
+**Example KRI:**
+
+```
+# Simple URL (backward compatible)
+OSC 8 ; ; https://example.com ST Example ST OSC 8 ; ; ST
+
+# URL with hover tooltip
+OSC 8 ; ; kui://?href=https://example.com&hover={"element_type":"text_tooltip","text":"Preview"} ST
+Example
+OSC 8 ; ; ST
+
+# Text with click action (paste command)
+OSC 8 ; ; kui://?click={"action_type":"paste_text","value":"ls -la"}&hover={"element_type":"text_tooltip","text":"List files"} ST
+ls
+OSC 8 ; ; ST
+```
+
+**Use Cases Addressed:**
+
+| Use Case | Kerm Code Solution |
+|----------|-------------------|
+| **Tooltips on patterns** | KRI with `text_tooltip` or `link_tooltip` hover |
+| **iFrame overlays** | `iframe_tooltip` (transient) or `iframe_popover` (persistent) |
+| **Clickable commands** | `button` element or click action on text |
+| **Collapsible regions** | Decoration + buffer refresh on expand (see TODOs in source) |
+| **Progress/status** | `iframe_popover` with live-updating web content |
+| **Command confirmation** | `button` or `multiple_choice` elements |
+| **Editable settings** | iframe with form served by local web server |
+
+**Implementation for Ghostty:**
+
+| Layer | Changes Required |
+|-------|-----------------|
+| **Parser (Zig)** | Add OSC 77 handler, extend OSC 8 to parse `kui://` |
+| **Terminal State** | Store UI element metadata per cell/region |
+| **Renderer (native)** | Render hover states, trigger platform overlay |
+| **Renderer (web)** | DOM layer for tooltips/popovers, click handlers |
+| **Platform (macOS)** | WKWebView for iframe elements |
+| **Platform (GTK)** | WebKitWebView for iframe elements |
+
+**Pros:**
+- Proven approach working with xterm.js today
+- Backward compatible with all existing terminals
+- Shell applications can emit rich UI without terminal changes
+- Clean separation between terminal and UI elements
+- Extensible JSON schema for future element types
+- Single protocol works for native and web implementations
+
+**Cons:**
+- Full implementation requires parser + renderer + platform changes
+- iframe elements need security sandboxing
+- Complex JSON in escape sequences can be verbose
+
+**Recommendation:** This approach is highly recommended as the foundation for rich terminal UI. It provides a standardized, backward-compatible way to add tooltips, buttons, and iframe overlays. The protocol can be implemented incrementally:
+
+1. **Phase 1:** KRI parsing + text tooltips (hover only)
+2. **Phase 2:** Click actions (paste_text, run_command)
+3. **Phase 3:** iframe_tooltip/iframe_popover with platform WebView
+
 ## Recommendations
 
 ### Feature Feasibility Summary
 
 | Feature | Native (Zig) | ghostty-web (TS) | Recommended Approach |
 |---------|--------------|------------------|---------------------|
-| **iFrame overlays** | Hard (platform-specific) | Medium (DOM layer) | Native: WKWebView/WebKitWebView; Web: DOM layer |
+| **iFrame overlays** | Hard (platform-specific) | Medium (DOM layer) | Kerm Codes `iframe_popover` + platform WebView |
+| **Tooltips/hovers** | Medium | Easy | Kerm Codes KRI with `text_tooltip`/`iframe_tooltip` |
 | **Regex hover/highlight** | Easy (existing) | Easy | Extend existing link systems |
+| **Clickable buttons** | Medium | Easy | Kerm Codes `button` element via OSC 77 |
 | **Collapsible blocks** | Hard | Hard | Virtual viewport layer with OSC markers |
 | **Smooth animations** | Medium | Medium | Interpolate viewport position in render loop |
 | **Double-width/height** | Medium | Medium-Hard | WASM patch + renderer changes |
+
+### Recommended Protocol: Kerm Codes
+
+The **Kerm Codes protocol** (Option E above) is strongly recommended as the foundation for rich terminal UI features. It provides:
+
+1. **Backward compatibility** - Unknown codes ignored by existing terminals
+2. **Unified approach** - Same protocol for native and web implementations
+3. **Proven design** - Working implementation exists for xterm.js
+4. **Incremental adoption** - Can be implemented in phases
+5. **Shell integration** - Applications can emit rich UI without terminal modifications
+
+**Implementation phases:**
+
+| Phase | Features | Effort |
+|-------|----------|--------|
+| 1 | KRI parsing, text tooltips | 2-3 weeks |
+| 2 | Click actions (paste, run) | 1-2 weeks |
+| 3 | OSC 77 buttons/inputs | 2-3 weeks |
+| 4 | iframe_tooltip/popover | 3-4 weeks |
 
 ### Unified Priority Order
 
@@ -1246,6 +1398,8 @@ Keyboard → ESC? → dismissOnEscape? → Dismiss
 - [VT100 Parser State Machine](https://vt100.net/emu/dec_ansi_parser)
 - [Kitty Graphics Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 - [OSC 8 Hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda)
+- [Kerm Codes Protocol (kash)](https://github.com/jlevy/kash/blob/main/src/kash/shell/output/kerm_codes.py) - OSC-based rich terminal UI protocol
+- [OSC8 Adoption Tracker](https://github.com/Alhadis/OSC8-Adoption)
 
 ---
 
