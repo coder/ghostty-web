@@ -615,6 +615,23 @@ export interface IBufferRange {
 }
 
 /**
+ * Decorations for link styling
+ */
+export interface ILinkDecorations {
+  /**
+   * Whether to show pointer cursor when hovering over the link.
+   * Default: true
+   */
+  pointerCursor?: boolean;
+
+  /**
+   * Whether to underline the link on hover.
+   * Default: true
+   */
+  underline?: boolean;
+}
+
+/**
  * Represents a detected link in the terminal
  */
 export interface ILink {
@@ -632,6 +649,12 @@ export interface ILink {
 
   /** Optional: called to clean up resources */
   dispose?(): void;
+
+  /**
+   * Optional decorations to control how the link is displayed.
+   * If not provided, default styling is used (underline + pointer cursor on hover).
+   */
+  decorations?: ILinkDecorations;
 }
 
 /**

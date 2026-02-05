@@ -112,6 +112,9 @@ export class Terminal implements ITerminalCore {
   // Phase 1: Custom event handlers
   private customKeyEventHandler?: (event: KeyboardEvent) => boolean;
 
+  // OSC handler registry (for custom OSC sequence handlers)
+  private oscHandlers: Map<number, Array<(data: string) => boolean | Promise<boolean>>> = new Map();
+
   // Phase 1: Title tracking
   private currentTitle: string = '';
 
@@ -587,6 +590,14 @@ export class Terminal implements ITerminalCore {
     // This is a simplified implementation - Ghostty WASM may provide this
     if (typeof data === 'string' && data.includes('\x1b]')) {
       this.checkForTitleChange(data);
+      // Dispatch to registered OSC handlers (e.g., OSC 77 for custom links)
+      this.dispatchOscSequences(data);
+    } else if (data instanceof Uint8Array && this.oscHandlers.size > 0) {
+      // Convert Uint8Array to string for OSC parsing if there are handlers
+      const dataStr = new TextDecoder().decode(data);
+      if (dataStr.includes('\x1b]')) {
+        this.dispatchOscSequences(dataStr);
+      }
     }
 
     // Call callback if provided
@@ -897,6 +908,62 @@ export class Terminal implements ITerminalCore {
       throw new Error('Terminal must be opened before registering link providers');
     }
     this.linkDetector.registerProvider(provider);
+  }
+
+  /**
+   * Register a handler for a specific OSC sequence code
+   *
+   * OSC (Operating System Command) sequences allow terminals to handle custom
+   * commands. This method allows registering handlers for specific OSC codes
+   * (e.g., OSC 77 for custom link protocols).
+   *
+   * Multiple handlers can be registered for the same code. Handlers are called
+   * in registration order. If a handler returns true, subsequent handlers are
+   * skipped.
+   *
+   * @param code The OSC code number to handle (e.g., 77)
+   * @param handler Function that receives the OSC payload and returns true
+   *                to stop processing or false to continue to other handlers.
+   *                Can be async.
+   * @returns IDisposable to unregister the handler
+   *
+   * @example
+   * ```typescript
+   * // Register handler for OSC 77 (custom links)
+   * const disposable = term.registerOscHandler(77, (data) => {
+   *   console.log('Received OSC 77:', data);
+   *   return true; // Handled, stop processing
+   * });
+   *
+   * // Later, to unregister:
+   * disposable.dispose();
+   * ```
+   */
+  public registerOscHandler(
+    code: number,
+    handler: (data: string) => boolean | Promise<boolean>
+  ): IDisposable {
+    let handlers = this.oscHandlers.get(code);
+    if (!handlers) {
+      handlers = [];
+      this.oscHandlers.set(code, handlers);
+    }
+    handlers.push(handler);
+
+    return {
+      dispose: () => {
+        const currentHandlers = this.oscHandlers.get(code);
+        if (currentHandlers) {
+          const index = currentHandlers.indexOf(handler);
+          if (index !== -1) {
+            currentHandlers.splice(index, 1);
+          }
+          if (currentHandlers.length === 0) {
+            this.oscHandlers.delete(code);
+          }
+        }
+      },
+    };
   }
 
   // ==========================================================================
@@ -1406,14 +1473,17 @@ export class Terminal implements ITerminalCore {
           // Notify new link we're entering
           link?.hover?.(true);
 
-          // Update cursor style
+          // Update cursor style (respect decorations.pointerCursor, default: true)
           if (this.element) {
-            this.element.style.cursor = link ? 'pointer' : 'text';
+            const showPointerCursor = link && link.decorations?.pointerCursor !== false;
+            this.element.style.cursor = showPointerCursor ? 'pointer' : 'text';
           }
 
           // Update renderer for underline (for regex URLs without hyperlink_id)
+          // Respect decorations.underline, default: true
           if (this.renderer) {
-            if (link) {
+            const showUnderline = link && link.decorations?.underline !== false;
+            if (showUnderline) {
               // Convert buffer coordinates to viewport coordinates
               const scrollbackLength = this.wasmTerm?.getScrollbackLength() || 0;
 
@@ -1818,6 +1888,55 @@ export class Terminal implements ITerminalCore {
       // Send response back to the PTY via onData
       // This is the same path as user keyboard input
       this.dataEmitter.fire(response);
+    }
+  }
+
+  /**
+   * Parse and dispatch OSC sequences to registered handlers
+   *
+   * OSC format: ESC ] <code> ; <payload> BEL (or ST)
+   * - ESC = \x1b
+   * - code = numeric code
+   * - payload = data after the semicolon
+   * - BEL = \x07 or ST = ESC \
+   *
+   * @param data The data to parse for OSC sequences
+   */
+  private dispatchOscSequences(data: string): void {
+    if (this.oscHandlers.size === 0) return;
+
+    // Match OSC sequences: ESC ] <code> ; <payload> (BEL | ST)
+    // Note: We use a non-greedy match for the payload to handle multiple sequences
+    const oscRegex = /\x1b\](\d+);([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+    let match: RegExpExecArray | null = null;
+
+    // biome-ignore lint/suspicious/noAssignInExpressions: Standard regex pattern
+    while ((match = oscRegex.exec(data)) !== null) {
+      const code = Number.parseInt(match[1], 10);
+      const payload = match[2];
+
+      const handlers = this.oscHandlers.get(code);
+      if (handlers) {
+        // Call handlers in order until one returns true
+        for (const handler of handlers) {
+          try {
+            const result = handler(payload);
+            // Handle both sync and async handlers
+            if (result instanceof Promise) {
+              // For async handlers, we can't block - just fire and forget
+              // This matches xterm.js behavior where async handlers run independently
+              result.catch((err) => {
+                console.warn(`OSC ${code} handler error:`, err);
+              });
+            } else if (result === true) {
+              // Sync handler returned true, stop processing this OSC
+              break;
+            }
+          } catch (err) {
+            console.warn(`OSC ${code} handler error:`, err);
+          }
+        }
+      }
     }
   }
 

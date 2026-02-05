@@ -2990,3 +2990,182 @@ describe('Synchronous open()', () => {
     term.dispose();
   });
 });
+
+describe('registerOscHandler()', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(async () => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  describe('Basic functionality', () => {
+    test('should call handler when OSC sequence is written', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      let receivedData: string | null = null;
+      term.registerOscHandler(77, (data) => {
+        receivedData = data;
+        return true;
+      });
+
+      // Write OSC 77 sequence with BEL terminator
+      term.write('\x1b]77;hello world\x07');
+
+      expect(receivedData).toBe('hello world');
+      term.dispose();
+    });
+
+    test('should call handler for OSC with ST terminator', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      let receivedData: string | null = null;
+      term.registerOscHandler(77, (data) => {
+        receivedData = data;
+        return true;
+      });
+
+      // Write OSC 77 sequence with ST terminator (ESC \)
+      term.write('\x1b]77;test data\x1b\\');
+
+      expect(receivedData).toBe('test data');
+      term.dispose();
+    });
+
+    test('should not call handler for different OSC codes', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      let called = false;
+      term.registerOscHandler(77, () => {
+        called = true;
+        return true;
+      });
+
+      // Write OSC 0 (title) sequence
+      term.write('\x1b]0;window title\x07');
+
+      expect(called).toBe(false);
+      term.dispose();
+    });
+
+    test('should return IDisposable to unregister handler', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      let callCount = 0;
+      const disposable = term.registerOscHandler(77, () => {
+        callCount++;
+        return true;
+      });
+
+      // First write - should call handler
+      term.write('\x1b]77;first\x07');
+      expect(callCount).toBe(1);
+
+      // Dispose handler
+      disposable.dispose();
+
+      // Second write - should NOT call handler
+      term.write('\x1b]77;second\x07');
+      expect(callCount).toBe(1);
+
+      term.dispose();
+    });
+
+    test('should support multiple handlers for same code', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      const calls: number[] = [];
+      term.registerOscHandler(77, () => {
+        calls.push(1);
+        return false; // Continue to next handler
+      });
+      term.registerOscHandler(77, () => {
+        calls.push(2);
+        return false;
+      });
+
+      term.write('\x1b]77;test\x07');
+
+      expect(calls).toEqual([1, 2]);
+      term.dispose();
+    });
+
+    test('should stop calling handlers when one returns true', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      const calls: number[] = [];
+      term.registerOscHandler(77, () => {
+        calls.push(1);
+        return true; // Stop processing
+      });
+      term.registerOscHandler(77, () => {
+        calls.push(2);
+        return false;
+      });
+
+      term.write('\x1b]77;test\x07');
+
+      expect(calls).toEqual([1]); // Only first handler called
+      term.dispose();
+    });
+
+    test('should handle multiple OSC sequences in one write', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      const received: string[] = [];
+      term.registerOscHandler(77, (data) => {
+        received.push(data);
+        return true;
+      });
+
+      // Write multiple OSC 77 sequences
+      term.write('\x1b]77;first\x07\x1b]77;second\x07');
+
+      expect(received).toEqual(['first', 'second']);
+      term.dispose();
+    });
+
+    test('should handle Uint8Array data', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      if (!container) return;
+      term.open(container);
+
+      let receivedData: string | null = null;
+      term.registerOscHandler(77, (data) => {
+        receivedData = data;
+        return true;
+      });
+
+      // Write OSC 77 as Uint8Array
+      const osc77 = '\x1b]77;binary data\x07';
+      const bytes = new TextEncoder().encode(osc77);
+      term.write(bytes);
+
+      expect(receivedData).toBe('binary data');
+      term.dispose();
+    });
+  });
+});

@@ -99,7 +99,7 @@ export type { ITerminalDimensions } from './addons/fit';
 export { OSC8LinkProvider } from './providers/osc8-link-provider';
 export { UrlRegexProvider } from './providers/url-regex-provider';
 export { LinkDetector } from './link-detector';
-export type { ILink, ILinkProvider, IBufferCellPosition } from './types';
+export type { ILink, ILinkProvider, IBufferCellPosition, ILinkDecorations } from './types';
 
 // Hyperlink registry (for tracking OSC 8 URIs)
 export { HyperlinkRegistry, parseOsc8Sequences } from './hyperlink-registry';
