@@ -2,6 +2,7 @@ node_modules/
 .DS_Store
 *.log
 .vite/
+package-lock.json
 
 # Reference codebases for research
 attic/
