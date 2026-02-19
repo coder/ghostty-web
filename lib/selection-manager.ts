@@ -550,10 +550,12 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
-        const text = this.getSelection();
-        if (text) {
-          this.copyToClipboard(text);
-          this.selectionChangedEmitter.fire();
+        if (this.hasSelection()) {
+          const text = this.getSelection();
+          if (text) {
+            this.copyToClipboard(text);
+            this.selectionChangedEmitter.fire();
+          }
         }
       }
     };
