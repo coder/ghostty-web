@@ -103,9 +103,9 @@ export class Terminal implements ITerminalCore {
   private animationFrameId?: number;
 
   // Resize protection: queue writes during resize to prevent race conditions
-  private _isResizing = false;
-  private _writeQueue: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
-  private _resizeFlushFrameId?: number;
+  private isResizing = false;
+  private writeQueue: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
+  private resizeFlushFrameId?: number;
 
   // Addons
   private addons: ITerminalAddon[] = [];
@@ -549,9 +549,9 @@ export class Terminal implements ITerminalCore {
     // Queue writes during resize to prevent WASM race conditions.
     // Writes will be flushed after resize completes.
     // Copy Uint8Array data to prevent mutation by caller before flush.
-    if (this._isResizing) {
+    if (this.isResizing) {
       const dataCopy = data instanceof Uint8Array ? new Uint8Array(data) : data;
-      this._writeQueue.push({ data: dataCopy, callback });
+      this.writeQueue.push({ data: dataCopy, callback });
       return;
     }
 
@@ -680,13 +680,13 @@ export class Terminal implements ITerminalCore {
     }
 
     // Cancel any pending resize flush from a previous resize - this resize supersedes it
-    if (this._resizeFlushFrameId) {
-      cancelAnimationFrame(this._resizeFlushFrameId);
-      this._resizeFlushFrameId = undefined;
+    if (this.resizeFlushFrameId) {
+      cancelAnimationFrame(this.resizeFlushFrameId);
+      this.resizeFlushFrameId = undefined;
     }
 
     // Set resizing flag to queue any incoming writes
-    this._isResizing = true;
+    this.isResizing = true;
 
     // Pause render loop during resize to prevent race condition.
     // The render loop reads from WASM buffers that are reallocated during resize.
@@ -733,9 +733,9 @@ export class Terminal implements ITerminalCore {
     // Clear resizing flag and flush queued writes after a frame
     // This ensures WASM state has fully settled before processing writes
     // Track the frame ID so it can be canceled on dispose
-    this._resizeFlushFrameId = requestAnimationFrame(() => {
-      this._resizeFlushFrameId = undefined;
-      this._isResizing = false;
+    this.resizeFlushFrameId = requestAnimationFrame(() => {
+      this.resizeFlushFrameId = undefined;
+      this.isResizing = false;
       this.flushWriteQueue();
     });
   }
@@ -746,11 +746,11 @@ export class Terminal implements ITerminalCore {
   private flushWriteQueue(): void {
     // Guard against flush after dispose
     if (this.isDisposed || !this.isOpen) {
-      this._writeQueue = [];
+      this.writeQueue = [];
       return;
     }
-    const queue = this._writeQueue;
-    this._writeQueue = [];
+    const queue = this.writeQueue;
+    this.writeQueue = [];
     for (const { data, callback } of queue) {
       this.writeInternal(data, callback);
     }
@@ -1153,12 +1153,12 @@ export class Terminal implements ITerminalCore {
     }
 
     // Cancel pending resize flush and clear write queue
-    if (this._resizeFlushFrameId) {
-      cancelAnimationFrame(this._resizeFlushFrameId);
-      this._resizeFlushFrameId = undefined;
+    if (this.resizeFlushFrameId) {
+      cancelAnimationFrame(this.resizeFlushFrameId);
+      this.resizeFlushFrameId = undefined;
     }
-    this._writeQueue = [];
-    this._isResizing = false;
+    this.writeQueue = [];
+    this.isResizing = false;
 
     // Clear mouse move throttle timeout
     if (this.mouseMoveThrottleTimeout) {
