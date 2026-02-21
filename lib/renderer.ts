@@ -226,12 +226,12 @@ export class CanvasRenderer {
     // characters (U+E0B0, U+E0B6, etc.) which are designed to fill the full cell height.
     // Fall back to actual metrics if font metrics aren't available.
     const ascent =
-      widthMetrics.fontBoundingBoxAscent ??
-      widthMetrics.actualBoundingBoxAscent ??
+      widthMetrics.fontBoundingBoxAscent ||
+      widthMetrics.actualBoundingBoxAscent ||
       this.fontSize * 0.8;
     const descent =
-      widthMetrics.fontBoundingBoxDescent ??
-      widthMetrics.actualBoundingBoxDescent ??
+      widthMetrics.fontBoundingBoxDescent ||
+      widthMetrics.actualBoundingBoxDescent ||
       this.fontSize * 0.2;
 
     const height = Math.ceil(ascent + descent);

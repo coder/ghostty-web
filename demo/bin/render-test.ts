@@ -133,18 +133,9 @@ async function main() {
       timeout: 30000,
     });
 
-    // Wait for fonts to load - match the logic in render-test.html
-    await page.evaluate(async () => {
-      const fontVariants = [
-        '14px "JetBrainsMono NF"',
-        'bold 14px "JetBrainsMono NF"',
-        'italic 14px "JetBrainsMono NF"',
-        'bold italic 14px "JetBrainsMono NF"',
-      ];
-      await Promise.all(fontVariants.map(font => document.fonts.load(font)));
-      await document.fonts.ready;
-    });
-    await new Promise((r) => setTimeout(r, 500)); // Extra time for font rendering
+    // Wait for the page's runAllTests() to complete.
+    // render-test.html sets window.__testsComplete = true when done.
+    await page.waitForFunction('window.__testsComplete === true', { timeout: 60000 });
 
     // Get test cases from the page
     const testCases = await page.evaluate(() => {
@@ -288,4 +279,7 @@ function calculateDiffPercent(buf1: Buffer, buf2: Buffer): number {
   return (diffBytes / maxSize) * 100;
 }
 
-main().catch(console.error);
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
