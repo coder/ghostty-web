@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Visual Render Tests - Ghostty WASM</title>
+  <style>
+    @font-face {
+      font-family: "JetBrainsMono NF";
+      src: url("https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@latest/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "JetBrainsMono NF";
+      src: url("https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@latest/patched-fonts/JetBrainsMono/Ligatures/Bold/JetBrainsMonoNerdFont-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "JetBrainsMono NF";
+      src: url("https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@latest/patched-fonts/JetBrainsMono/Ligatures/Italic/JetBrainsMonoNerdFont-Italic.ttf") format("truetype");
+      font-weight: 400;
+      font-style: italic;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "JetBrainsMono NF";
+      src: url("https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@latest/patched-fonts/JetBrainsMono/Ligatures/BoldItalic/JetBrainsMonoNerdFont-BoldItalic.ttf") format("truetype");
+      font-weight: 700;
+      font-style: italic;
+      font-display: swap;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 20px;
+    }
+
+    h1 { color: #58a6ff; margin-bottom: 8px; }
+    .subtitle { color: #8b949e; margin-bottom: 20px; font-size: 14px; }
+
+    .controls {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .summary { display: flex; gap: 16px; }
+    .stat { text-align: center; }
+    .stat .num { font-size: 24px; font-weight: bold; }
+    .stat .lbl { font-size: 11px; color: #8b949e; }
+    .stat.pass .num { color: #3fb950; }
+    .stat.fail .num { color: #f85149; }
+    .stat.new .num { color: #a371f7; }
+
+    button {
+      background: #238636;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover { background: #2ea043; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .test-case {
+      background: #161b22;
+      border: 2px solid #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .test-case.pass { border-color: #238636; }
+    .test-case.fail { border-color: #f85149; }
+    .test-case.new { border-color: #a371f7; }
+
+    .test-header {
+      padding: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #30363d;
+    }
+    .test-header h3 { font-size: 14px; }
+    .test-header p { font-size: 12px; color: #8b949e; }
+
+    .test-status {
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .test-status.pass { background: #238636; color: white; }
+    .test-status.fail { background: #f85149; color: white; }
+    .test-status.new { background: #a371f7; color: white; }
+    .test-status.pending { background: #30363d; color: #8b949e; }
+
+    .test-body { padding: 12px; }
+
+    .canvas-row {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .canvas-container label {
+      display: block;
+      font-size: 10px;
+      color: #8b949e;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .canvas-container canvas {
+      background: #1e1e1e;
+      border-radius: 4px;
+      display: block;
+    }
+
+    .diff-info {
+      font-size: 12px;
+      color: #8b949e;
+      padding: 8px;
+      background: #0d1117;
+      border-radius: 4px;
+    }
+    .diff-info.fail { color: #f85149; }
+
+    .note {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: #8b949e;
+    }
+    .note code {
+      background: #0d1117;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>Visual Render Tests</h1>
+  <p class="subtitle">Renderer regression tests comparing against baseline images</p>
+
+  <div class="note">
+    <strong>Usage:</strong> Run <code>bun test:render:web</code> then open <code>http://localhost:3000/demo/render-test</code><br>
+    To update baselines: <code>bun test:render:update</code>
+  </div>
+
+  <div class="controls">
+    <button id="run-btn" onclick="runAllTests()">Run All Tests</button>
+    <div class="summary">
+      <div class="stat pass"><span class="num" id="pass-count">0</span><div class="lbl">Passed</div></div>
+      <div class="stat fail"><span class="num" id="fail-count">0</span><div class="lbl">Failed</div></div>
+      <div class="stat new"><span class="num" id="new-count">0</span><div class="lbl">New</div></div>
+    </div>
+  </div>
+
+  <div class="test-grid" id="test-grid"></div>
+
+  <script type="module">
+    import { CanvasRenderer, CellFlags } from '../dist/ghostty-web.js';
+
+    // ========================================================================
+    // Helpers
+    // ========================================================================
+
+    // Default foreground color (light gray like the theme)
+    const DEFAULT_FG = { r: 212, g: 212, b: 212 };
+    // Default background color (transparent/black - theme fills this)
+    const DEFAULT_BG = { r: 0, g: 0, b: 0 };
+
+    function createCell(char, opts = {}) {
+      const fg = opts.fg ?? DEFAULT_FG;
+      const bg = opts.bg ?? DEFAULT_BG;
+      return {
+        codepoint: (char || ' ').codePointAt(0) || 32,
+        width: opts.width ?? 1,
+        fg_r: fg.r,
+        fg_g: fg.g,
+        fg_b: fg.b,
+        bg_r: bg.r,
+        bg_g: bg.g,
+        bg_b: bg.b,
+        flags: opts.flags ?? 0,
+        hyperlink_id: opts.link ? 1 : 0,
+        grapheme_len: 0,
+      };
+    }
+
+    function createLine(text, cols, opts = {}) {
+      const line = [];
+      for (let i = 0; i < cols; i++) {
+        line.push(createCell(text[i] || ' ', opts));
+      }
+      return line;
+    }
+
+    function createMockBuffer(lines, cursor = { x: 0, y: 0, visible: false, style: 'block' }) {
+      const rows = lines.length;
+      const cols = lines[0]?.length ?? 80;
+      return {
+        getLine: (y) => lines[y] || null,
+        getCursor: () => cursor,
+        getDimensions: () => ({ cols, rows }),
+        isRowDirty: () => true,
+        needsFullRedraw: () => false,
+        clearDirty: () => {},
+      };
+    }
+
+    async function loadBaselineImage(id) {
+      try {
+        // Add cache-busting to avoid stale baselines
+        const response = await fetch(`baselines/${id}.png?t=${Date.now()}`);
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => resolve(null);
+          img.src = URL.createObjectURL(blob);
+        });
+      } catch {
+        return null;
+      }
+    }
+
+    function compareImages(canvas1, canvas2) {
+      const ctx1 = canvas1.getContext('2d');
+      const ctx2 = canvas2.getContext('2d');
+      const width = Math.max(canvas1.width, canvas2.width);
+      const height = Math.max(canvas1.height, canvas2.height);
+
+      const data1 = ctx1.getImageData(0, 0, width, height).data;
+      const data2 = ctx2.getImageData(0, 0, width, height).data;
+
+      let diffPixels = 0;
+      const totalPixels = width * height;
+
+      for (let i = 0; i < data1.length; i += 4) {
+        const dr = Math.abs(data1[i] - data2[i]);
+        const dg = Math.abs(data1[i + 1] - data2[i + 1]);
+        const db = Math.abs(data1[i + 2] - data2[i + 2]);
+        if (dr > 2 || dg > 2 || db > 2) diffPixels++;
+      }
+
+      return { diffPixels, diffPercent: (diffPixels / totalPixels) * 100 };
+    }
+
+    // ========================================================================
+    // Test Registry
+    // ========================================================================
+
+    const testCases = [];
+    const testResults = new Map();
+
+    function registerTest(id, name, description, renderFn) {
+      testCases.push({ id, name, description, renderFn });
+    }
+
+    // Default renderer options
+    const DEFAULT_OPTS = {
+      fontSize: 14,
+      fontFamily: '"JetBrainsMono NF", Monaco, monospace',
+      devicePixelRatio: 2,
+    };
+
+    // ========================================================================
+    // Test Definitions
+    // ========================================================================
+
+    registerTest('basic-text', 'Basic Text', 'Simple ASCII text', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      renderer.render(createMockBuffer([
+        createLine('Hello, World!', 20),
+        createLine('ABCDEFGHIJKLMNOP', 20),
+        createLine('0123456789!@#$%^', 20),
+      ]), true);
+    });
+
+    registerTest('text-styles', 'Text Styles', 'Bold, italic, underline, strikethrough, faint', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 25;
+      renderer.render(createMockBuffer([
+        createLine('Normal text here    ', cols),
+        createLine('Bold text here      ', cols, { flags: CellFlags.BOLD }),
+        createLine('Italic text here    ', cols, { flags: CellFlags.ITALIC }),
+        createLine('Underline text here ', cols, { flags: CellFlags.UNDERLINE }),
+        createLine('Strikethrough text  ', cols, { flags: CellFlags.STRIKETHROUGH }),
+        createLine('Faint/Dim text here ', cols, { flags: CellFlags.FAINT }),
+        createLine('Bold+Italic combo   ', cols, { flags: CellFlags.BOLD | CellFlags.ITALIC }),
+        createLine('Bold+Underline combo', cols, { flags: CellFlags.BOLD | CellFlags.UNDERLINE }),
+      ]), true);
+    });
+
+    registerTest('inverse-video', 'Inverse Video', 'Swapped foreground/background', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 25;
+      renderer.render(createMockBuffer([
+        createLine('Normal text         ', cols),
+        createLine('Inverse video text  ', cols, { flags: CellFlags.INVERSE }),
+        createLine('Normal again        ', cols),
+        (() => {
+          const line = [];
+          const text = 'Mixed: inv | normal  ';
+          for (let i = 0; i < cols; i++) {
+            line.push(createCell(text[i] || ' ', { flags: (i >= 7 && i < 10) ? CellFlags.INVERSE : 0 }));
+          }
+          return line;
+        })(),
+      ]), true);
+    });
+
+    registerTest('ansi-colors', 'ANSI 16 Colors', 'Standard color palette', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const ansiColors = [
+        { r: 0, g: 0, b: 0 }, { r: 205, g: 49, b: 49 }, { r: 13, g: 188, b: 121 }, { r: 229, g: 229, b: 16 },
+        { r: 36, g: 114, b: 200 }, { r: 188, g: 63, b: 188 }, { r: 17, g: 168, b: 205 }, { r: 229, g: 229, b: 229 },
+        { r: 102, g: 102, b: 102 }, { r: 241, g: 76, b: 76 }, { r: 35, g: 209, b: 139 }, { r: 245, g: 245, b: 67 },
+        { r: 59, g: 142, b: 234 }, { r: 214, g: 112, b: 214 }, { r: 41, g: 184, b: 219 }, { r: 255, g: 255, b: 255 },
+      ];
+      const cols = 32;
+      const lines = [];
+      for (let row = 0; row < 2; row++) {
+        const line = [];
+        for (let i = 0; i < 8; i++) {
+          const colorIdx = row * 8 + i;
+          const label = String(colorIdx).padStart(2, ' ') + ' ';
+          // Use white foreground for dark colors (black)
+          const fgColor = colorIdx === 0 ? { r: 255, g: 255, b: 255 } : ansiColors[colorIdx];
+          for (const char of label) line.push(createCell(char, { fg: fgColor }));
+          line.push(createCell(' ', { bg: ansiColors[colorIdx] }));
+        }
+        while (line.length < cols) line.push(createCell(' '));
+        lines.push(line.slice(0, cols));
+      }
+      renderer.render(createMockBuffer(lines), true);
+    });
+
+    registerTest('rgb-colors', 'RGB Colors', 'True 24-bit colors', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 32;
+      const gradientLine = [];
+      for (let i = 0; i < cols; i++) {
+        const r = Math.floor((i / cols) * 255);
+        const g = Math.floor(((cols - i) / cols) * 255);
+        const b = 128;
+        gradientLine.push(createCell('\u2588', { fg: { r, g, b } }));
+      }
+      renderer.render(createMockBuffer([
+        gradientLine,
+        createLine('Custom RGB colors:  ', cols, { fg: { r: 100, g: 200, b: 150 } }),
+        createLine('Pink background     ', cols, { bg: { r: 255, g: 200, b: 200 }, fg: { r: 0, g: 0, b: 0 } }),
+      ]), true);
+    });
+
+    registerTest('cursor-block', 'Cursor: Block', 'Block cursor style', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      renderer.render(createMockBuffer([
+        createLine('Block cursor here:', 20),
+        createLine('Text with cursor  ', 20),
+      ], { x: 5, y: 1, visible: true, style: 'block' }), true);
+    });
+
+    registerTest('cursor-underline', 'Cursor: Underline', 'Underline cursor style', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      renderer.render(createMockBuffer([
+        createLine('Underline cursor:', 20),
+        createLine('Text with cursor  ', 20),
+      ], { x: 5, y: 1, visible: true, style: 'underline' }), true);
+    });
+
+    registerTest('cursor-bar', 'Cursor: Bar', 'Bar/I-beam cursor style', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      renderer.render(createMockBuffer([
+        createLine('Bar cursor here:', 20),
+        createLine('Text with cursor  ', 20),
+      ], { x: 5, y: 1, visible: true, style: 'bar' }), true);
+    });
+
+    registerTest('wide-chars', 'Wide Characters', 'CJK double-width chars', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 12;
+      renderer.render(createMockBuffer([
+        [createCell('\u4E2D', { width: 2 }), createCell('', { width: 0 }), createCell('\u6587', { width: 2 }), createCell('', { width: 0 }), ...Array(cols - 4).fill(createCell(' '))],
+        [createCell('\u65E5', { width: 2 }), createCell('', { width: 0 }), createCell('\u672C', { width: 2 }), createCell('', { width: 0 }), createCell('\u8A9E', { width: 2 }), createCell('', { width: 0 }), ...Array(cols - 6).fill(createCell(' '))],
+        [createCell('\uD55C', { width: 2 }), createCell('', { width: 0 }), createCell('\uAE00', { width: 2 }), createCell('', { width: 0 }), ...Array(cols - 4).fill(createCell(' '))],
+        [createCell('A'), createCell('B'), createCell('\u4E2D', { width: 2 }), createCell('', { width: 0 }), createCell('C'), createCell('D'), createCell('\u6587', { width: 2 }), createCell('', { width: 0 }), createCell('E'), createCell('F'), ...Array(cols - 10).fill(createCell(' '))],
+      ]), true);
+    });
+
+    registerTest('invisible-text', 'Invisible Text', 'INVISIBLE flag hides text', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 20;
+      renderer.render(createMockBuffer([
+        createLine('Visible text here   ', cols),
+        createLine('HIDDEN TEXT HERE    ', cols, { flags: CellFlags.INVISIBLE }),
+        createLine('More visible text   ', cols),
+      ]), true);
+    });
+
+    registerTest('hyperlink', 'Hyperlinks', 'OSC8 link underlines', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 30;
+      const normalLine = createLine('No link here              ', cols);
+      const linkLine = [];
+      const linkText = 'Click: https://example.com';
+      for (let i = 0; i < cols; i++) {
+        const inLink = i >= 7 && i < 26;
+        linkLine.push(createCell(linkText[i] || ' ', inLink ? { link: { url: 'https://example.com' } } : {}));
+      }
+      const mailLine = [];
+      const mailText = 'Also: mailto:test@test.com';
+      for (let i = 0; i < cols; i++) {
+        const inLink = i >= 6 && i < 26;
+        mailLine.push(createCell(mailText[i] || ' ', inLink ? { link: { url: 'mailto:test@test.com' } } : {}));
+      }
+      // Set hovered hyperlink ID to show underlines (simulates hover state)
+      renderer.setHoveredHyperlinkId(1);
+      renderer.render(createMockBuffer([normalLine, linkLine, mailLine]), true);
+    });
+
+    registerTest('combined-styles', 'Combined Styles', 'Multiple attributes', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 25;
+      renderer.render(createMockBuffer([
+        createLine('Bold + Italic + Underline:', cols),
+        createLine('Combined styling test   ', cols, { flags: CellFlags.BOLD | CellFlags.ITALIC | CellFlags.UNDERLINE }),
+        createLine('Faint + Strikethrough:  ', cols),
+        createLine('Deleted faint text      ', cols, { flags: CellFlags.FAINT | CellFlags.STRIKETHROUGH }),
+        createLine('Bold + Colored:         ', cols),
+        createLine('Bold red text           ', cols, { flags: CellFlags.BOLD, fg: { r: 255, g: 100, b: 100 } }),
+      ]), true);
+    });
+
+    registerTest('cell-backgrounds', 'Cell Backgrounds', 'Individual cell colors', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 25;
+      const bgLine = [];
+      const colors = [
+        { r: 255, g: 0, b: 0 }, { r: 0, g: 200, b: 0 }, { r: 0, g: 100, b: 255 },
+        { r: 255, g: 255, b: 0 }, { r: 255, g: 0, b: 255 },
+      ];
+      // Use white text for dark backgrounds, black text for light backgrounds
+      const textColors = [
+        { r: 255, g: 255, b: 255 }, { r: 255, g: 255, b: 255 }, { r: 255, g: 255, b: 255 },
+        { r: 0, g: 0, b: 0 }, { r: 0, g: 0, b: 0 },
+      ];
+      const labels = ['RED', 'GRN', 'BLU', 'YEL', 'MAG'];
+      for (let i = 0; i < 5; i++) {
+        for (const char of labels[i]) bgLine.push(createCell(char, { bg: colors[i], fg: textColors[i] }));
+        bgLine.push(createCell(' '));
+      }
+      while (bgLine.length < cols) bgLine.push(createCell(' '));
+
+      const syntaxLine = [];
+      const code = 'const x = "hello";';
+      const syntaxColors = [
+        { r: 86, g: 156, b: 214 }, { r: 86, g: 156, b: 214 }, { r: 86, g: 156, b: 214 },
+        { r: 86, g: 156, b: 214 }, { r: 86, g: 156, b: 214 }, { r: 212, g: 212, b: 212 },
+        { r: 156, g: 220, b: 254 }, { r: 212, g: 212, b: 212 }, { r: 212, g: 212, b: 212 },
+        { r: 212, g: 212, b: 212 }, { r: 206, g: 145, b: 120 }, { r: 206, g: 145, b: 120 },
+        { r: 206, g: 145, b: 120 }, { r: 206, g: 145, b: 120 }, { r: 206, g: 145, b: 120 },
+        { r: 206, g: 145, b: 120 }, { r: 206, g: 145, b: 120 }, { r: 212, g: 212, b: 212 },
+      ];
+      for (let i = 0; i < code.length; i++) syntaxLine.push(createCell(code[i], { fg: syntaxColors[i] }));
+      while (syntaxLine.length < cols) syntaxLine.push(createCell(' '));
+
+      renderer.render(createMockBuffer([
+        bgLine.slice(0, cols),
+        createLine('Syntax highlighting demo:', cols),
+        syntaxLine.slice(0, cols),
+      ]), true);
+    });
+
+    registerTest('powerline-prompt', 'Powerline Prompt', 'Continuous background height with powerline glyphs', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 50;
+
+      // Powerline glyphs (using Unicode escapes for clarity)
+      const ARROW_RIGHT = '\uE0B0';           //
+      const ROUNDED_LEFT = '\uE0B6';          //
+      const ICON_GIT_BRANCH = '\uF418';       //
+
+      // Powerline segment colors
+      const blue = { r: 36, g: 114, b: 200 };
+      const cyan = { r: 17, g: 168, b: 205 };
+      const green = { r: 13, g: 188, b: 121 };
+      const magenta = { r: 188, g: 63, b: 188 };
+      const white = { r: 255, g: 255, b: 255 };
+      const black = { r: 0, g: 0, b: 0 };
+
+      // Build prompt:  user  …/project   main !   17:30
+      const promptLine = [];
+
+      // Rounded left cap: fg = segment bg, bg = default (creates rounded left edge)
+      promptLine.push(createCell(ROUNDED_LEFT, { fg: blue, bg: DEFAULT_BG }));
+
+      // Segment 1: user (blue background)
+      for (const char of 'user ') {
+        promptLine.push(createCell(char, { bg: blue, fg: white }));
+      }
+      // Arrow separator: fg = blue, bg = cyan
+      promptLine.push(createCell(ARROW_RIGHT, { fg: blue, bg: cyan }));
+
+      // Segment 2: path (cyan background)
+      for (const char of ' \u2026/project ') {
+        promptLine.push(createCell(char, { bg: cyan, fg: black }));
+      }
+      // Arrow separator: fg = cyan, bg = green
+      promptLine.push(createCell(ARROW_RIGHT, { fg: cyan, bg: green }));
+
+      // Segment 3: git branch (green background) with branch icon
+      for (const char of ` ${ICON_GIT_BRANCH} main ! `) {
+        promptLine.push(createCell(char, { bg: green, fg: black }));
+      }
+      // Double arrow transition: green -> magenta -> default (thin magenta cap)
+      promptLine.push(createCell(ARROW_RIGHT, { fg: green, bg: magenta }));
+      promptLine.push(createCell(ARROW_RIGHT, { fg: magenta, bg: DEFAULT_BG }));
+
+      // Segment 4: time (no background, just colored text)
+      for (const char of ' 17:30 ') {
+        promptLine.push(createCell(char, { fg: white }));
+      }
+      // Final arrow (invisible - same as background)
+      promptLine.push(createCell(ARROW_RIGHT, { fg: DEFAULT_BG, bg: DEFAULT_BG }));
+
+      // Pad to column width
+      while (promptLine.length < cols) promptLine.push(createCell(' '));
+
+      renderer.render(createMockBuffer([
+        createLine('Powerline prompt test:', cols),
+        promptLine.slice(0, cols),
+        createLine('', cols),
+        createLine('Glyphs should have uniform', cols),
+        createLine('background height.', cols),
+      ]), true);
+    });
+
+    registerTest('colorscript-art', 'Colorscript ASCII Art', 'Colorful terminal startup art with ANSI colors', (canvas) => {
+      const renderer = new CanvasRenderer(canvas, DEFAULT_OPTS);
+      const cols = 56;
+
+      // ANSI color palette (normal and bright variants)
+      const red = { r: 205, g: 49, b: 49 };
+      const green = { r: 13, g: 188, b: 121 };
+      const yellow = { r: 229, g: 229, b: 16 };
+      const blue = { r: 36, g: 114, b: 200 };
+      const magenta = { r: 188, g: 63, b: 188 };
+      const cyan = { r: 17, g: 168, b: 205 };
+
+      const brightRed = { r: 241, g: 76, b: 76 };
+      const brightGreen = { r: 35, g: 209, b: 139 };
+      const brightYellow = { r: 245, g: 245, b: 67 };
+      const brightBlue = { r: 59, g: 142, b: 234 };
+      const brightMagenta = { r: 214, g: 112, b: 214 };
+      const brightCyan = { r: 41, g: 184, b: 219 };
+
+      // Color pairs: [normal, bright] for each column
+      const colorPairs = [
+        [red, brightRed],
+        [green, brightGreen],
+        [yellow, brightYellow],
+        [blue, brightBlue],
+        [magenta, brightMagenta],
+        [cyan, brightCyan],
+      ];
+
+      // Helper to build a line with the colorscript pattern
+      function buildLine(pattern1, pattern2) {
+        const line = [createCell(' ')]; // Leading space
+        for (const [normal, bright] of colorPairs) {
+          // Normal color pattern
+          for (const char of pattern1) {
+            line.push(createCell(char, { fg: normal }));
+          }
+          // Bright color character
+          for (const char of pattern2) {
+            line.push(createCell(char, { fg: bright }));
+          }
+        }
+        while (line.length < cols) line.push(createCell(' '));
+        return line.slice(0, cols);
+      }
+
+      // Three lines of the crunchbang-mini ASCII art
+      // Line 1: \u2584\u2588\u2584\u2588\u2584 \u2588  (repeated for each color pair)
+      // Line 2: \u2584\u2588\u2584\u2588\u2584 \u2580  (repeated for each color pair)
+      // Line 3:  \u2580 \u2580  \u2580  (repeated for each color pair)
+      const line1 = buildLine('\u2584\u2588\u2584\u2588\u2584 ', '\u2588 ');
+      const line2 = buildLine('\u2584\u2588\u2584\u2588\u2584 ', '\u2580 ');
+      const line3 = buildLine(' \u2580 \u2580  ', '\u2580 ');
+
+      renderer.render(createMockBuffer([
+        line1,
+        line2,
+        line3,
+      ]), true);
+    });
+
+    // ========================================================================
+    // UI
+    // ========================================================================
+
+    function createTestUI() {
+      const grid = document.getElementById('test-grid');
+      grid.innerHTML = '';
+      for (const test of testCases) {
+        const div = document.createElement('div');
+        div.className = 'test-case';
+        div.id = `test-${test.id}`;
+        div.innerHTML = `
+          <div class="test-header">
+            <div><h3>${test.name}</h3><p>${test.description}</p></div>
+            <span class="test-status pending" id="status-${test.id}">Pending</span>
+          </div>
+          <div class="test-body">
+            <div class="canvas-row">
+              <div class="canvas-container">
+                <label>Current</label>
+                <canvas id="canvas-${test.id}" width="800" height="400"></canvas>
+              </div>
+              <div class="canvas-container">
+                <label>Baseline</label>
+                <canvas id="baseline-${test.id}" width="800" height="400"></canvas>
+              </div>
+            </div>
+            <div class="diff-info" id="diff-${test.id}"></div>
+          </div>
+        `;
+        grid.appendChild(div);
+      }
+    }
+
+    function updateSummary() {
+      let pass = 0, fail = 0, newCount = 0;
+      for (const r of testResults.values()) {
+        if (r === 'pass') pass++;
+        else if (r === 'fail') fail++;
+        else if (r === 'new') newCount++;
+      }
+      document.getElementById('pass-count').textContent = pass;
+      document.getElementById('fail-count').textContent = fail;
+      document.getElementById('new-count').textContent = newCount;
+    }
+
+    async function runTest(test) {
+      const card = document.getElementById(`test-${test.id}`);
+      const status = document.getElementById(`status-${test.id}`);
+      const canvas = document.getElementById(`canvas-${test.id}`);
+      const baselineCanvas = document.getElementById(`baseline-${test.id}`);
+      const diffInfo = document.getElementById(`diff-${test.id}`);
+
+      status.textContent = 'Running';
+      status.className = 'test-status pending';
+      card.className = 'test-case';
+
+      canvas.width = 800;
+      canvas.height = 400;
+
+      try {
+        test.renderFn(canvas);
+        const baselineImg = await loadBaselineImage(test.id);
+
+        if (!baselineImg) {
+          status.textContent = 'New';
+          status.className = 'test-status new';
+          card.className = 'test-case new';
+          diffInfo.textContent = 'No baseline. Run: bun test:render:update';
+          testResults.set(test.id, 'new');
+
+          const ctx = baselineCanvas.getContext('2d');
+          ctx.fillStyle = '#1e1e1e';
+          ctx.fillRect(0, 0, baselineCanvas.width, baselineCanvas.height);
+          ctx.fillStyle = '#8b949e';
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('No baseline', baselineCanvas.width / 2, baselineCanvas.height / 2);
+          return;
+        }
+
+        baselineCanvas.width = baselineImg.width;
+        baselineCanvas.height = baselineImg.height;
+        const ctx = baselineCanvas.getContext('2d');
+        ctx.drawImage(baselineImg, 0, 0);
+
+        // Remove CSS size constraints so both canvases display at full internal resolution
+        canvas.style.width = '';
+        canvas.style.height = '';
+
+        const result = compareImages(canvas, baselineCanvas);
+        const threshold = 0.1;
+
+        if (result.diffPercent <= threshold) {
+          status.textContent = 'Pass';
+          status.className = 'test-status pass';
+          card.className = 'test-case pass';
+          diffInfo.textContent = `${result.diffPixels} pixels differ (${result.diffPercent.toFixed(3)}%)`;
+          testResults.set(test.id, 'pass');
+        } else {
+          status.textContent = 'Fail';
+          status.className = 'test-status fail';
+          card.className = 'test-case fail';
+          diffInfo.textContent = `${result.diffPixels} pixels differ (${result.diffPercent.toFixed(3)}%) - exceeds 0.1% threshold`;
+          diffInfo.className = 'diff-info fail';
+          testResults.set(test.id, 'fail');
+        }
+      } catch (e) {
+        status.textContent = 'Error';
+        status.className = 'test-status fail';
+        card.className = 'test-case fail';
+        diffInfo.textContent = `Error: ${e.message}`;
+        diffInfo.className = 'diff-info fail';
+        testResults.set(test.id, 'fail');
+      }
+    }
+
+    // Load all font variants and wait for them to be ready
+    async function ensureFontsLoaded() {
+      // Load all 4 font variants used in tests
+      const fontVariants = [
+        '14px "JetBrainsMono NF"',
+        'bold 14px "JetBrainsMono NF"',
+        'italic 14px "JetBrainsMono NF"',
+        'bold italic 14px "JetBrainsMono NF"',
+      ];
+
+      // Trigger loading of all variants
+      await Promise.all(fontVariants.map(font => document.fonts.load(font)));
+
+      // Wait for document.fonts.ready as a second check
+      await document.fonts.ready;
+
+      // Verify all fonts are actually loaded
+      const allLoaded = fontVariants.every(font => document.fonts.check(font));
+      if (!allLoaded) {
+        // If not all loaded, wait a bit more and try again
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    async function runAllTests() {
+      document.getElementById('run-btn').disabled = true;
+      testResults.clear();
+
+      // Ensure fonts are fully loaded before rendering
+      await ensureFontsLoaded();
+
+      for (const test of testCases) {
+        await runTest(test);
+        updateSummary();
+      }
+
+      document.getElementById('run-btn').disabled = false;
+    }
+
+    // Initialize
+    createTestUI();
+
+    // Wait for fonts to load, then run tests
+    ensureFontsLoaded().then(() => runAllTests());
+
+    window.runAllTests = runAllTests;
+  </script>
+</body>
+</html>

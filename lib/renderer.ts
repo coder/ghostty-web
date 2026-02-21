@@ -18,7 +18,7 @@ import { CellFlags } from './types';
 // Interface for objects that can be rendered
 export interface IRenderable {
   getLine(y: number): GhosttyCell[] | null;
-  getCursor(): { x: number; y: number; visible: boolean };
+  getCursor(): { x: number; y: number; visible: boolean; style?: 'block' | 'underline' | 'bar' };
   getDimensions(): { cols: number; rows: number };
   isRowDirty(y: number): boolean;
   /** Returns true if a full redraw is needed (e.g., screen change) */
@@ -187,26 +187,55 @@ export class CanvasRenderer {
   // Font Metrics Measurement
   // ==========================================================================
 
+  /**
+   * Build a CSS font string with proper quoting for font families with spaces.
+   * Example: "Fira Code, monospace" -> '"Fira Code", monospace'
+   */
+  private buildFontString(style: string = ''): string {
+    // Quote font family names that contain spaces but aren't already quoted
+    const quotedFamily = this.fontFamily
+      .split(',')
+      .map((f) => {
+        const trimmed = f.trim();
+        // Already quoted or a generic family (no spaces)
+        if (trimmed.startsWith('"') || trimmed.startsWith("'") || !trimmed.includes(' ')) {
+          return trimmed;
+        }
+        // Quote it
+        return `"${trimmed}"`;
+      })
+      .join(', ');
+
+    return `${style}${this.fontSize}px ${quotedFamily}`;
+  }
+
   private measureFont(): FontMetrics {
     // Use an offscreen canvas for measurement
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d')!;
 
     // Set font (use actual pixel size for accurate measurement)
-    ctx.font = `${this.fontSize}px ${this.fontFamily}`;
+    ctx.font = this.buildFontString();
 
     // Measure width using 'M' (typically widest character)
     const widthMetrics = ctx.measureText('M');
     const width = Math.ceil(widthMetrics.width);
 
-    // Measure height using ascent + descent with padding for glyph overflow
-    const ascent = widthMetrics.actualBoundingBoxAscent || this.fontSize * 0.8;
-    const descent = widthMetrics.actualBoundingBoxDescent || this.fontSize * 0.2;
+    // Use font-level metrics (fontBoundingBox) rather than glyph-specific metrics (actualBoundingBox).
+    // This ensures the cell height accommodates ALL glyphs in the font, including powerline
+    // characters (U+E0B0, U+E0B6, etc.) which are designed to fill the full cell height.
+    // Fall back to actual metrics if font metrics aren't available.
+    const ascent =
+      widthMetrics.fontBoundingBoxAscent ??
+      widthMetrics.actualBoundingBoxAscent ??
+      this.fontSize * 0.8;
+    const descent =
+      widthMetrics.fontBoundingBoxDescent ??
+      widthMetrics.actualBoundingBoxDescent ??
+      this.fontSize * 0.2;
 
-    // Add 2px padding to height to account for glyphs that overflow (like 'f', 'd', 'g', 'p')
-    // and anti-aliasing pixels
-    const height = Math.ceil(ascent + descent) + 2;
-    const baseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+    const height = Math.ceil(ascent + descent);
+    const baseline = Math.ceil(ascent);
 
     return { width, height, baseline };
   }
@@ -485,7 +514,9 @@ export class CanvasRenderer {
 
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
-      this.renderCursor(cursor.x, cursor.y);
+      // Use cursor style from buffer if provided, otherwise use renderer default
+      const cursorStyle = cursor.style ?? this.cursorStyle;
+      this.renderCursor(cursor.x, cursor.y, cursorStyle);
     }
 
     // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect)
@@ -606,26 +637,26 @@ export class CanvasRenderer {
     let fontStyle = '';
     if (cell.flags & CellFlags.ITALIC) fontStyle += 'italic ';
     if (cell.flags & CellFlags.BOLD) fontStyle += 'bold ';
-    this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
+    this.ctx.font = this.buildFontString(fontStyle);
 
-    // Set text color - use override, selection foreground, or normal color
+    // Extract colors and handle inverse
+    let fg_r = cell.fg_r,
+      fg_g = cell.fg_g,
+      fg_b = cell.fg_b;
+
+    if (cell.flags & CellFlags.INVERSE) {
+      // When inverted, foreground becomes background
+      fg_r = cell.bg_r;
+      fg_g = cell.bg_g;
+      fg_b = cell.bg_b;
+    }
+
+    // Set text color - use override if provided, otherwise selection or cell color
     if (colorOverride) {
       this.ctx.fillStyle = colorOverride;
     } else if (isSelected) {
       this.ctx.fillStyle = this.theme.selectionForeground;
     } else {
-      // Extract colors and handle inverse
-      let fg_r = cell.fg_r,
-        fg_g = cell.fg_g,
-        fg_b = cell.fg_b;
-
-      if (cell.flags & CellFlags.INVERSE) {
-        // When inverted, foreground becomes background
-        fg_r = cell.bg_r;
-        fg_g = cell.bg_g;
-        fg_b = cell.bg_b;
-      }
-
       this.ctx.fillStyle = this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
@@ -647,7 +678,18 @@ export class CanvasRenderer {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
     }
-    this.ctx.fillText(char, textX, textY);
+
+    // Handle special characters that need pixel-perfect rendering:
+    // - Block drawing characters (U+2580-U+259F): rectangles for gap-free ASCII art
+    // - Powerline glyphs (U+E0B0-U+E0BF): vector shapes to match exact cell height
+    const codepoint = cell.codepoint || 32;
+    if (this.renderBlockChar(codepoint, cellX, cellY, cellWidth)) {
+      // Block character was rendered as a rectangle, skip font rendering
+    } else if (this.renderPowerlineGlyph(codepoint, cellX, cellY, cellWidth)) {
+      // Powerline glyph was rendered as a vector shape, skip font rendering
+    } else {
+      this.ctx.fillText(char, textX, textY);
+    }
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
@@ -714,15 +756,224 @@ export class CanvasRenderer {
   }
 
   /**
+   * Render block drawing characters as filled rectangles for pixel-perfect rendering.
+   * Returns true if the character was handled, false if it should be rendered as text.
+   */
+  private renderBlockChar(
+    codepoint: number,
+    cellX: number,
+    cellY: number,
+    cellWidth: number
+  ): boolean {
+    const height = this.metrics.height;
+
+    // Block Elements (U+2580-U+259F)
+    switch (codepoint) {
+      case 0x2580: // ▀ UPPER HALF BLOCK
+        this.ctx.fillRect(cellX, cellY, cellWidth, height / 2);
+        return true;
+      case 0x2581: // ▁ LOWER ONE EIGHTH BLOCK
+        this.ctx.fillRect(cellX, cellY + (height * 7) / 8, cellWidth, height / 8);
+        return true;
+      case 0x2582: // ▂ LOWER ONE QUARTER BLOCK
+        this.ctx.fillRect(cellX, cellY + (height * 3) / 4, cellWidth, height / 4);
+        return true;
+      case 0x2583: // ▃ LOWER THREE EIGHTHS BLOCK
+        this.ctx.fillRect(cellX, cellY + (height * 5) / 8, cellWidth, (height * 3) / 8);
+        return true;
+      case 0x2584: // ▄ LOWER HALF BLOCK
+        this.ctx.fillRect(cellX, cellY + height / 2, cellWidth, height / 2);
+        return true;
+      case 0x2585: // ▅ LOWER FIVE EIGHTHS BLOCK
+        this.ctx.fillRect(cellX, cellY + (height * 3) / 8, cellWidth, (height * 5) / 8);
+        return true;
+      case 0x2586: // ▆ LOWER THREE QUARTERS BLOCK
+        this.ctx.fillRect(cellX, cellY + height / 4, cellWidth, (height * 3) / 4);
+        return true;
+      case 0x2587: // ▇ LOWER SEVEN EIGHTHS BLOCK
+        this.ctx.fillRect(cellX, cellY + height / 8, cellWidth, (height * 7) / 8);
+        return true;
+      case 0x2588: // █ FULL BLOCK
+        this.ctx.fillRect(cellX, cellY, cellWidth, height);
+        return true;
+      case 0x2589: // ▉ LEFT SEVEN EIGHTHS BLOCK
+        this.ctx.fillRect(cellX, cellY, (cellWidth * 7) / 8, height);
+        return true;
+      case 0x258a: // ▊ LEFT THREE QUARTERS BLOCK
+        this.ctx.fillRect(cellX, cellY, (cellWidth * 3) / 4, height);
+        return true;
+      case 0x258b: // ▋ LEFT FIVE EIGHTHS BLOCK
+        this.ctx.fillRect(cellX, cellY, (cellWidth * 5) / 8, height);
+        return true;
+      case 0x258c: // ▌ LEFT HALF BLOCK
+        this.ctx.fillRect(cellX, cellY, cellWidth / 2, height);
+        return true;
+      case 0x258d: // ▍ LEFT THREE EIGHTHS BLOCK
+        this.ctx.fillRect(cellX, cellY, (cellWidth * 3) / 8, height);
+        return true;
+      case 0x258e: // ▎ LEFT ONE QUARTER BLOCK
+        this.ctx.fillRect(cellX, cellY, cellWidth / 4, height);
+        return true;
+      case 0x258f: // ▏ LEFT ONE EIGHTH BLOCK
+        this.ctx.fillRect(cellX, cellY, cellWidth / 8, height);
+        return true;
+      case 0x2590: // ▐ RIGHT HALF BLOCK
+        this.ctx.fillRect(cellX + cellWidth / 2, cellY, cellWidth / 2, height);
+        return true;
+      case 0x2594: // ▔ UPPER ONE EIGHTH BLOCK
+        this.ctx.fillRect(cellX, cellY, cellWidth, height / 8);
+        return true;
+      case 0x2595: // ▕ RIGHT ONE EIGHTH BLOCK
+        this.ctx.fillRect(cellX + (cellWidth * 7) / 8, cellY, cellWidth / 8, height);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Render Powerline glyphs as vector shapes for pixel-perfect cell height.
+   * Powerline glyphs (U+E0B0-U+E0BF) are designed to span the full cell height,
+   * but font rendering often makes them slightly taller/shorter than the cell.
+   * Drawing them as paths ensures they exactly fill the cell bounds.
+   * Returns true if the character was handled, false if it should be rendered as text.
+   */
+  private renderPowerlineGlyph(
+    codepoint: number,
+    cellX: number,
+    cellY: number,
+    cellWidth: number
+  ): boolean {
+    const height = this.metrics.height;
+    const ctx = this.ctx;
+
+    switch (codepoint) {
+      case 0xe0b0: // Right-pointing triangle (hard divider)
+        ctx.beginPath();
+        ctx.moveTo(cellX, cellY);
+        ctx.lineTo(cellX + cellWidth, cellY + height / 2);
+        ctx.lineTo(cellX, cellY + height);
+        ctx.closePath();
+        ctx.fill();
+        return true;
+
+      case 0xe0b1: // Right-pointing angle (soft divider, thin)
+        ctx.beginPath();
+        ctx.moveTo(cellX, cellY);
+        ctx.lineTo(cellX + cellWidth, cellY + height / 2);
+        ctx.lineTo(cellX, cellY + height);
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        return true;
+
+      case 0xe0b2: // Left-pointing triangle (hard divider)
+        ctx.beginPath();
+        ctx.moveTo(cellX + cellWidth, cellY);
+        ctx.lineTo(cellX, cellY + height / 2);
+        ctx.lineTo(cellX + cellWidth, cellY + height);
+        ctx.closePath();
+        ctx.fill();
+        return true;
+
+      case 0xe0b3: // Left-pointing angle (soft divider, thin)
+        ctx.beginPath();
+        ctx.moveTo(cellX + cellWidth, cellY);
+        ctx.lineTo(cellX, cellY + height / 2);
+        ctx.lineTo(cellX + cellWidth, cellY + height);
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        return true;
+
+      case 0xe0b4: // Right semicircle (filled)
+        ctx.beginPath();
+        ctx.moveTo(cellX, cellY);
+        // Ellipse curving right: center at left edge, radii = cellWidth (x) and height/2 (y)
+        ctx.ellipse(
+          cellX,
+          cellY + height / 2,
+          cellWidth,
+          height / 2,
+          0,
+          -Math.PI / 2,
+          Math.PI / 2,
+          false
+        );
+        ctx.closePath();
+        ctx.fill();
+        return true;
+
+      case 0xe0b5: // Right semicircle (outline)
+        ctx.beginPath();
+        ctx.moveTo(cellX, cellY);
+        ctx.ellipse(
+          cellX,
+          cellY + height / 2,
+          cellWidth,
+          height / 2,
+          0,
+          -Math.PI / 2,
+          Math.PI / 2,
+          false
+        );
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        return true;
+
+      case 0xe0b6: // Left semicircle (filled) - rounded left cap
+        ctx.beginPath();
+        ctx.moveTo(cellX + cellWidth, cellY);
+        // Ellipse curving left: center at right edge, radii = cellWidth (x) and height/2 (y)
+        ctx.ellipse(
+          cellX + cellWidth,
+          cellY + height / 2,
+          cellWidth,
+          height / 2,
+          0,
+          -Math.PI / 2,
+          Math.PI / 2,
+          true
+        );
+        ctx.closePath();
+        ctx.fill();
+        return true;
+
+      case 0xe0b7: // Left semicircle (outline)
+        ctx.beginPath();
+        ctx.moveTo(cellX + cellWidth, cellY);
+        ctx.ellipse(
+          cellX + cellWidth,
+          cellY + height / 2,
+          cellWidth,
+          height / 2,
+          0,
+          -Math.PI / 2,
+          Math.PI / 2,
+          true
+        );
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  /**
    * Render cursor
    */
-  private renderCursor(x: number, y: number): void {
+  private renderCursor(x: number, y: number, style?: 'block' | 'underline' | 'bar'): void {
     const cursorX = x * this.metrics.width;
     const cursorY = y * this.metrics.height;
+    const cursorStyle = style ?? this.cursorStyle;
 
     this.ctx.fillStyle = this.theme.cursor;
 
-    switch (this.cursorStyle) {
+    switch (cursorStyle) {
       case 'block':
         // Full cell block
         this.ctx.fillRect(cursorX, cursorY, this.metrics.width, this.metrics.height);
