@@ -468,6 +468,13 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     bufPtr: number,
     bufLen: number
   ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
+  ghostty_terminal_get_scrollback_hyperlink_uri(
+    terminal: TerminalHandle,
+    offset: number,
+    col: number,
+    bufPtr: number,
+    bufLen: number
+  ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
 
   // Response API (for DSR and other terminal queries)
   ghostty_terminal_has_response(terminal: TerminalHandle): boolean;

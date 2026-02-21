@@ -2,8 +2,8 @@
  * Link detection and caching system
  *
  * The LinkDetector coordinates between multiple link providers and caches
- * results for performance. It uses hyperlink_id for intelligent caching
- * since the same hyperlink_id always represents the same link.
+ * results for performance. Links are cached by position range, and earlier
+ * providers (e.g. OSC8) take precedence over later ones (e.g. regex).
  */
 
 import type { IBufferCellPosition, ILink, ILinkProvider } from './types';
@@ -14,9 +14,7 @@ import type { IBufferCellPosition, ILink, ILinkProvider } from './types';
 export class LinkDetector {
   private providers: ILinkProvider[] = [];
 
-  // Cache links by hyperlink_id for fast lookups
-  // Key format: `h${hyperlinkId}` for OSC 8 links
-  // Key format: `r${row}:${startX}-${endX}` for regex links (future)
+  // Cache links by position range: `r${row}:${startX}-${endX}`
   private linkCache = new Map<string, ILink>();
 
   // Track which rows have been scanned to avoid redundant provider calls
@@ -109,7 +107,11 @@ export class LinkDetector {
     // multiple OSC 8 links exist on the same line
     const { start: s, end: e } = link.range;
     const cacheKey = `r${s.y}:${s.x}-${e.x}`;
-    this.linkCache.set(cacheKey, link);
+    // Don't overwrite existing entries - earlier providers (OSC8) take
+    // precedence over later ones (regex) for the same range
+    if (!this.linkCache.has(cacheKey)) {
+      this.linkCache.set(cacheKey, link);
+    }
   }
 
   /**

@@ -51,16 +51,22 @@ export class OSC8LinkProvider implements ILinkProvider {
         continue;
       }
 
-      // Get the URI from WASM using viewport row and column
-      // The y parameter is a buffer row, but WASM expects a viewport row
+      // Get the URI from WASM
+      // The y parameter is a buffer row - we need to determine if it's in
+      // scrollback or the active viewport and use the appropriate API
       if (!this.terminal.wasmTerm) continue;
       const scrollbackLength = this.terminal.wasmTerm.getScrollbackLength();
       const viewportRow = y - scrollbackLength;
 
-      // Skip if this row is in scrollback (not in active viewport)
-      if (viewportRow < 0) continue;
-
-      const uri = this.terminal.wasmTerm.getHyperlinkUri(viewportRow, x);
+      let uri: string | null;
+      if (viewportRow < 0) {
+        // Row is in scrollback - use scrollback API
+        // y is the buffer row (0 = oldest), scrollback offset is also 0 = oldest
+        uri = this.terminal.wasmTerm.getScrollbackHyperlinkUri(y, x);
+      } else {
+        // Row is in active viewport
+        uri = this.terminal.wasmTerm.getHyperlinkUri(viewportRow, x);
+      }
 
       if (uri) {
         // Find the end of this link by scanning forward until we hit a cell
@@ -70,8 +76,11 @@ export class OSC8LinkProvider implements ILinkProvider {
           const nextCell = line.getCell(col);
           if (!nextCell || nextCell.getHyperlinkId() === 0) break;
 
-          // Check if this cell has the same URI
-          const nextUri = this.terminal.wasmTerm!.getHyperlinkUri(viewportRow, col);
+          // Check if this cell has the same URI (use appropriate API for scrollback vs viewport)
+          const nextUri =
+            viewportRow < 0
+              ? this.terminal.wasmTerm!.getScrollbackHyperlinkUri(y, col)
+              : this.terminal.wasmTerm!.getHyperlinkUri(viewportRow, col);
           if (nextUri !== uri) break;
 
           endX = col;
@@ -241,6 +250,7 @@ export interface ITerminalForOSC8Provider {
   };
   wasmTerm?: {
     getHyperlinkUri(row: number, col: number): string | null;
+    getScrollbackHyperlinkUri(offset: number, col: number): string | null;
     getScrollbackLength(): number;
   };
 }
