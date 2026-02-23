@@ -71,12 +71,14 @@ export type {
 } from './interfaces';
 
 // Ghostty WASM components (for advanced usage)
-export { Ghostty, GhosttyTerminal, KeyEncoder, CellFlags, KeyEncoderOption } from './ghostty';
+export { Ghostty, GhosttyTerminal, KeyEncoder, CellFlags, DirtyState, KeyEncoderOption } from './ghostty';
+export {
+  Key,
+  KeyAction,
+  Mods,
+} from './types';
 export type {
   KeyEvent,
-  KeyAction,
-  Key,
-  Mods,
   GhosttyCell,
   RGB,
   Cursor,
