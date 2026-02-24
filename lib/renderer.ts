@@ -589,7 +589,7 @@ export class CanvasRenderer {
    * Render a cell's text and decorations (Pass 2 of two-pass rendering)
    * Selection foreground color is applied here to match the selection background.
    */
-  private renderCellText(cell: GhosttyCell, x: number, y: number): void {
+  private renderCellText(cell: GhosttyCell, x: number, y: number, colorOverride?: string): void {
     const cellX = x * this.metrics.width;
     const cellY = y * this.metrics.height;
     const cellWidth = this.metrics.width * cell.width;
@@ -608,8 +608,10 @@ export class CanvasRenderer {
     if (cell.flags & CellFlags.BOLD) fontStyle += 'bold ';
     this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
 
-    // Set text color - use selection foreground if selected
-    if (isSelected) {
+    // Set text color - use override, selection foreground, or normal color
+    if (colorOverride) {
+      this.ctx.fillStyle = colorOverride;
+    } else if (isSelected) {
       this.ctx.fillStyle = this.theme.selectionForeground;
     } else {
       // Extract colors and handle inverse
@@ -724,6 +726,18 @@ export class CanvasRenderer {
       case 'block':
         // Full cell block
         this.ctx.fillRect(cursorX, cursorY, this.metrics.width, this.metrics.height);
+        // Re-draw character under cursor with cursorAccent color
+        {
+          const line = this.currentBuffer?.getLine(y);
+          if (line?.[x]) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.rect(cursorX, cursorY, this.metrics.width, this.metrics.height);
+            this.ctx.clip();
+            this.renderCellText(line[x], x, y, this.theme.cursorAccent);
+            this.ctx.restore();
+          }
+        }
         break;
 
       case 'underline':
