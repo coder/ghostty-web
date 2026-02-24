@@ -101,6 +101,7 @@ export class Terminal implements ITerminalCore {
   private isOpen = false;
   private isDisposed = false;
   private animationFrameId?: number;
+  private writeQueue: Uint8Array[] = [];
 
   // Addons
   private addons: ITerminalAddon[] = [];
@@ -660,28 +661,42 @@ export class Terminal implements ITerminalCore {
       return; // No change
     }
 
-    // Update dimensions
-    this.cols = cols;
-    this.rows = rows;
+    // Cancel render loop before resize to prevent accessing detached TypedArray
+    // views while WASM reallocates buffers. We restart it after resize completes.
+    // This avoids the background-tab regression of using an isResizing flag
+    // cleared via requestAnimationFrame (rAF is throttled/paused in background tabs).
+    this.cancelRenderLoop();
 
-    // Resize WASM terminal
-    this.wasmTerm!.resize(cols, rows);
+    try {
+      // Update dimensions
+      this.cols = cols;
+      this.rows = rows;
 
-    // Resize renderer
-    this.renderer!.resize(cols, rows);
+      // Resize WASM terminal (may reallocate buffers, invalidating TypedArray views)
+      this.wasmTerm!.resize(cols, rows);
 
-    // Update canvas dimensions
-    const metrics = this.renderer!.getMetrics();
-    this.canvas!.width = metrics.width * cols;
-    this.canvas!.height = metrics.height * rows;
-    this.canvas!.style.width = `${metrics.width * cols}px`;
-    this.canvas!.style.height = `${metrics.height * rows}px`;
+      // Resize renderer
+      this.renderer!.resize(cols, rows);
 
-    // Fire resize event
-    this.resizeEmitter.fire({ cols, rows });
+      // Update canvas dimensions
+      const metrics = this.renderer!.getMetrics();
+      this.canvas!.width = metrics.width * cols;
+      this.canvas!.height = metrics.height * rows;
+      this.canvas!.style.width = `${metrics.width * cols}px`;
+      this.canvas!.style.height = `${metrics.height * rows}px`;
 
-    // Force full render
-    this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
+      // Fire resize event
+      this.resizeEmitter.fire({ cols, rows });
+
+      // Force full render
+      this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
+    } catch (e) {
+      console.error('Terminal resize failed:', e);
+    }
+
+    // Flush any writes that were queued during resize, then restart render loop
+    this.flushWriteQueue();
+    this.startRenderLoop();
   }
 
   /**
@@ -1068,11 +1083,9 @@ export class Terminal implements ITerminalCore {
     this.isDisposed = true;
     this.isOpen = false;
 
-    // Stop render loop
-    if (this.animationFrameId) {
-      cancelAnimationFrame(this.animationFrameId);
-      this.animationFrameId = undefined;
-    }
+    // Stop render loop and clear write queue
+    this.cancelRenderLoop();
+    this.writeQueue.length = 0;
 
     // Stop smooth scroll animation
     if (this.scrollAnimationFrame) {
@@ -1111,6 +1124,26 @@ export class Terminal implements ITerminalCore {
   // ==========================================================================
   // Private Methods
   // ==========================================================================
+
+  /**
+   * Cancel the render loop
+   */
+  private cancelRenderLoop(): void {
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = undefined;
+    }
+  }
+
+  /**
+   * Flush any writes that were queued during resize
+   */
+  private flushWriteQueue(): void {
+    while (this.writeQueue.length > 0) {
+      const data = this.writeQueue.shift()!;
+      this.wasmTerm!.write(data);
+    }
+  }
 
   /**
    * Start the render loop
