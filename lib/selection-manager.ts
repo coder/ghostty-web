@@ -43,7 +43,10 @@ export class SelectionManager {
   private selectionStart: { col: number; absoluteRow: number } | null = null;
   private selectionEnd: { col: number; absoluteRow: number } | null = null;
   private isSelecting: boolean = false;
-  private dragMovedToNewCell: boolean = false; // Track if drag moved to a different cell
+  private static readonly DRAG_THRESHOLD_PX = 5;
+  private mouseDownX: number = 0;
+  private mouseDownY: number = 0;
+  private dragThresholdMet: boolean = false;
   private mouseDownTarget: EventTarget | null = null; // Track where mousedown occurred
 
   // Track rows that need redraw for clearing old selection
@@ -454,27 +457,34 @@ export class SelectionManager {
         this.selectionStart = { col: cell.col, absoluteRow };
         this.selectionEnd = null; // Don't highlight until drag
         this.isSelecting = true;
-        this.dragMovedToNewCell = false;
+        this.mouseDownX = e.offsetX;
+        this.mouseDownY = e.offsetY;
+        this.dragThresholdMet = false;
       }
     });
 
     // Mouse move on canvas - update selection
     canvas.addEventListener('mousemove', (e: MouseEvent) => {
       if (this.isSelecting) {
+        // Check if drag threshold has been met
+        if (!this.dragThresholdMet) {
+          const dx = e.offsetX - this.mouseDownX;
+          const dy = e.offsetY - this.mouseDownY;
+          if (
+            dx * dx + dy * dy <
+            SelectionManager.DRAG_THRESHOLD_PX * SelectionManager.DRAG_THRESHOLD_PX
+          ) {
+            return; // Below threshold, ignore
+          }
+          this.dragThresholdMet = true;
+        }
+
         // Mark current selection rows as dirty before updating
         this.markCurrentSelectionDirty();
 
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
         this.selectionEnd = { col: cell.col, absoluteRow };
-
-        // Track if mouse has moved to a different cell than the start
-        if (
-          this.selectionStart &&
-          (cell.col !== this.selectionStart.col || absoluteRow !== this.selectionStart.absoluteRow)
-        ) {
-          this.dragMovedToNewCell = true;
-        }
         this.requestRender();
 
         // Check if near edges for auto-scroll
@@ -561,7 +571,7 @@ export class SelectionManager {
 
         // Check if this was a click without drag, or sub-cell jitter.
         // If the mouse never moved to a different cell, treat as a click.
-        if (!this.selectionEnd || !this.dragMovedToNewCell) {
+        if (!this.selectionEnd || !this.dragThresholdMet) {
           this.clearSelection();
           return;
         }
