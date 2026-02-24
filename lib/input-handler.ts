@@ -9,7 +9,7 @@
  * - Emitting data for Terminal to send to PTY
  *
  * Limitations:
- * - Does not handle IME/composition events (CJK input) - to be added later
+ * - Handles IME/composition events (CJK input) with post-composition key queuing
  * - Captures all keyboard input (preventDefault on everything)
  */
 
@@ -195,6 +195,9 @@ export class InputHandler {
   private mousemoveListener: ((e: MouseEvent) => void) | null = null;
   private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
+  private compositionJustEnded = false;
+  private pendingKeyAfterComposition: KeyboardEvent | null = null;
+  private compositionTarget: HTMLElement | null = null;
   private isDisposed = false;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
   private lastKeyDownData: string | null = null;
@@ -288,14 +291,15 @@ export class InputHandler {
       this.inputElement.addEventListener('beforeinput', this.beforeInputListener);
     }
 
+    this.compositionTarget = this.inputElement || this.container;
     this.compositionStartListener = this.handleCompositionStart.bind(this);
-    this.container.addEventListener('compositionstart', this.compositionStartListener);
+    this.compositionTarget.addEventListener('compositionstart', this.compositionStartListener);
 
     this.compositionUpdateListener = this.handleCompositionUpdate.bind(this);
-    this.container.addEventListener('compositionupdate', this.compositionUpdateListener);
+    this.compositionTarget.addEventListener('compositionupdate', this.compositionUpdateListener);
 
     this.compositionEndListener = this.handleCompositionEnd.bind(this);
-    this.container.addEventListener('compositionend', this.compositionEndListener);
+    this.compositionTarget.addEventListener('compositionend', this.compositionEndListener);
 
     // Mouse event listeners (for terminal mouse tracking)
     this.mousedownListener = this.handleMouseDown.bind(this);
@@ -362,6 +366,21 @@ export class InputHandler {
    */
   private handleKeyDown(event: KeyboardEvent): void {
     if (this.isDisposed) return;
+
+    // Suppress the duplicate keydown that fires right after compositionend
+    if (this.compositionJustEnded) {
+      this.compositionJustEnded = false;
+      return;
+    }
+
+    // If our internal state says composing but the event itself is not composing,
+    // this key is the one that ended composition (e.g., Space or Enter).
+    // Queue it so we can send it after the composed text.
+    if (this.isComposing && !event.isComposing && event.keyCode !== 229) {
+      this.pendingKeyAfterComposition = event;
+      event.preventDefault();
+      return;
+    }
 
     // Ignore keydown events during composition
     // Note: Some browsers send keyCode 229 for all keys during composition
@@ -689,6 +708,7 @@ export class InputHandler {
     if (data && data.length > 0) {
       if (this.shouldIgnoreCompositionEnd(data)) {
         this.cleanupCompositionTextNodes();
+        this.pendingKeyAfterComposition = null;
         return;
       }
       this.onDataCallback(data);
@@ -696,6 +716,21 @@ export class InputHandler {
     }
 
     this.cleanupCompositionTextNodes();
+    this.processPendingKeyAfterComposition();
+  }
+
+  /**
+   * Process a key event that was queued during composition.
+   * The key is routed through handleKeyDown so it gets properly encoded.
+   */
+  private processPendingKeyAfterComposition(): void {
+    const pending = this.pendingKeyAfterComposition;
+    if (!pending) return;
+    this.pendingKeyAfterComposition = null;
+    // Route the key through normal encoding, then set the flag to suppress the
+    // duplicate keydown event the browser will fire after compositionend.
+    this.handleKeyDown(pending);
+    this.compositionJustEnded = true;
   }
 
   /**
@@ -1059,20 +1094,22 @@ export class InputHandler {
       this.beforeInputListener = null;
     }
 
+    const ct = this.compositionTarget || this.container;
     if (this.compositionStartListener) {
-      this.container.removeEventListener('compositionstart', this.compositionStartListener);
+      ct.removeEventListener('compositionstart', this.compositionStartListener);
       this.compositionStartListener = null;
     }
 
     if (this.compositionUpdateListener) {
-      this.container.removeEventListener('compositionupdate', this.compositionUpdateListener);
+      ct.removeEventListener('compositionupdate', this.compositionUpdateListener);
       this.compositionUpdateListener = null;
     }
 
     if (this.compositionEndListener) {
-      this.container.removeEventListener('compositionend', this.compositionEndListener);
+      ct.removeEventListener('compositionend', this.compositionEndListener);
       this.compositionEndListener = null;
     }
+    this.compositionTarget = null;
 
     if (this.mousedownListener) {
       this.container.removeEventListener('mousedown', this.mousedownListener);

@@ -463,6 +463,114 @@ describe('InputHandler', () => {
 
       expect(dataReceived).toEqual(['你好']);
     });
+
+    test('captures composition events on inputElement (textarea)', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        inputElement as any
+      );
+
+      // Dispatch composition events on the textarea (inputElement), not container
+      inputElement.dispatchEvent(createCompositionEvent('compositionstart', ''));
+      inputElement.dispatchEvent(createCompositionEvent('compositionupdate', '한'));
+      inputElement.dispatchEvent(createCompositionEvent('compositionend', '한'));
+
+      expect(dataReceived).toEqual(['한']);
+    });
+
+    test('sends Enter key after composed text (post-composition key queuing)', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      // Start composition
+      container.dispatchEvent(createCompositionEvent('compositionstart', ''));
+      container.dispatchEvent(createCompositionEvent('compositionupdate', '한'));
+
+      // The Enter key ends composition — browser fires keydown before compositionend
+      // with isComposing=false while our internal isComposing is still true
+      const enterKey = createKeyEvent('Enter', 'Enter');
+      Object.defineProperty(enterKey, 'isComposing', { value: false });
+      Object.defineProperty(enterKey, 'keyCode', { value: 13 });
+      simulateKey(container, enterKey);
+
+      // compositionend fires after
+      container.dispatchEvent(createCompositionEvent('compositionend', '한'));
+
+      // Should receive composed text, then properly encoded Enter (\r)
+      expect(dataReceived).toEqual(['한', '\r']);
+    });
+
+    test('sends Space key after composed text', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      container.dispatchEvent(createCompositionEvent('compositionstart', ''));
+      container.dispatchEvent(createCompositionEvent('compositionupdate', '한'));
+
+      // Space key ends composition
+      const spaceKey = createKeyEvent('Space', ' ');
+      Object.defineProperty(spaceKey, 'isComposing', { value: false });
+      Object.defineProperty(spaceKey, 'keyCode', { value: 32 });
+      simulateKey(container, spaceKey);
+
+      container.dispatchEvent(createCompositionEvent('compositionend', '한'));
+
+      // Should receive composed text, then space character
+      expect(dataReceived).toEqual(['한', ' ']);
+    });
+
+    test('suppresses duplicate keydown after compositionend', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      container.dispatchEvent(createCompositionEvent('compositionstart', ''));
+      container.dispatchEvent(createCompositionEvent('compositionupdate', '한'));
+
+      // Key that ends composition
+      const spaceKey = createKeyEvent('Space', ' ');
+      Object.defineProperty(spaceKey, 'isComposing', { value: false });
+      Object.defineProperty(spaceKey, 'keyCode', { value: 32 });
+      simulateKey(container, spaceKey);
+
+      container.dispatchEvent(createCompositionEvent('compositionend', '한'));
+
+      // Browser fires a duplicate keydown after compositionend — should be suppressed
+      const duplicateSpace = createKeyEvent('Space', ' ');
+      Object.defineProperty(duplicateSpace, 'isComposing', { value: false });
+      Object.defineProperty(duplicateSpace, 'keyCode', { value: 32 });
+      simulateKey(container, duplicateSpace);
+
+      // Should NOT have a second space
+      expect(dataReceived).toEqual(['한', ' ']);
+    });
   });
 
   describe('Control Characters', () => {
