@@ -240,7 +240,6 @@ export class CanvasRenderer {
     // Set CSS size (what user sees)
     this.canvas.style.width = `${cssWidth}px`;
     this.canvas.style.height = `${cssHeight}px`;
-    this.canvas.style.cursor = 'text';
 
     // Set actual canvas size (scaled for DPI)
     this.canvas.width = cssWidth * this.devicePixelRatio;
