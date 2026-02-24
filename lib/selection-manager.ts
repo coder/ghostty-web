@@ -43,7 +43,6 @@ export class SelectionManager {
   private selectionStart: { col: number; absoluteRow: number } | null = null;
   private selectionEnd: { col: number; absoluteRow: number } | null = null;
   private isSelecting: boolean = false;
-  private static readonly DRAG_THRESHOLD_PX = 5;
   private mouseDownX: number = 0;
   private mouseDownY: number = 0;
   private dragThresholdMet: boolean = false;
@@ -470,10 +469,9 @@ export class SelectionManager {
         if (!this.dragThresholdMet) {
           const dx = e.offsetX - this.mouseDownX;
           const dy = e.offsetY - this.mouseDownY;
-          if (
-            dx * dx + dy * dy <
-            SelectionManager.DRAG_THRESHOLD_PX * SelectionManager.DRAG_THRESHOLD_PX
-          ) {
+          // Use 50% of cell width as threshold to scale with font size
+          const threshold = this.renderer.getMetrics().width * 0.5;
+          if (dx * dx + dy * dy < threshold * threshold) {
             return; // Below threshold, ignore
           }
           this.dragThresholdMet = true;
