@@ -69,7 +69,6 @@ export class Terminal implements ITerminalCore {
   private inputHandler?: InputHandler;
   private selectionManager?: SelectionManager;
   private canvas?: HTMLCanvasElement;
-  private compositionPreview: HTMLDivElement | null = null;
 
   // Link detection system
   private linkDetector?: LinkDetector;
@@ -388,36 +387,17 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.border = 'none';
       this.textarea.style.margin = '0';
       this.textarea.style.opacity = '0';
-      this.textarea.style.clipPath = 'inset(50%)'; // Clip everything including caret
       this.textarea.style.overflow = 'hidden';
       this.textarea.style.whiteSpace = 'nowrap';
       this.textarea.style.resize = 'none';
+      this.textarea.style.fontFamily = this.options.fontFamily || 'monospace';
+      this.textarea.style.fontSize = `${this.options.fontSize || 16}px`;
+      this.textarea.style.zIndex = '-1';
       parent.appendChild(this.textarea);
 
       // Redirect parent focus to textarea for IME support
       parent.addEventListener('focus', () => {
         if (this.textarea) this.textarea.focus();
-      });
-
-      // Create composition preview overlay for IME input
-      const compositionPreview = document.createElement('div');
-      compositionPreview.style.cssText =
-        'position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.8);color:#fff;padding:2px 8px;border-radius:4px;font-size:14px;display:none;z-index:10;pointer-events:none;';
-      parent.appendChild(compositionPreview);
-      this.compositionPreview = compositionPreview;
-
-      // Show/hide composition preview during IME input
-      this.textarea.addEventListener('compositionupdate', (e: CompositionEvent) => {
-        if (this.compositionPreview && e.data) {
-          this.compositionPreview.textContent = e.data;
-          this.compositionPreview.style.display = 'block';
-        }
-      });
-      this.textarea.addEventListener('compositionend', () => {
-        if (this.compositionPreview) {
-          this.compositionPreview.style.display = 'none';
-          this.compositionPreview.textContent = '';
-        }
       });
 
       // Focus textarea on interaction - preventDefault before focus
@@ -1120,12 +1100,6 @@ export class Terminal implements ITerminalCore {
     }
     this.addons = [];
 
-    // Clean up composition preview
-    if (this.compositionPreview) {
-      this.compositionPreview.remove();
-      this.compositionPreview = null;
-    }
-
     // Clean up components
     this.cleanupComponents();
 
@@ -1182,6 +1156,11 @@ export class Terminal implements ITerminalCore {
         // Check for cursor movement (Phase 2: onCursorMove event)
         // Note: getCursor() reads from already-updated render state (from render() above)
         const cursor = this.wasmTerm!.getCursor();
+        if (this.textarea && this.renderer) {
+          const metrics = this.renderer.getMetrics();
+          this.textarea.style.left = `${cursor.x * metrics.width}px`;
+          this.textarea.style.top = `${cursor.y * metrics.height}px`;
+        }
         if (cursor.y !== this.lastCursorY) {
           this.lastCursorY = cursor.y;
           this.cursorMoveEmitter.fire();
