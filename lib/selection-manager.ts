@@ -451,7 +451,7 @@ export class SelectionManager {
         // Start new selection (convert to absolute coordinates)
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
         this.selectionStart = { col: cell.col, absoluteRow };
-        this.selectionEnd = { col: cell.col, absoluteRow };
+        this.selectionEnd = null; // Don't highlight until drag
         this.isSelecting = true;
       }
     });
@@ -549,16 +549,9 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
-        // Check if this was a click without drag (start == end)
-        // If so, clear the selection - a click shouldn't create a selection
-        if (
-          this.selectionStart &&
-          this.selectionEnd &&
-          this.selectionStart.col === this.selectionEnd.col &&
-          this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow
-        ) {
-          // Clear same-cell selection from click-without-drag
-          this.clearSelection();
+        // Check if this was a click without drag (no selectionEnd means no drag occurred)
+        if (!this.selectionEnd) {
+          this.selectionStart = null;
           return;
         }
 
