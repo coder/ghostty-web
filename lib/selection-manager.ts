@@ -43,6 +43,7 @@ export class SelectionManager {
   private selectionStart: { col: number; absoluteRow: number } | null = null;
   private selectionEnd: { col: number; absoluteRow: number } | null = null;
   private isSelecting: boolean = false;
+  private dragMovedToNewCell: boolean = false; // Track if drag moved to a different cell
   private mouseDownTarget: EventTarget | null = null; // Track where mousedown occurred
 
   // Track rows that need redraw for clearing old selection
@@ -453,6 +454,7 @@ export class SelectionManager {
         this.selectionStart = { col: cell.col, absoluteRow };
         this.selectionEnd = null; // Don't highlight until drag
         this.isSelecting = true;
+        this.dragMovedToNewCell = false;
       }
     });
 
@@ -465,6 +467,14 @@ export class SelectionManager {
         const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
         this.selectionEnd = { col: cell.col, absoluteRow };
+
+        // Track if mouse has moved to a different cell than the start
+        if (
+          this.selectionStart &&
+          (cell.col !== this.selectionStart.col || absoluteRow !== this.selectionStart.absoluteRow)
+        ) {
+          this.dragMovedToNewCell = true;
+        }
         this.requestRender();
 
         // Check if near edges for auto-scroll
@@ -549,14 +559,9 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
-        // Check if this was a click without drag, or a click with sub-cell jitter
-        // (mouse moved but stayed in the same cell). Either way, no real selection.
-        if (
-          !this.selectionEnd ||
-          (this.selectionStart &&
-            this.selectionStart.col === this.selectionEnd.col &&
-            this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow)
-        ) {
+        // Check if this was a click without drag, or sub-cell jitter.
+        // If the mouse never moved to a different cell, treat as a click.
+        if (!this.selectionEnd || !this.dragMovedToNewCell) {
           this.clearSelection();
           return;
         }
