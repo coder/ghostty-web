@@ -452,6 +452,8 @@ export class Terminal implements ITerminalCore {
           if (this.options.disableStdin) {
             return;
           }
+          // Clear selection when user types
+          this.selectionManager?.clearSelection();
           // Input handler fires data events
           this.dataEmitter.fire(data);
         },
