@@ -376,6 +376,7 @@ export class Terminal implements ITerminalCore {
       // Create canvas element
       this.canvas = document.createElement('canvas');
       this.canvas.style.display = 'block';
+      this.canvas.style.cursor = 'text';
       parent.appendChild(this.canvas);
 
       // Create hidden textarea for keyboard input (must be inside parent for event bubbling)
