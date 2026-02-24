@@ -376,6 +376,7 @@ export class Terminal implements ITerminalCore {
       this.canvas = document.createElement('canvas');
       this.canvas.style.display = 'block';
       this.canvas.style.cursor = 'text';
+
       parent.appendChild(this.canvas);
 
       // Create hidden textarea for keyboard input (must be inside parent for event bubbling)
@@ -1380,9 +1381,13 @@ export class Terminal implements ITerminalCore {
           // Notify new link we're entering
           link?.hover?.(true);
 
-          // Update cursor style
+          // Update cursor style on both container and canvas
+          const cursorStyle = link ? 'pointer' : 'text';
           if (this.element) {
-            this.element.style.cursor = link ? 'pointer' : 'text';
+            this.element.style.cursor = cursorStyle;
+          }
+          if (this.canvas) {
+            this.canvas.style.cursor = cursorStyle;
           }
 
           // Update renderer for underline (for regex URLs without hyperlink_id)
@@ -1446,6 +1451,9 @@ export class Terminal implements ITerminalCore {
       // Reset cursor
       if (this.element) {
         this.element.style.cursor = 'text';
+        if (this.canvas) {
+          this.canvas.style.cursor = 'text';
+        }
       }
     }
   };

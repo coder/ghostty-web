@@ -212,10 +212,9 @@ export class SelectionManager {
   hasSelection(): boolean {
     if (!this.selectionStart || !this.selectionEnd) return false;
 
-    // Same start and end means no real selection
-    // Note: click-without-drag clears same-cell in mouseup handler,
-    // so any same-cell selection here is programmatic (e.g., triple-click single-char)
-    // which IS a valid selection
+    // Don't report selection until drag threshold is met (prevents flash on click)
+    if (this.isSelecting && !this.dragThresholdMet) return false;
+
     return true;
   }
 
@@ -454,7 +453,7 @@ export class SelectionManager {
         // Start new selection (convert to absolute coordinates)
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
         this.selectionStart = { col: cell.col, absoluteRow };
-        this.selectionEnd = null; // Don't highlight until drag
+        this.selectionEnd = { col: cell.col, absoluteRow };
         this.isSelecting = true;
         this.mouseDownX = e.offsetX;
         this.mouseDownY = e.offsetY;
@@ -578,9 +577,8 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
-        // Check if this was a click without drag, or sub-cell jitter.
-        // If the mouse never moved to a different cell, treat as a click.
-        if (!this.selectionEnd || !this.dragThresholdMet) {
+        // Check if this was a click without drag (threshold never met).
+        if (!this.dragThresholdMet) {
           this.clearSelection();
           return;
         }
