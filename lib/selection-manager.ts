@@ -43,6 +43,9 @@ export class SelectionManager {
   private selectionStart: { col: number; absoluteRow: number } | null = null;
   private selectionEnd: { col: number; absoluteRow: number } | null = null;
   private isSelecting: boolean = false;
+  private mouseDownX: number = 0;
+  private mouseDownY: number = 0;
+  private dragThresholdMet: boolean = false;
   private mouseDownTarget: EventTarget | null = null; // Track where mousedown occurred
 
   // Track rows that need redraw for clearing old selection
@@ -209,11 +212,10 @@ export class SelectionManager {
   hasSelection(): boolean {
     if (!this.selectionStart || !this.selectionEnd) return false;
 
-    // Check if start and end are the same (single cell, no real selection)
-    return !(
-      this.selectionStart.col === this.selectionEnd.col &&
-      this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow
-    );
+    // Don't report selection until drag threshold is met (prevents flash on click)
+    if (this.isSelecting && !this.dragThresholdMet) return false;
+
+    return true;
   }
 
   /**
@@ -313,9 +315,8 @@ export class SelectionManager {
     }
 
     // Convert viewport rows to absolute rows
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: 0, absoluteRow: viewportY + start };
-    this.selectionEnd = { col: dims.cols - 1, absoluteRow: viewportY + end };
+    this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(start) };
+    this.selectionEnd = { col: dims.cols - 1, absoluteRow: this.viewportRowToAbsolute(end) };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }
@@ -454,12 +455,27 @@ export class SelectionManager {
         this.selectionStart = { col: cell.col, absoluteRow };
         this.selectionEnd = { col: cell.col, absoluteRow };
         this.isSelecting = true;
+        this.mouseDownX = e.offsetX;
+        this.mouseDownY = e.offsetY;
+        this.dragThresholdMet = false;
       }
     });
 
     // Mouse move on canvas - update selection
     canvas.addEventListener('mousemove', (e: MouseEvent) => {
       if (this.isSelecting) {
+        // Check if drag threshold has been met
+        if (!this.dragThresholdMet) {
+          const dx = e.offsetX - this.mouseDownX;
+          const dy = e.offsetY - this.mouseDownY;
+          // Use 50% of cell width as threshold to scale with font size
+          const threshold = this.renderer.getMetrics().width * 0.5;
+          if (dx * dx + dy * dy < threshold * threshold) {
+            return; // Below threshold, ignore
+          }
+          this.dragThresholdMet = true;
+        }
+
         // Mark current selection rows as dirty before updating
         this.markCurrentSelectionDirty();
 
@@ -496,6 +512,17 @@ export class SelectionManager {
     // Document-level mousemove for tracking mouse position during drag outside canvas
     this.boundDocumentMouseMoveHandler = (e: MouseEvent) => {
       if (this.isSelecting) {
+        // Check drag threshold (same as canvas mousemove)
+        if (!this.dragThresholdMet) {
+          const dx = e.clientX - (canvas.getBoundingClientRect().left + this.mouseDownX);
+          const dy = e.clientY - (canvas.getBoundingClientRect().top + this.mouseDownY);
+          const threshold = this.renderer.getMetrics().width * 0.5;
+          if (dx * dx + dy * dy < threshold * threshold) {
+            return;
+          }
+          this.dragThresholdMet = true;
+        }
+
         const rect = canvas.getBoundingClientRect();
 
         // Update selection based on clamped position
@@ -550,6 +577,12 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
+        // Check if this was a click without drag (threshold never met).
+        if (!this.dragThresholdMet) {
+          this.clearSelection();
+          return;
+        }
+
         if (this.hasSelection()) {
           const text = this.getSelection();
           if (text) {
@@ -561,21 +594,67 @@ export class SelectionManager {
     };
     document.addEventListener('mouseup', this.boundMouseUpHandler);
 
-    // Double-click - select word
-    canvas.addEventListener('dblclick', (e: MouseEvent) => {
-      const cell = this.pixelToCell(e.offsetX, e.offsetY);
-      const word = this.getWordAtCell(cell.col, cell.row);
+    // Handle click events for double-click (word) and triple-click (line) selection
+    // Use event.detail which browsers set to click count (1, 2, 3, etc.)
+    canvas.addEventListener('click', (e: MouseEvent) => {
+      // event.detail: 1 = single, 2 = double, 3 = triple click
+      if (e.detail === 2) {
+        // Double-click - select word
+        const cell = this.pixelToCell(e.offsetX, e.offsetY);
+        const word = this.getWordAtCell(cell.col, cell.row);
 
-      if (word) {
+        if (word) {
+          const absoluteRow = this.viewportRowToAbsolute(cell.row);
+          this.selectionStart = { col: word.startCol, absoluteRow };
+          this.selectionEnd = { col: word.endCol, absoluteRow };
+          this.requestRender();
+
+          const text = this.getSelection();
+          if (text) {
+            this.copyToClipboard(text);
+            this.selectionChangedEmitter.fire();
+          }
+        }
+      } else if (e.detail >= 3) {
+        // Triple-click (or more) - select line content (like native Ghostty)
+        const cell = this.pixelToCell(e.offsetX, e.offsetY);
         const absoluteRow = this.viewportRowToAbsolute(cell.row);
-        this.selectionStart = { col: word.startCol, absoluteRow };
-        this.selectionEnd = { col: word.endCol, absoluteRow };
-        this.requestRender();
 
-        const text = this.getSelection();
-        if (text) {
-          this.copyToClipboard(text);
-          this.selectionChangedEmitter.fire();
+        // Find actual line length (exclude trailing empty cells)
+        // Use scrollback-aware line retrieval (like getSelection does)
+        const scrollbackLength = this.wasmTerm.getScrollbackLength();
+        let line: GhosttyCell[] | null = null;
+        if (absoluteRow < scrollbackLength) {
+          // Row is in scrollback
+          line = this.wasmTerm.getScrollbackLine(absoluteRow);
+        } else {
+          // Row is in screen buffer
+          const screenRow = absoluteRow - scrollbackLength;
+          line = this.wasmTerm.getLine(screenRow);
+        }
+        // Find last non-empty cell (-1 means empty line)
+        let endCol = -1;
+        if (line) {
+          for (let i = line.length - 1; i >= 0; i--) {
+            if (line[i] && line[i].codepoint !== 0 && line[i].codepoint !== 32) {
+              endCol = i;
+              break;
+            }
+          }
+        }
+
+        // Only select if line has content (endCol >= 0)
+        if (endCol >= 0) {
+          // Select line content only (not trailing whitespace)
+          this.selectionStart = { col: 0, absoluteRow };
+          this.selectionEnd = { col: endCol, absoluteRow };
+          this.requestRender();
+
+          const text = this.getSelection();
+          if (text) {
+            this.copyToClipboard(text);
+            this.selectionChangedEmitter.fire();
+          }
         }
       }
     });
@@ -828,14 +907,24 @@ export class SelectionManager {
    * Get word boundaries at a cell position
    */
   private getWordAtCell(col: number, row: number): { startCol: number; endCol: number } | null {
-    const line = this.wasmTerm.getLine(row);
+    const absoluteRow = this.viewportRowToAbsolute(row);
+    const scrollbackLength = this.wasmTerm.getScrollbackLength();
+    let line: GhosttyCell[] | null;
+    if (absoluteRow < scrollbackLength) {
+      line = this.wasmTerm.getScrollbackLine(absoluteRow);
+    } else {
+      const screenRow = absoluteRow - scrollbackLength;
+      line = this.wasmTerm.getLine(screenRow);
+    }
     if (!line) return null;
 
-    // Word characters: letters, numbers, underscore, dash
+    // Word characters: letters, numbers, and common path/URL characters
+    // Matches native Ghostty behavior where double-click selects entire paths
+    // Includes: / (path sep), . (extensions), ~ (home), @ (emails), + (encodings)
     const isWordChar = (cell: GhosttyCell) => {
       if (!cell || cell.codepoint === 0) return false;
       const char = String.fromCodePoint(cell.codepoint);
-      return /[\w-]/.test(char);
+      return /[\w\-./~@+]/.test(char);
     };
 
     // Only return if we're actually on a word character
