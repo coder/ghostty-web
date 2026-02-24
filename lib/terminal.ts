@@ -393,7 +393,34 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.fontFamily = this.options.fontFamily || 'monospace';
       this.textarea.style.fontSize = `${this.options.fontSize || 16}px`;
       this.textarea.style.zIndex = '-1';
+      this.textarea.style.color = this.options.theme?.foreground || '#ffffff';
+      this.textarea.style.background = this.options.theme?.background || '#000000';
+      this.textarea.style.lineHeight = '1';
+      this.textarea.style.outline = 'none';
+      this.textarea.style.caretColor = this.options.theme?.cursor || '#ffffff';
       parent.appendChild(this.textarea);
+
+      // Toggle textarea visibility during IME composition
+      this.textarea.addEventListener('compositionstart', () => {
+        if (this.textarea) {
+          this.textarea.style.opacity = '1';
+          this.textarea.style.width = 'auto';
+          this.textarea.style.height = 'auto';
+          this.textarea.style.overflow = 'visible';
+          this.textarea.style.zIndex = '10';
+        }
+      });
+
+      this.textarea.addEventListener('compositionend', () => {
+        if (this.textarea) {
+          this.textarea.value = '';
+          this.textarea.style.opacity = '0';
+          this.textarea.style.width = '1px';
+          this.textarea.style.height = '1px';
+          this.textarea.style.overflow = 'hidden';
+          this.textarea.style.zIndex = '-1';
+        }
+      });
 
       // Redirect parent focus to textarea for IME support
       parent.addEventListener('focus', () => {
