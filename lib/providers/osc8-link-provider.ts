@@ -28,7 +28,7 @@ export class OSC8LinkProvider implements ILinkProvider {
    */
   provideLinks(y: number, callback: (links: ILink[] | undefined) => void): void {
     const links: ILink[] = [];
-    const visitedIds = new Set<number>();
+    const visitedPositions = new Set<number>(); // Track which columns we've already processed
 
     const line = this.terminal.buffer.active.getLine(y);
     if (!line) {
@@ -38,26 +38,64 @@ export class OSC8LinkProvider implements ILinkProvider {
 
     // Scan through this line looking for hyperlink_id
     for (let x = 0; x < line.length; x++) {
+      // Skip already processed positions
+      if (visitedPositions.has(x)) continue;
+
       const cell = line.getCell(x);
       if (!cell) continue;
 
       const hyperlinkId = cell.getHyperlinkId();
 
-      // Skip cells without links or already processed links
-      if (hyperlinkId === 0 || visitedIds.has(hyperlinkId)) {
+      // Skip cells without links
+      if (hyperlinkId === 0) {
         continue;
       }
 
-      visitedIds.add(hyperlinkId);
-
-      // Find the full extent of this link (may span multiple lines)
-      const range = this.findLinkRange(hyperlinkId, y, x);
-
       // Get the URI from WASM
+      // The y parameter is a buffer row - we need to determine if it's in
+      // scrollback or the active viewport and use the appropriate API
       if (!this.terminal.wasmTerm) continue;
-      const uri = this.terminal.wasmTerm.getHyperlinkUri(hyperlinkId);
+      const scrollbackLength = this.terminal.wasmTerm.getScrollbackLength();
+      const viewportRow = y - scrollbackLength;
+
+      let uri: string | null;
+      if (viewportRow < 0) {
+        // Row is in scrollback - use scrollback API
+        // y is the buffer row (0 = oldest), scrollback offset is also 0 = oldest
+        uri = this.terminal.wasmTerm.getScrollbackHyperlinkUri(y, x);
+      } else {
+        // Row is in active viewport
+        uri = this.terminal.wasmTerm.getHyperlinkUri(viewportRow, x);
+      }
 
       if (uri) {
+        // Find the end of this link by scanning forward until we hit a cell
+        // without a hyperlink or with a different URI
+        let endX = x;
+        for (let col = x + 1; col < line.length; col++) {
+          const nextCell = line.getCell(col);
+          if (!nextCell || nextCell.getHyperlinkId() === 0) break;
+
+          // Check if this cell has the same URI (use appropriate API for scrollback vs viewport)
+          const nextUri =
+            viewportRow < 0
+              ? this.terminal.wasmTerm!.getScrollbackHyperlinkUri(y, col)
+              : this.terminal.wasmTerm!.getHyperlinkUri(viewportRow, col);
+          if (nextUri !== uri) break;
+
+          endX = col;
+        }
+
+        // Mark all columns in this link as visited
+        for (let col = x; col <= endX; col++) {
+          visitedPositions.add(col);
+        }
+
+        const range: IBufferRange = {
+          start: { x, y },
+          end: { x: endX, y },
+        };
+
         links.push({
           text: uri,
           range,
@@ -211,6 +249,8 @@ export interface ITerminalForOSC8Provider {
     };
   };
   wasmTerm?: {
-    getHyperlinkUri(id: number): string | null;
+    getHyperlinkUri(row: number, col: number): string | null;
+    getScrollbackHyperlinkUri(offset: number, col: number): string | null;
+    getScrollbackLength(): number;
   };
 }
