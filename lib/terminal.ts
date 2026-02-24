@@ -69,6 +69,7 @@ export class Terminal implements ITerminalCore {
   private inputHandler?: InputHandler;
   private selectionManager?: SelectionManager;
   private canvas?: HTMLCanvasElement;
+  private compositionPreview: HTMLDivElement | null = null;
 
   // Link detection system
   private linkDetector?: LinkDetector;
@@ -351,18 +352,9 @@ export class Terminal implements ITerminalCore {
     try {
       // Make parent focusable if it isn't already
       if (!parent.hasAttribute('tabindex')) {
-        parent.setAttribute('tabindex', '0');
+        parent.setAttribute('tabindex', '-1');
       }
 
-      // Mark as contenteditable so browser extensions (Vimium, etc.) recognize
-      // this as an input element and don't intercept keyboard events.
-      parent.setAttribute('contenteditable', 'true');
-      // Prevent actual content editing - we handle input ourselves
-      parent.addEventListener('beforeinput', (e) => {
-        if (e.target === parent) {
-          e.preventDefault();
-        }
-      });
 
       // Add accessibility attributes for screen readers and extensions
       parent.setAttribute('role', 'textbox');
@@ -402,6 +394,32 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.whiteSpace = 'nowrap';
       this.textarea.style.resize = 'none';
       parent.appendChild(this.textarea);
+
+      // Redirect parent focus to textarea for IME support
+      parent.addEventListener('focus', () => {
+        if (this.textarea) this.textarea.focus();
+      });
+
+      // Create composition preview overlay for IME input
+      const compositionPreview = document.createElement('div');
+      compositionPreview.style.cssText =
+        'position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.8);color:#fff;padding:2px 8px;border-radius:4px;font-size:14px;display:none;z-index:10;pointer-events:none;';
+      parent.appendChild(compositionPreview);
+      this.compositionPreview = compositionPreview;
+
+      // Show/hide composition preview during IME input
+      this.textarea.addEventListener('compositionupdate', (e: CompositionEvent) => {
+        if (this.compositionPreview && e.data) {
+          this.compositionPreview.textContent = e.data;
+          this.compositionPreview.style.display = 'block';
+        }
+      });
+      this.textarea.addEventListener('compositionend', () => {
+        if (this.compositionPreview) {
+          this.compositionPreview.style.display = 'none';
+          this.compositionPreview.textContent = '';
+        }
+      });
 
       // Focus textarea on interaction - preventDefault before focus
       const textarea = this.textarea;
@@ -736,15 +754,8 @@ export class Terminal implements ITerminalCore {
    * Focus terminal input
    */
   focus(): void {
-    if (this.isOpen && this.element) {
-      // Focus immediately for immediate keyboard/wheel event handling
-      this.element.focus();
-
-      // Also schedule a delayed focus as backup to ensure it sticks
-      // (some browsers may need this if DOM isn't fully settled)
-      setTimeout(() => {
-        this.element?.focus();
-      }, 0);
+    if (this.isOpen) {
+      (this.textarea || this.element)?.focus();
     }
   }
 
@@ -752,8 +763,8 @@ export class Terminal implements ITerminalCore {
    * Blur terminal (remove focus)
    */
   blur(): void {
-    if (this.isOpen && this.element) {
-      this.element.blur();
+    if (this.isOpen) {
+      (this.textarea || this.element)?.blur();
     }
   }
 
@@ -1109,6 +1120,12 @@ export class Terminal implements ITerminalCore {
       addon.dispose();
     }
     this.addons = [];
+
+    // Clean up composition preview
+    if (this.compositionPreview) {
+      this.compositionPreview.remove();
+      this.compositionPreview = null;
+    }
 
     // Clean up components
     this.cleanupComponents();
