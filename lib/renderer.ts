@@ -647,7 +647,16 @@ export class CanvasRenderer {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
     }
-    this.ctx.fillText(char, textX, textY);
+
+    if (cell.width > 1) {
+      // Match Ghostty's native behavior: render wide characters at natural
+      // font size, centered within the 2-cell space. No scaling.
+      const measuredWidth = this.ctx.measureText(char).width;
+      const centerOffset = Math.max(0, (cellWidth - measuredWidth) / 2);
+      this.ctx.fillText(char, cellX + centerOffset, textY);
+    } else {
+      this.ctx.fillText(char, textX, textY);
+    }
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
