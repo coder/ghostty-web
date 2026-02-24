@@ -549,9 +549,15 @@ export class SelectionManager {
         this.isSelecting = false;
         this.stopAutoScroll();
 
-        // Check if this was a click without drag (no selectionEnd means no drag occurred)
-        if (!this.selectionEnd) {
-          this.selectionStart = null;
+        // Check if this was a click without drag, or a click with sub-cell jitter
+        // (mouse moved but stayed in the same cell). Either way, no real selection.
+        if (
+          !this.selectionEnd ||
+          (this.selectionStart &&
+            this.selectionStart.col === this.selectionEnd.col &&
+            this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow)
+        ) {
+          this.clearSelection();
           return;
         }
 
