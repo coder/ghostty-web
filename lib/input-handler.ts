@@ -195,6 +195,8 @@ export class InputHandler {
   private mousemoveListener: ((e: MouseEvent) => void) | null = null;
   private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
+  private compositionJustEnded = false; // Block keydown briefly after composition ends
+  private pendingKeyAfterComposition: string | null = null; // Key to output after composition
   private isDisposed = false;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
   private lastKeyDownData: string | null = null;
@@ -288,14 +290,19 @@ export class InputHandler {
       this.inputElement.addEventListener('beforeinput', this.beforeInputListener);
     }
 
+    // Attach composition events to inputElement (textarea) if available.
+    // IME composition events fire on the focused element, and when using a hidden
+    // textarea for input (as ghostty-web does), the textarea receives focus,
+    // not the container. This fixes Korean/Chinese/Japanese IME input.
+    const compositionTarget = this.inputElement || this.container;
     this.compositionStartListener = this.handleCompositionStart.bind(this);
-    this.container.addEventListener('compositionstart', this.compositionStartListener);
+    compositionTarget.addEventListener('compositionstart', this.compositionStartListener);
 
     this.compositionUpdateListener = this.handleCompositionUpdate.bind(this);
-    this.container.addEventListener('compositionupdate', this.compositionUpdateListener);
+    compositionTarget.addEventListener('compositionupdate', this.compositionUpdateListener);
 
     this.compositionEndListener = this.handleCompositionEnd.bind(this);
-    this.container.addEventListener('compositionend', this.compositionEndListener);
+    compositionTarget.addEventListener('compositionend', this.compositionEndListener);
 
     // Mouse event listeners (for terminal mouse tracking)
     this.mousedownListener = this.handleMouseDown.bind(this);
@@ -365,7 +372,23 @@ export class InputHandler {
 
     // Ignore keydown events during composition
     // Note: Some browsers send keyCode 229 for all keys during composition
-    if (this.isComposing || event.isComposing || event.keyCode === 229) {
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
+
+    // If we're still in composition (our flag) but browser says composition ended,
+    // this is the key that ended the composition (space, period, etc.).
+    // Queue it to be processed after compositionend to maintain correct order.
+    if (this.isComposing) {
+      // Store the key to be processed after composition ends
+      this.pendingKeyAfterComposition = event.key;
+      event.preventDefault();
+      return;
+    }
+
+    // Block the key that triggered composition end if we just processed a pending key
+    if (this.compositionJustEnded) {
+      this.compositionJustEnded = false;
       return;
     }
 
@@ -689,6 +712,8 @@ export class InputHandler {
     if (data && data.length > 0) {
       if (this.shouldIgnoreCompositionEnd(data)) {
         this.cleanupCompositionTextNodes();
+        // Still process pending key even if composition data is ignored
+        this.processPendingKeyAfterComposition();
         return;
       }
       this.onDataCallback(data);
@@ -696,6 +721,22 @@ export class InputHandler {
     }
 
     this.cleanupCompositionTextNodes();
+
+    // Process the key that ended composition (space, period, etc.)
+    // This ensures correct order: composed text first, then the terminating key
+    this.processPendingKeyAfterComposition();
+  }
+
+  /**
+   * Process the pending key that was queued during composition
+   */
+  private processPendingKeyAfterComposition(): void {
+    if (this.pendingKeyAfterComposition) {
+      const key = this.pendingKeyAfterComposition;
+      this.pendingKeyAfterComposition = null;
+      // Output the key that ended composition
+      this.onDataCallback(key);
+    }
   }
 
   /**
@@ -1059,18 +1100,20 @@ export class InputHandler {
       this.beforeInputListener = null;
     }
 
+    // Remove composition listeners from the same element they were attached to
+    const compositionTarget = this.inputElement || this.container;
     if (this.compositionStartListener) {
-      this.container.removeEventListener('compositionstart', this.compositionStartListener);
+      compositionTarget.removeEventListener('compositionstart', this.compositionStartListener);
       this.compositionStartListener = null;
     }
 
     if (this.compositionUpdateListener) {
-      this.container.removeEventListener('compositionupdate', this.compositionUpdateListener);
+      compositionTarget.removeEventListener('compositionupdate', this.compositionUpdateListener);
       this.compositionUpdateListener = null;
     }
 
     if (this.compositionEndListener) {
-      this.container.removeEventListener('compositionend', this.compositionEndListener);
+      compositionTarget.removeEventListener('compositionend', this.compositionEndListener);
       this.compositionEndListener = null;
     }
 

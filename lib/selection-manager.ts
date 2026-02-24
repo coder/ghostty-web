@@ -180,7 +180,12 @@ export class SelectionManager {
           if (char.trim()) {
             lastNonEmpty = lineText.length;
           }
-        } else {
+        } else if (!cell || cell.width !== 0) {
+          // Only add space for truly empty cells, not wide character continuation cells.
+          // Wide characters (like CJK) occupy 2 terminal cells:
+          // - First cell: has codepoint, width=2
+          // - Second cell: codepoint=0, width=0 (continuation marker)
+          // We skip continuation cells to avoid inserting spaces between characters.
           lineText += ' ';
         }
       }

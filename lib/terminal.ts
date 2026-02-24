@@ -69,6 +69,7 @@ export class Terminal implements ITerminalCore {
   private inputHandler?: InputHandler;
   private selectionManager?: SelectionManager;
   private canvas?: HTMLCanvasElement;
+  private compositionPreview?: HTMLDivElement;
 
   // Link detection system
   private linkDetector?: LinkDetector;
@@ -348,20 +349,15 @@ export class Terminal implements ITerminalCore {
     this.isOpen = true;
 
     try {
-      // Make parent focusable if it isn't already
-      if (!parent.hasAttribute('tabindex')) {
-        parent.setAttribute('tabindex', '0');
-      }
+      // Set tabindex="-1" on parent so it's not focusable via click/tab.
+      // We want all focus to go to the hidden textarea for proper IME handling.
+      // The textarea will handle keyboard input and composition events.
+      parent.setAttribute('tabindex', '-1');
 
-      // Mark as contenteditable so browser extensions (Vimium, etc.) recognize
-      // this as an input element and don't intercept keyboard events.
-      parent.setAttribute('contenteditable', 'true');
-      // Prevent actual content editing - we handle input ourselves
-      parent.addEventListener('beforeinput', (e) => {
-        if (e.target === parent) {
-          e.preventDefault();
-        }
-      });
+      // Note: We intentionally do NOT set contenteditable on the parent container.
+      // Setting contenteditable causes IME (Korean, Chinese, Japanese) input to be
+      // inserted directly into the container as text nodes, bypassing our textarea.
+      // Instead, we use the hidden textarea for all keyboard/IME input.
 
       // Add accessibility attributes for screen readers and extensions
       parent.setAttribute('role', 'textbox');
@@ -400,9 +396,35 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.resize = 'none';
       parent.appendChild(this.textarea);
 
+      // Create composition preview element for IME input (Korean, Chinese, Japanese)
+      this.compositionPreview = document.createElement('div');
+      this.compositionPreview.style.position = 'absolute';
+      this.compositionPreview.style.top = '4px';
+      this.compositionPreview.style.right = '4px';
+      this.compositionPreview.style.padding = '2px 8px';
+      this.compositionPreview.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+      this.compositionPreview.style.color = '#ffcc00';
+      this.compositionPreview.style.fontFamily = 'monospace';
+      this.compositionPreview.style.fontSize = '12px';
+      this.compositionPreview.style.borderRadius = '3px';
+      this.compositionPreview.style.display = 'none';
+      this.compositionPreview.style.zIndex = '1000';
+      parent.appendChild(this.compositionPreview);
+
+      // Listen to composition events for preview
+      this.textarea.addEventListener('compositionupdate', (e: CompositionEvent) => {
+        if (e.data) {
+          this.compositionPreview!.textContent = `조합중: ${e.data}`;
+          this.compositionPreview!.style.display = 'block';
+        }
+      });
+      this.textarea.addEventListener('compositionend', () => {
+        this.compositionPreview!.style.display = 'none';
+      });
+
       // Focus textarea on interaction - preventDefault before focus
       const textarea = this.textarea;
-      // Desktop: mousedown
+      // Desktop: mousedown on canvas
       this.canvas.addEventListener('mousedown', (ev) => {
         ev.preventDefault();
         textarea.focus();
@@ -410,6 +432,17 @@ export class Terminal implements ITerminalCore {
       // Mobile: touchend with preventDefault to suppress iOS caret
       this.canvas.addEventListener('touchend', (ev) => {
         ev.preventDefault();
+        textarea.focus();
+      });
+      // Redirect focus from parent container to textarea
+      // This ensures IME composition events always go to the textarea
+      parent.addEventListener('mousedown', (ev) => {
+        if (ev.target === parent) {
+          ev.preventDefault();
+          textarea.focus();
+        }
+      });
+      parent.addEventListener('focus', () => {
         textarea.focus();
       });
 
@@ -717,15 +750,21 @@ export class Terminal implements ITerminalCore {
    * Focus terminal input
    */
   focus(): void {
-    if (this.isOpen && this.element) {
-      // Focus immediately for immediate keyboard/wheel event handling
-      this.element.focus();
+    if (this.isOpen) {
+      // Focus the textarea for keyboard/IME input.
+      // The textarea is the actual input element that receives keyboard events
+      // and IME composition events. Focusing the container doesn't work for IME
+      // because composition events fire on the focused element.
+      const target = this.textarea || this.element;
+      if (target) {
+        target.focus();
 
-      // Also schedule a delayed focus as backup to ensure it sticks
-      // (some browsers may need this if DOM isn't fully settled)
-      setTimeout(() => {
-        this.element?.focus();
-      }, 0);
+        // Also schedule a delayed focus as backup to ensure it sticks
+        // (some browsers may need this if DOM isn't fully settled)
+        setTimeout(() => {
+          target?.focus();
+        }, 0);
+      }
     }
   }
 
@@ -1195,6 +1234,12 @@ export class Terminal implements ITerminalCore {
       this.textarea = undefined;
     }
 
+    // Remove composition preview from DOM
+    if (this.compositionPreview && this.compositionPreview.parentNode) {
+      this.compositionPreview.parentNode.removeChild(this.compositionPreview);
+      this.compositionPreview = undefined;
+    }
+
     // Remove event listeners
     if (this.element) {
       this.element.removeEventListener('wheel', this.handleWheel);
@@ -1203,8 +1248,7 @@ export class Terminal implements ITerminalCore {
       this.element.removeEventListener('mouseleave', this.handleMouseLeave);
       this.element.removeEventListener('click', this.handleClick);
 
-      // Remove contenteditable and accessibility attributes added in open()
-      this.element.removeAttribute('contenteditable');
+      // Remove accessibility attributes added in open()
       this.element.removeAttribute('role');
       this.element.removeAttribute('aria-label');
       this.element.removeAttribute('aria-multiline');
