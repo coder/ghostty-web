@@ -513,6 +513,17 @@ export class SelectionManager {
     // Document-level mousemove for tracking mouse position during drag outside canvas
     this.boundDocumentMouseMoveHandler = (e: MouseEvent) => {
       if (this.isSelecting) {
+        // Check drag threshold (same as canvas mousemove)
+        if (!this.dragThresholdMet) {
+          const dx = e.clientX - (canvas.getBoundingClientRect().left + this.mouseDownX);
+          const dy = e.clientY - (canvas.getBoundingClientRect().top + this.mouseDownY);
+          const threshold = this.renderer.getMetrics().width * 0.5;
+          if (dx * dx + dy * dy < threshold * threshold) {
+            return;
+          }
+          this.dragThresholdMet = true;
+        }
+
         const rect = canvas.getBoundingClientRect();
 
         // Update selection based on clamped position
