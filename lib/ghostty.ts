@@ -874,5 +874,10 @@ export class GhosttyTerminal {
       this.viewportBufferPtr = 0;
       this.viewportBufferSize = 0;
     }
+    if (this.graphemeBufferPtr) {
+      this.exports.ghostty_wasm_free_u8_array(this.graphemeBufferPtr, 16 * 4);
+      this.graphemeBufferPtr = 0;
+    }
+    this.graphemeBuffer = null;
   }
 }
