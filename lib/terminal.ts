@@ -394,8 +394,7 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.fontSize = `${this.options.fontSize || 16}px`;
       this.textarea.style.zIndex = '-1';
       this.textarea.style.color = this.options.theme?.foreground || '#ffffff';
-      this.textarea.style.background = this.options.theme?.background || '#000000';
-      this.textarea.style.lineHeight = '1';
+      this.textarea.style.background = 'transparent';
       this.textarea.style.outline = 'none';
       this.textarea.style.caretColor = this.options.theme?.cursor || '#ffffff';
       parent.appendChild(this.textarea);
@@ -405,7 +404,7 @@ export class Terminal implements ITerminalCore {
         if (this.textarea) {
           this.textarea.style.opacity = '1';
           this.textarea.style.width = 'auto';
-          this.textarea.style.height = 'auto';
+          this.textarea.style.height = `${this.renderer?.getMetrics().height || 20}px`;
           this.textarea.style.overflow = 'visible';
           this.textarea.style.zIndex = '10';
         }
@@ -1187,6 +1186,7 @@ export class Terminal implements ITerminalCore {
           const metrics = this.renderer.getMetrics();
           this.textarea.style.left = `${cursor.x * metrics.width}px`;
           this.textarea.style.top = `${cursor.y * metrics.height}px`;
+          this.textarea.style.lineHeight = `${metrics.height}px`;
         }
         if (cursor.y !== this.lastCursorY) {
           this.lastCursorY = cursor.y;
