@@ -529,18 +529,19 @@ describe('blur()', () => {
       term.dispose();
     });
 
-    test('should call blur on element', async () => {
+    test('should call blur on textarea', async () => {
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
       if (!container) return;
       term.open(container!);
 
+      const textarea = container!.querySelector('textarea');
       const blurSpy = { called: false };
-      if (term.element) {
-        const originalBlur = term.element.blur;
-        term.element.blur = () => {
+      if (textarea) {
+        const originalBlur = textarea.blur;
+        textarea.blur = () => {
           blurSpy.called = true;
-          originalBlur.call(term.element);
+          originalBlur.call(textarea);
         };
       }
 
