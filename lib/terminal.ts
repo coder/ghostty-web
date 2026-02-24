@@ -1149,6 +1149,7 @@ export class Terminal implements ITerminalCore {
    * Start the render loop
    */
   private startRenderLoop(): void {
+    if (this.animationFrameId) return; // already running
     const loop = () => {
       if (!this.isDisposed && this.isOpen) {
         // Render using WASM's native dirty tracking
