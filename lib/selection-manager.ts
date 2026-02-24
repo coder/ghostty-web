@@ -313,9 +313,8 @@ export class SelectionManager {
     }
 
     // Convert viewport rows to absolute rows
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: 0, absoluteRow: viewportY + start };
-    this.selectionEnd = { col: dims.cols - 1, absoluteRow: viewportY + end };
+    this.selectionStart = { col: 0, absoluteRow: this.viewportRowToAbsolute(start) };
+    this.selectionEnd = { col: dims.cols - 1, absoluteRow: this.viewportRowToAbsolute(end) };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }
@@ -887,7 +886,15 @@ export class SelectionManager {
    * Get word boundaries at a cell position
    */
   private getWordAtCell(col: number, row: number): { startCol: number; endCol: number } | null {
-    const line = this.wasmTerm.getLine(row);
+    const absoluteRow = this.viewportRowToAbsolute(row);
+    const scrollbackLength = this.wasmTerm.getScrollbackLength();
+    let line: GhosttyCell[] | null;
+    if (absoluteRow < scrollbackLength) {
+      line = this.wasmTerm.getScrollbackLine(absoluteRow);
+    } else {
+      const screenRow = absoluteRow - scrollbackLength;
+      line = this.wasmTerm.getLine(screenRow);
+    }
     if (!line) return null;
 
     // Word characters: letters, numbers, and common path/URL characters
