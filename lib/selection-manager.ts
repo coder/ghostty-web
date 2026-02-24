@@ -183,7 +183,7 @@ export class SelectionManager {
           if (char.trim()) {
             lastNonEmpty = lineText.length;
           }
-        } else {
+        } else if (!cell || cell.width !== 0) {
           lineText += ' ';
         }
       }

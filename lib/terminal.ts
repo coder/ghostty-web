@@ -355,7 +355,6 @@ export class Terminal implements ITerminalCore {
         parent.setAttribute('tabindex', '-1');
       }
 
-
       // Add accessibility attributes for screen readers and extensions
       parent.setAttribute('role', 'textbox');
       parent.setAttribute('aria-label', 'Terminal input');

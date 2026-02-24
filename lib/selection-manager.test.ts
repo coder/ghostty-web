@@ -263,6 +263,28 @@ describe('SelectionManager', () => {
 
       term.dispose();
     });
+
+    test('getSelection handles wide characters without extra spaces', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+
+      // Write CJK wide characters: 你好 (each takes 2 columns)
+      term.write('你好\r\n');
+
+      const scrollbackLen = term.wasmTerm!.getScrollbackLength();
+      // Select first 4 columns (2 wide chars × 2 cols each)
+      setSelectionAbsolute(term, 0, scrollbackLen, 3, scrollbackLen);
+
+      const selMgr = (term as any).selectionManager;
+      const text = selMgr.getSelection();
+
+      // Should be "你好" without extra spaces between characters
+      expect(text).toBe('你好');
+
+      term.dispose();
+    });
   });
 
   describe('Selection persistence during scroll', () => {
