@@ -1564,6 +1564,26 @@ index 000000000..73ae2e6fa
 +    try std.testing.expectEqual(@as(u32, 'l'), cells[3].codepoint);
 +    try std.testing.expectEqual(@as(u32, 'o'), cells[4].codepoint);
 +}
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+index ba2af2473..b8be8f273 100644
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -848,9 +848,12 @@ pub fn cursorDownScroll(self: *Screen) !void {
+         // Our new row is always dirty
+         self.cursorMarkDirty();
+
+-        // Clear the new row so it gets our bg color. We only do this
+-        // if we have a bg color at all.
+-        if (self.cursor.style.bg_color != .none) {
++        // Always clear the new row's cells. When pages.grow() extends an
++        // existing page, the new row's cell memory may contain stale data
++        // from previously erased rows. Without clearing, these stale cells
++        // become visible when the row isn't fully overwritten (e.g., empty
++        // lines produced by bare \r\n sequences with default cursor style).
++        {
+             const page: *Page = &page_pin.node.data;
+             self.clearCells(
+                 page,
 diff --git a/src/terminal/render.zig b/src/terminal/render.zig
 index b6430ea34..10e0ef79d 100644
 --- a/src/terminal/render.zig
