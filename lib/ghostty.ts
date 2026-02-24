@@ -292,7 +292,7 @@ export class GhosttyTerminal {
         const view = new DataView(this.memory.buffer);
         let offset = configPtr;
 
-        // scrollback_limit (u32)
+        // scrollback_limit (u32) - number of lines; WASM converts to bytes internally
         view.setUint32(offset, config.scrollbackLimit ?? 10000, true);
         offset += 4;
 
