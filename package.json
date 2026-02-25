@@ -46,6 +46,9 @@
     "dev": "vite --port 8000",
     "demo": "node demo/bin/demo.js",
     "demo:dev": "node demo/bin/demo.js --dev",
+    "test:render": "bun demo/bin/render-test.ts",
+    "test:render:update": "bun demo/bin/render-test.ts --update",
+    "test:render:web": "bunx serve . -p 3000",
     "prebuild": "bun install",
     "build": "bun run clean && bun run build:wasm && bun run build:lib && bun run build:wasm-copy",
     "build:wasm": "./scripts/build-wasm.sh",
@@ -69,6 +72,7 @@
     "@xterm/xterm": "^5.5.0",
     "mitata": "^1.0.34",
     "prettier": "^3.6.2",
+    "puppeteer": "^24.37.5",
     "typescript": "^5.9.3",
     "vite": "^4.5.0",
     "vite-plugin-dts": "^4.5.4"
