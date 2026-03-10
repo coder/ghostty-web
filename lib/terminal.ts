@@ -1552,6 +1552,20 @@ export class Terminal implements ITerminalCore {
       return;
     }
 
+    // When mouse tracking is active, the application wants to receive mouse
+    // wheel events with coordinates so it can determine which pane/zone the
+    // cursor is over (critical for TUIs with multiple scroll regions like
+    // tmux, vim splits, etc.).  Delegate to the InputHandler which sends
+    // proper SGR/X10 mouse sequences with the cell position.
+    if (this.wasmTerm?.hasMouseTracking()) {
+      // InputHandler.handleWheel is registered on the same container but in
+      // the bubbling phase.  Since we already called stopPropagation() above
+      // (to prevent the browser from scrolling the page), we need to forward
+      // the event explicitly.
+      this.inputHandler?.handleWheelEvent(e);
+      return;
+    }
+
     // Check if in alternate screen mode (vim, less, htop, etc.)
     const isAltScreen = this.wasmTerm?.isAlternateScreen() ?? false;
 
