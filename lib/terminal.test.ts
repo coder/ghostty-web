@@ -2989,4 +2989,62 @@ describe('Synchronous open()', () => {
 
     term.dispose();
   });
+
+  test('new terminal should not contain stale data from freed terminal', async () => {
+    if (!container) return;
+
+    // Create first terminal and write content
+    const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term1.open(container);
+    term1.write('Hello stale data');
+
+    // Access the Ghostty instance to create a second raw terminal
+    const ghostty = (term1 as any).ghostty;
+    const wasmTerm1 = term1.wasmTerm!;
+
+    // Free the first WASM terminal and create a new one through the same instance
+    wasmTerm1.free();
+    const wasmTerm2 = ghostty.createTerminal(80, 24);
+
+    // New terminal should have clean grid
+    const line = wasmTerm2.getLine(0);
+    expect(line).not.toBeNull();
+    for (const cell of line!) {
+      expect(cell.codepoint).toBe(0);
+    }
+    expect(wasmTerm2.getScrollbackLength()).toBe(0);
+    wasmTerm2.free();
+
+    term1.dispose();
+  });
+
+  // https://github.com/coder/ghostty-web/issues/141
+  test('freeing terminal after writing multi-codepoint grapheme clusters should not corrupt WASM memory', async () => {
+    if (!container) return;
+
+    const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term1.open(container);
+    const ghostty = (term1 as any).ghostty;
+    const wasmTerm1 = term1.wasmTerm!;
+
+    // Write multi-codepoint grapheme clusters (flag emoji, skin tone, ZWJ sequence)
+    wasmTerm1.write('\u{1F1FA}\u{1F1F8}');  // 🇺🇸 regional indicator pair
+    wasmTerm1.write('\u{1F44B}\u{1F3FD}');  // 👋🏽 wave + skin tone modifier
+    wasmTerm1.write('\u{1F468}\u200D\u{1F469}\u200D\u{1F467}');  // 👨‍👩‍👧 ZWJ family
+
+    // Free the terminal that processed grapheme clusters
+    wasmTerm1.free();
+
+    // Creating and writing to a new terminal on the same instance should not crash
+    const wasmTerm2 = ghostty.createTerminal(80, 24);
+    expect(() => wasmTerm2.write('Hello')).not.toThrow();
+
+    // Verify the write actually worked
+    const line = wasmTerm2.getLine(0);
+    expect(line).not.toBeNull();
+    expect(line![0].codepoint).toBe('H'.codePointAt(0)!);
+
+    wasmTerm2.free();
+    term1.dispose();
+  });
 });
