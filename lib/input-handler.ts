@@ -182,6 +182,7 @@ export class InputHandler {
   private customKeyEventHandler?: (event: KeyboardEvent) => boolean;
   private getModeCallback?: (mode: number) => boolean;
   private onCopyCallback?: () => boolean;
+  private onImagePasteCallback?: (data: { name: string; dataBase64: string }) => void;
   private mouseConfig?: MouseTrackingConfig;
   private keydownListener: ((e: KeyboardEvent) => void) | null = null;
   private keypressListener: ((e: KeyboardEvent) => void) | null = null;
@@ -220,6 +221,7 @@ export class InputHandler {
    * @param onCopy - Optional callback to handle copy (Cmd+C/Ctrl+C with selection)
    * @param inputElement - Optional input element for beforeinput events
    * @param mouseConfig - Optional mouse tracking configuration
+   * @param onImagePaste - Optional callback for image paste events
    */
   constructor(
     ghostty: Ghostty,
@@ -231,7 +233,8 @@ export class InputHandler {
     getMode?: (mode: number) => boolean,
     onCopy?: () => boolean,
     inputElement?: HTMLElement,
-    mouseConfig?: MouseTrackingConfig
+    mouseConfig?: MouseTrackingConfig,
+    onImagePaste?: (data: { name: string; dataBase64: string }) => void
   ) {
     this.encoder = ghostty.createKeyEncoder();
     this.container = container;
@@ -242,6 +245,7 @@ export class InputHandler {
     this.customKeyEventHandler = customKeyEventHandler;
     this.getModeCallback = getMode;
     this.onCopyCallback = onCopy;
+    this.onImagePasteCallback = onImagePaste;
     this.mouseConfig = mouseConfig;
 
     // Attach event listeners
@@ -571,6 +575,29 @@ export class InputHandler {
     if (!clipboardData) {
       console.warn('No clipboard data available');
       return;
+    }
+
+    // Check for image data in clipboard
+    if (this.onImagePasteCallback && clipboardData.items) {
+      for (const item of Array.from(clipboardData.items)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            const callback = this.onImagePasteCallback;
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = reader.result as string;
+              const base64 = result.split(',')[1];
+              if (base64) {
+                const ext = file.type.split('/')[1] || 'png';
+                callback({ name: `clipboard_${Date.now()}.${ext}`, dataBase64: base64 });
+              }
+            };
+            reader.readAsDataURL(file);
+            return;
+          }
+        }
+      }
     }
 
     // Get text from clipboard
