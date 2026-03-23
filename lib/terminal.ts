@@ -86,7 +86,6 @@ export class Terminal implements ITerminalCore {
   private scrollEmitter = new EventEmitter<number>();
   private renderEmitter = new EventEmitter<{ start: number; end: number }>();
   private cursorMoveEmitter = new EventEmitter<void>();
-  private imagePasteEmitter = new EventEmitter<{ name: string; dataBase64: string }>();
   // Public event accessors (xterm.js compatibility)
   public readonly onData: IEvent<string> = this.dataEmitter.event;
   public readonly onResize: IEvent<{ cols: number; rows: number }> = this.resizeEmitter.event;
@@ -97,7 +96,6 @@ export class Terminal implements ITerminalCore {
   public readonly onScroll: IEvent<number> = this.scrollEmitter.event;
   public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
   public readonly onCursorMove: IEvent<void> = this.cursorMoveEmitter.event;
-  public readonly onImagePaste: IEvent<{ name: string; dataBase64: string }> = this.imagePasteEmitter.event;
 
   // Lifecycle state
   private isOpen = false;
@@ -479,10 +477,7 @@ export class Terminal implements ITerminalCore {
           return this.copySelection();
         },
         this.textarea,
-        mouseConfig,
-        (data: { name: string; dataBase64: string }) => {
-          this.imagePasteEmitter.fire(data);
-        }
+        mouseConfig
       );
 
       // Create selection manager (pass textarea for context menu positioning)

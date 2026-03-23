@@ -93,6 +93,8 @@ export type { SelectionCoordinates } from './selection-manager';
 // Addons
 export { FitAddon } from './addons/fit';
 export type { ITerminalDimensions } from './addons/fit';
+export { ImagePasteAddon } from './addons/image-paste';
+export type { IImagePasteData } from './addons/image-paste';
 
 // Link providers
 export { OSC8LinkProvider } from './providers/osc8-link-provider';
