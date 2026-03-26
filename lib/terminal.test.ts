@@ -2990,3 +2990,311 @@ describe('Synchronous open()', () => {
     term.dispose();
   });
 });
+
+// ============================================================================
+// Dynamic Theme Changes
+// ============================================================================
+
+describe('Dynamic Theme Changes', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(async () => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('full theme change updates renderer', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#000000', foreground: '#ffffff' },
+    });
+    term.open(container);
+
+    // Change to a completely different theme
+    term.options.theme = {
+      background: '#ff0000',
+      foreground: '#00ff00',
+      cursor: '#0000ff',
+      red: '#aa0000',
+    };
+
+    // @ts-ignore - accessing private for test
+    const renderer = term.renderer;
+    // @ts-ignore - accessing private for test
+    expect(renderer.theme.background).toBe('#ff0000');
+    // @ts-ignore - accessing private for test
+    expect(renderer.theme.foreground).toBe('#00ff00');
+    // @ts-ignore - accessing private for test
+    expect(renderer.theme.cursor).toBe('#0000ff');
+
+    term.dispose();
+  });
+
+  test('full theme change updates WASM terminal colors', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    term.options.theme = {
+      background: '#112233',
+      foreground: '#aabbcc',
+    };
+
+    // Force render state update to pick up new colors
+    term.wasmTerm!.update();
+    const colors = term.wasmTerm!.getColors();
+
+    // Verify WASM terminal has the new colors
+    expect(colors.background.r).toBe(0x11);
+    expect(colors.background.g).toBe(0x22);
+    expect(colors.background.b).toBe(0x33);
+    expect(colors.foreground.r).toBe(0xaa);
+    expect(colors.foreground.g).toBe(0xbb);
+    expect(colors.foreground.b).toBe(0xcc);
+
+    term.dispose();
+  });
+
+  test('partial theme update preserves previous customizations', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // First: change background only
+    term.options.theme = { background: '#111111' };
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#111111');
+
+    // Second: change foreground only — background should be preserved
+    term.options.theme = { foreground: '#222222' };
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#111111');
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.foreground).toBe('#222222');
+
+    term.dispose();
+  });
+
+  test('successive partial updates accumulate correctly', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    term.options.theme = { background: '#aaaaaa' };
+    term.options.theme = { foreground: '#bbbbbb' };
+    term.options.theme = { cursor: '#cccccc' };
+
+    // @ts-ignore - accessing private for test
+    const theme = term.renderer.theme;
+    expect(theme.background).toBe('#aaaaaa');
+    expect(theme.foreground).toBe('#bbbbbb');
+    expect(theme.cursor).toBe('#cccccc');
+
+    term.dispose();
+  });
+
+  test('theme reset to empty object restores defaults', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#ff0000', foreground: '#00ff00' },
+    });
+    term.open(container);
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#ff0000');
+
+    // Reset to empty — should restore defaults
+    term.options.theme = {};
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#1e1e1e');
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.foreground).toBe('#d4d4d4');
+
+    term.dispose();
+  });
+
+  test('theme reset to null restores defaults', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#ff0000' },
+    });
+    term.open(container);
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#ff0000');
+
+    // Reset to null
+    term.options.theme = null as any;
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#1e1e1e');
+
+    term.dispose();
+  });
+
+  test('theme change before open() is applied correctly', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#111111' },
+    });
+
+    // Change theme before open
+    term.options.theme = { background: '#222222' };
+
+    // Open — should use the latest theme
+    term.open(container);
+
+    // The buildWasmConfig reads from options.theme which is now #222222
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#222222');
+
+    term.dispose();
+  });
+
+  test('ANSI palette color cells re-resolve after theme change', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { red: '#cd3131' },
+    });
+    term.open(container);
+
+    // Write text with ANSI red (color index 1)
+    term.write('\x1b[31mRed text\x1b[0m');
+
+    // Change theme — new red
+    term.options.theme = { red: '#ff0000' };
+
+    // Force render state update and read cells
+    term.wasmTerm!.update();
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+
+    // First cell ('R') should now have the new red color
+    const cell = line![0];
+    expect(cell.fg_r).toBe(0xff);
+    expect(cell.fg_g).toBe(0x00);
+    expect(cell.fg_b).toBe(0x00);
+
+    term.dispose();
+  });
+
+  test('explicit RGB color cells remain unchanged after theme change', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // Write text with explicit RGB color
+    term.write('\x1b[38;2;100;200;50mRGB text\x1b[0m');
+
+    // Change theme
+    term.options.theme = {
+      foreground: '#ffffff',
+      background: '#000000',
+      red: '#ff0000',
+    };
+
+    // Force render state update and read cells
+    term.wasmTerm!.update();
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+
+    // First cell ('R') should still have the explicit RGB color
+    const cell = line![0];
+    expect(cell.fg_r).toBe(100);
+    expect(cell.fg_g).toBe(200);
+    expect(cell.fg_b).toBe(50);
+
+    term.dispose();
+  });
+
+  test('theme change triggers full redraw', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // Clear any existing dirty state
+    term.wasmTerm!.clearDirty();
+    expect(term.wasmTerm!.needsFullRedraw()).toBe(false);
+
+    // Change theme
+    term.options.theme = { background: '#ff0000' };
+
+    // Should need a full redraw
+    expect(term.wasmTerm!.needsFullRedraw()).toBe(true);
+
+    // After clearing, no longer dirty
+    term.wasmTerm!.clearDirty();
+    expect(term.wasmTerm!.needsFullRedraw()).toBe(false);
+
+    term.dispose();
+  });
+
+  test('invalid color values do not crash', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // Should not throw
+    term.options.theme = {
+      background: 'not-a-color',
+      foreground: 'rgb(999,0,0)',
+      red: '',
+    };
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('not-a-color');
+
+    term.dispose();
+  });
+
+  test('default fg/bg cells update after theme change', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { foreground: '#aaaaaa', background: '#111111' },
+    });
+    term.open(container);
+
+    // Write text with default colors (no SGR)
+    term.write('Hello');
+
+    // Change theme
+    term.options.theme = { foreground: '#ffffff', background: '#000000' };
+
+    // Force render state update and read cells
+    term.wasmTerm!.update();
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+
+    // First cell ('H') should have new default foreground
+    const cell = line![0];
+    expect(cell.fg_r).toBe(0xff);
+    expect(cell.fg_g).toBe(0xff);
+    expect(cell.fg_b).toBe(0xff);
+
+    term.dispose();
+  });
+});
