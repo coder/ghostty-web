@@ -51,9 +51,9 @@ export interface RendererOptions {
 }
 
 export interface FontMetrics {
-  width: number; // Character cell width in CSS pixels
-  height: number; // Character cell height in CSS pixels
-  baseline: number; // Distance from top to text baseline
+  width: number; // Character cell width in CSS pixels (multiple of 1/devicePixelRatio)
+  height: number; // Character cell height in CSS pixels (multiple of 1/devicePixelRatio)
+  baseline: number; // Distance from top to text baseline in CSS pixels
 }
 
 // ============================================================================
@@ -197,16 +197,22 @@ export class CanvasRenderer {
 
     // Measure width using 'M' (typically widest character)
     const widthMetrics = ctx.measureText('M');
-    const width = Math.ceil(widthMetrics.width);
 
     // Measure height using ascent + descent with padding for glyph overflow
     const ascent = widthMetrics.actualBoundingBoxAscent || this.fontSize * 0.8;
     const descent = widthMetrics.actualBoundingBoxDescent || this.fontSize * 0.2;
 
-    // Add 2px padding to height to account for glyphs that overflow (like 'f', 'd', 'g', 'p')
-    // and anti-aliasing pixels
-    const height = Math.ceil(ascent + descent) + 2;
-    const baseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+    // Round up to the nearest device pixel (not CSS pixel) so that cell boundaries
+    // fall on exact physical pixel boundaries at any devicePixelRatio.
+    // Without this, non-integer DPR values (e.g. 1.25/1.5/1.75 from browser zoom)
+    // produce fractional physical coordinates at cell edges, which causes the canvas
+    // rasterizer to antialias clearRect/fillRect calls there. Combined with alpha:true
+    // on the canvas, those partially-transparent edge pixels composite against the page
+    // background and appear as thin black seams between rows/columns.
+    const dpr = this.devicePixelRatio;
+    const width = Math.ceil(widthMetrics.width * dpr) / dpr;
+    const height = Math.ceil((ascent + descent + 2) * dpr) / dpr;
+    const baseline = Math.ceil((ascent + 1) * dpr) / dpr;
 
     return { width, height, baseline };
   }
