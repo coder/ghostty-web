@@ -477,7 +477,7 @@ export class Terminal implements ITerminalCore {
           return this.copySelection();
         },
         this.textarea,
-        mouseConfig
+        mouseConfig,
       );
 
       // Create selection manager (pass textarea for context menu positioning)
@@ -485,7 +485,7 @@ export class Terminal implements ITerminalCore {
         this,
         this.renderer,
         this.wasmTerm,
-        this.textarea
+        this.textarea,
       );
 
       // Connect selection manager to renderer
@@ -845,7 +845,7 @@ export class Terminal implements ITerminalCore {
    * Returns true to prevent default handling
    */
   public attachCustomKeyEventHandler(
-    customKeyEventHandler: (event: KeyboardEvent) => boolean
+    customKeyEventHandler: (event: KeyboardEvent) => boolean,
   ): void {
     this.customKeyEventHandler = customKeyEventHandler;
     // Update input handler if already created
@@ -859,7 +859,7 @@ export class Terminal implements ITerminalCore {
    * Returns true to prevent default handling
    */
   public attachCustomWheelEventHandler(
-    customWheelEventHandler?: (event: WheelEvent) => boolean
+    customWheelEventHandler?: (event: WheelEvent) => boolean,
   ): void {
     this.customWheelEventHandler = customWheelEventHandler;
   }
@@ -1556,9 +1556,21 @@ export class Terminal implements ITerminalCore {
     const isAltScreen = this.wasmTerm?.isAlternateScreen() ?? false;
 
     if (isAltScreen) {
-      // Alternate screen: send arrow keys to the application
-      // Applications like vim handle scrolling internally
-      // Standard: ~3 arrow presses per wheel "click"
+      if (this.wasmTerm?.hasMouseTracking()) {
+        // App negotiated mouse tracking (e.g. vim `set mouse=a`): send SGR
+        // scroll sequence so the app scrolls its buffer, not the cursor.
+        const metrics = this.renderer?.getMetrics();
+        const canvas = this.canvas;
+        if (metrics && canvas) {
+          const rect = canvas.getBoundingClientRect();
+          const col = Math.max(1, Math.floor((e.clientX - rect.left) / metrics.width) + 1);
+          const row = Math.max(1, Math.floor((e.clientY - rect.top) / metrics.height) + 1);
+          const btn = e.deltaY < 0 ? 64 : 65;
+          this.dataEmitter.fire(`\x1b[<${btn};${col};${row}M`);
+        }
+        return;
+      }
+      // No mouse tracking: arrow-key fallback for apps like `less`.
       const direction = e.deltaY > 0 ? 'down' : 'up';
       const count = Math.min(Math.abs(Math.round(e.deltaY / 33)), 5); // Cap at 5
 
