@@ -525,8 +525,6 @@ export class Terminal implements ITerminalCore {
       // Start render loop
       this.startRenderLoop();
 
-      // Focus input (auto-focus so user can start typing immediately)
-      this.focus();
     } catch (error) {
       // Clean up on error
       this.isOpen = false;
