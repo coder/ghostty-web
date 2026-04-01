@@ -2989,4 +2989,35 @@ describe('Synchronous open()', () => {
 
     term.dispose();
   });
+
+  test('focusOnOpen: false prevents auto-focus on open', async () => {
+    if (!container) return;
+
+    // Focus a different element first
+    const other = document.createElement('input');
+    document.body.appendChild(other);
+    other.focus();
+    expect(document.activeElement).toBe(other);
+
+    const term = await createIsolatedTerminal({ focusOnOpen: false });
+    term.open(container);
+
+    // The terminal should NOT have stolen focus
+    expect(document.activeElement).toBe(other);
+
+    other.remove();
+    term.dispose();
+  });
+
+  test('focusOnOpen defaults to true', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // The terminal should have taken focus
+    expect(document.activeElement).toBe(container);
+
+    term.dispose();
+  });
 });
