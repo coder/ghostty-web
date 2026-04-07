@@ -106,6 +106,8 @@ export class CanvasRenderer {
   // Cursor blinking state
   private cursorVisible: boolean = true;
   private cursorBlinkInterval?: number;
+  /** Called on each blink tick so the terminal can schedule a render. */
+  public cursorBlinkCallback?: () => void;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
 
   // Viewport tracking (for scrolling)
@@ -773,7 +775,8 @@ export class CanvasRenderer {
     // xterm.js uses ~530ms blink interval
     this.cursorBlinkInterval = window.setInterval(() => {
       this.cursorVisible = !this.cursorVisible;
-      // Note: Render loop should redraw cursor line automatically
+      // Trigger render callback so the terminal redraws the cursor
+      this.cursorBlinkCallback?.();
     }, 530);
   }
 
