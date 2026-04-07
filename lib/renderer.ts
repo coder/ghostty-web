@@ -108,6 +108,9 @@ export class CanvasRenderer {
   private cursorBlinkInterval?: number;
   /** Called on each blink tick so the terminal can schedule a render. */
   public cursorBlinkCallback?: () => void;
+
+  // Font style cache — avoid expensive ctx.font= on every cell
+  private lastFontKey: number = -1;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
 
   // Viewport tracking (for scrolling)
@@ -230,8 +233,16 @@ export class CanvasRenderer {
   // Color Conversion
   // ==========================================================================
 
+  private colorCache = new Map<number, string>();
+
   private rgbToCSS(r: number, g: number, b: number): string {
-    return `rgb(${r}, ${g}, ${b})`;
+    const key = (r << 16) | (g << 8) | b;
+    let css = this.colorCache.get(key);
+    if (css === undefined) {
+      css = `rgb(${r},${g},${b})`;
+      this.colorCache.set(key, css);
+    }
+    return css;
   }
 
   // ==========================================================================
@@ -363,8 +374,10 @@ export class CanvasRenderer {
     // Track rows with hyperlinks that need redraw when hover changes
     const hyperlinkRows = new Set<number>();
     const hyperlinkChanged = this.hoveredHyperlinkId !== this.previousHoveredHyperlinkId;
-    const linkRangeChanged =
-      JSON.stringify(this.hoveredLinkRange) !== JSON.stringify(this.previousHoveredLinkRange);
+    const a = this.hoveredLinkRange, b = this.previousHoveredLinkRange;
+    const linkRangeChanged = a !== b && (
+      !a || !b || a.startX !== b.startX || a.startY !== b.startY || a.endX !== b.endX || a.endY !== b.endY
+    );
 
     if (hyperlinkChanged) {
       // Find rows containing the old or new hovered hyperlink
@@ -545,6 +558,7 @@ export class CanvasRenderer {
 
     // PASS 2: Draw all cell text and decorations
     // Now text can safely extend beyond cell boundaries (for complex scripts)
+    this.lastFontKey = -1; // Reset font cache per line
     for (let x = 0; x < line.length; x++) {
       const cell = line[x];
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
@@ -610,11 +624,17 @@ export class CanvasRenderer {
     // Check if this cell is selected
     const isSelected = this.isInSelection(x, y);
 
-    // Set text style
-    let fontStyle = '';
-    if (cell.flags & CellFlags.ITALIC) fontStyle += 'italic ';
-    if (cell.flags & CellFlags.BOLD) fontStyle += 'bold ';
-    this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
+    // Set text style — only change ctx.font when style actually differs
+    const bold = (cell.flags & CellFlags.BOLD) !== 0;
+    const italic = (cell.flags & CellFlags.ITALIC) !== 0;
+    const fontKey = (bold ? 2 : 0) | (italic ? 1 : 0);
+    if (fontKey !== this.lastFontKey) {
+      this.lastFontKey = fontKey;
+      let fontStyle = '';
+      if (italic) fontStyle += 'italic ';
+      if (bold) fontStyle += 'bold ';
+      this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
+    }
 
     // Set text color - use override, selection foreground, or normal color
     if (colorOverride) {
