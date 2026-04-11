@@ -178,6 +178,46 @@ describe('URL Detection', () => {
     expect(links?.[0].text).toBe('tel:+1234567890');
   });
 
+  test('detects URLs with balanced parentheses (Wikipedia)', async () => {
+    const links = await getLinks(
+      'https://en.wikipedia.org/wiki/Rust_(programming_language)'
+    );
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe(
+      'https://en.wikipedia.org/wiki/Rust_(programming_language)'
+    );
+  });
+
+  test('strips unbalanced trailing paren from wrapped URL', async () => {
+    const links = await getLinks(
+      '(see https://en.wikipedia.org/wiki/Rust_(programming_language))'
+    );
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe(
+      'https://en.wikipedia.org/wiki/Rust_(programming_language)'
+    );
+  });
+
+  test('handles URL with multiple parenthesized path segments', async () => {
+    const links = await getLinks(
+      'https://example.com/a_(b)/c_(d)'
+    );
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('https://example.com/a_(b)/c_(d)');
+  });
+
+  test('handles URL with nested parentheses', async () => {
+    const links = await getLinks(
+      'https://example.com/foo_(bar_(baz))'
+    );
+    expect(links).toBeDefined();
+    expect(links?.length).toBe(1);
+    expect(links?.[0].text).toBe('https://example.com/foo_(bar_(baz))');
+  });
+
   test('detects magnet: URLs', async () => {
     const links = await getLinks('Download magnet:?xt=urn:btih:abc123');
     expect(links).toBeDefined();
