@@ -30,13 +30,13 @@ export class UrlRegexProvider implements ILinkProvider {
    * Excludes file paths (no ./ or ../ or bare /)
    */
   private static readonly URL_REGEX =
-    /(?:https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|gemini:\/\/|gopher:\/\/|news:)[\w\-.~:\/?#@!$&*+,;=%]+/gi;
+    /(?:https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|gemini:\/\/|gopher:\/\/|news:)[\w\-.~:\/?#@!$&*+,;=%()]+/gi;
 
   /**
    * Characters to strip from end of URLs
    * Common punctuation that's unlikely to be part of the URL
    */
-  private static readonly TRAILING_PUNCTUATION = /[.,;!?)\]]+$/;
+  private static readonly TRAILING_PUNCTUATION = /[.,;!?\]]+$/;
 
   constructor(private terminal: ITerminalForUrlProvider) {}
 
@@ -70,6 +70,18 @@ export class UrlRegexProvider implements ILinkProvider {
       if (stripped.length < url.length) {
         url = stripped;
         endX = startX + url.length - 1;
+      }
+
+      // Strip unbalanced trailing parentheses
+      while (url.endsWith(')')) {
+        const open = url.split('(').length - 1;
+        const close = url.split(')').length - 1;
+        if (close > open) {
+          url = url.slice(0, -1);
+          endX--;
+        } else {
+          break;
+        }
       }
 
       // Skip if URL is too short (e.g., just "http://")
