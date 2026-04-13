@@ -34,9 +34,65 @@ import type {
 import { LinkDetector } from './link-detector';
 import { OSC8LinkProvider } from './providers/osc8-link-provider';
 import { UrlRegexProvider } from './providers/url-regex-provider';
-import { CanvasRenderer } from './renderer';
+import { CanvasRenderer, DEFAULT_THEME, type IRenderable } from './renderer';
 import { SelectionManager } from './selection-manager';
 import type { ILink, ILinkProvider } from './types';
+
+function parseCssColorToRgb(
+  input: string | undefined,
+  fallback: { r: number; g: number; b: number }
+): { r: number; g: number; b: number } {
+  const raw = String(input || '').trim();
+  if (!raw) return fallback;
+
+  if (raw.startsWith('#')) {
+    const hex = raw.slice(1);
+    const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+    if (/^[0-9a-fA-F]{6}$/.test(full)) {
+      const value = Number.parseInt(full, 16);
+      return {
+        r: (value >> 16) & 255,
+        g: (value >> 8) & 255,
+        b: value & 255,
+      };
+    }
+  }
+
+  const rgbMatch = raw.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (rgbMatch) {
+    return {
+      r: Number.parseInt(rgbMatch[1], 10),
+      g: Number.parseInt(rgbMatch[2], 10),
+      b: Number.parseInt(rgbMatch[3], 10),
+    };
+  }
+
+  return fallback;
+}
+
+function createBlankBootstrapCells(
+  cols: number,
+  rows: number,
+  colors: { foreground: string; background: string }
+): GhosttyCell[][] {
+  const fg = parseCssColorToRgb(colors.foreground, { r: 212, g: 212, b: 212 });
+  const bg = parseCssColorToRgb(colors.background, { r: 30, g: 30, b: 30 });
+  const cell: GhosttyCell = {
+    codepoint: 32,
+    fg_r: fg.r,
+    fg_g: fg.g,
+    fg_b: fg.b,
+    bg_r: bg.r,
+    bg_g: bg.g,
+    bg_b: bg.b,
+    flags: 0,
+    width: 1,
+    hyperlink_id: 0,
+    grapheme_len: 0,
+  };
+
+  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => ({ ...cell })));
+}
 
 // ============================================================================
 // Terminal Class
@@ -133,6 +189,10 @@ export class Terminal implements ITerminalCore {
   private readonly SCROLLBAR_HIDE_DELAY_MS = 1500; // Hide after 1.5 seconds
   private readonly SCROLLBAR_FADE_DURATION_MS = 200; // 200ms fade animation
 
+  private bootstrapCells: GhosttyCell[][] | null = null;
+  private bootstrapDirty: boolean = false;
+  private bootstrapBuffer: IRenderable;
+
   constructor(options: ITerminalOptions = {}) {
     // Use provided Ghostty instance (for test isolation) or get module-level instance
     this.ghostty = options.ghostty ?? getGhostty();
@@ -173,6 +233,45 @@ export class Terminal implements ITerminalCore {
 
     // Initialize buffer API
     this.buffer = new BufferNamespace(this);
+
+    this.bootstrapBuffer = {
+      getLine: (y: number) => {
+        if (this.bootstrapCells && y >= 0 && y < this.bootstrapCells.length) {
+          return this.bootstrapCells[y];
+        }
+        return this.wasmTerm?.getLine(y) ?? null;
+      },
+      getCursor: () => {
+        if (this.bootstrapCells) {
+          return { x: 0, y: 0, visible: true };
+        }
+        return this.wasmTerm?.getCursor() ?? { x: 0, y: 0, visible: true };
+      },
+      getDimensions: () => ({ cols: this.cols, rows: this.rows }),
+      isRowDirty: (y: number) => {
+        if (this.bootstrapDirty) return true;
+        if (this.bootstrapCells) return false;
+        return this.wasmTerm?.isRowDirty(y) ?? false;
+      },
+      needsFullRedraw: () => {
+        if (this.bootstrapDirty) return true;
+        if (this.bootstrapCells) return false;
+        const wasmTerm = this.wasmTerm as unknown as { needsFullRedraw?: () => boolean } | undefined;
+        return wasmTerm?.needsFullRedraw?.() ?? false;
+      },
+      clearDirty: () => {
+        this.bootstrapDirty = false;
+        this.wasmTerm?.clearDirty();
+      },
+      getGraphemeString: (row: number, col: number) => {
+        if (this.bootstrapCells && row >= 0 && row < this.bootstrapCells.length) {
+          const cell = this.bootstrapCells[row]?.[col];
+          return cell ? String.fromCodePoint(cell.codepoint || 32) : ' ';
+        }
+        const wasmTerm = this.wasmTerm as unknown as { getGraphemeString?: (row: number, col: number) => string } | undefined;
+        return wasmTerm?.getGraphemeString?.(row, col) ?? ' ';
+      },
+    };
   }
 
   // ==========================================================================
@@ -520,7 +619,8 @@ export class Terminal implements ITerminalCore {
       parent.addEventListener('wheel', this.handleWheel, { passive: false, capture: true });
 
       // Render initial blank screen (force full redraw)
-      this.renderer.render(this.wasmTerm, true, this.viewportY, this, this.scrollbarOpacity);
+      this.armBootstrapBlank();
+      this.renderer.render(this.bootstrapBuffer, true, this.viewportY, this, this.scrollbarOpacity);
 
       // Start render loop
       this.startRenderLoop();
@@ -553,6 +653,8 @@ export class Terminal implements ITerminalCore {
    * Internal write implementation (extracted from write())
    */
   private writeInternal(data: string | Uint8Array, callback?: () => void): void {
+    this.disarmBootstrapBlank();
+
     // Note: We intentionally do NOT clear selection on write - most modern terminals
     // preserve selection when new data arrives. Selection is cleared by user actions
     // like clicking or typing, not by incoming data.
@@ -725,8 +827,10 @@ export class Terminal implements ITerminalCore {
     const config = this.buildWasmConfig();
     this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, config);
 
-    // Clear renderer
+    // Clear renderer and re-arm the bootstrap blank until real terminal output arrives
+    this.armBootstrapBlank();
     this.renderer!.clear();
+    this.renderer!.render(this.bootstrapBuffer, true, this.viewportY, this, this.scrollbarOpacity);
 
     // Reset title
     this.currentTitle = '';
@@ -1161,7 +1265,7 @@ export class Terminal implements ITerminalCore {
         // 1. Calls update() once to sync state and check dirty flags
         // 2. Only redraws dirty rows when forceAll=false
         // 3. Always calls clearDirty() at the end
-        this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
+        this.renderer!.render(this.bootstrapBuffer, false, this.viewportY, this, this.scrollbarOpacity);
 
         // Check for cursor movement (Phase 2: onCursorMove event)
         // Note: getCursor() reads from already-updated render state (from render() above)
@@ -1197,6 +1301,21 @@ export class Terminal implements ITerminalCore {
   public getScrollbackLength(): number {
     if (!this.wasmTerm) return 0;
     return this.wasmTerm.getScrollbackLength();
+  }
+
+  private armBootstrapBlank(): void {
+    const theme = { ...DEFAULT_THEME, ...this.options.theme };
+    this.bootstrapCells = createBlankBootstrapCells(this.cols, this.rows, {
+      foreground: theme.foreground,
+      background: theme.background,
+    });
+    this.bootstrapDirty = true;
+  }
+
+  private disarmBootstrapBlank(): void {
+    if (!this.bootstrapCells) return;
+    this.bootstrapCells = null;
+    this.bootstrapDirty = true;
   }
 
   /**
