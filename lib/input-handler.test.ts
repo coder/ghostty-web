@@ -570,6 +570,24 @@ describe('InputHandler', () => {
       expect(dataReceived[0]).toBe('\r');
     });
 
+    test('Shift+Enter is distinguishable from Enter', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Enter', 'Enter', { shift: true }));
+
+      expect(dataReceived.length).toBe(1);
+      // Shift+Enter must not collapse to plain \r — apps using the Kitty
+      // keyboard protocol or xterm modifyOtherKeys rely on it being distinct.
+      expect(dataReceived[0]).not.toBe('\r');
+    });
+
     test('encodes Tab', () => {
       const handler = new InputHandler(
         ghostty,

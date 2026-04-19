@@ -422,7 +422,13 @@ export class InputHandler {
     const mods = this.extractModifiers(event);
 
     // Handle simple special keys that produce standard sequences
-    if (mods === Mods.NONE || mods === Mods.SHIFT) {
+    //
+    // Shift+Enter is intentionally excluded: apps using the Kitty keyboard
+    // protocol or xterm modifyOtherKeys rely on Shift+Enter being
+    // distinguishable from Enter (e.g. "newline without submit" in REPLs,
+    // Claude Code, some chat clients). Let it fall through to the encoder,
+    // which emits \x1b[13;2u (Kitty) or \x1b[27;2;13~ (modifyOtherKeys).
+    if (mods === Mods.NONE || (mods === Mods.SHIFT && key !== Key.ENTER)) {
       let simpleOutput: string | null = null;
 
       switch (key) {
