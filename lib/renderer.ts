@@ -614,19 +614,26 @@ export class CanvasRenderer {
     } else if (isSelected) {
       this.ctx.fillStyle = this.theme.selectionForeground;
     } else {
-      // Extract colors and handle inverse
+      // Extract colors and handle inverse. Mirrors the background path
+      // above: cells with no explicit color come back as (0,0,0) — treat
+      // that as a sentinel for "use theme default" rather than rendering
+      // literal black. Without this, default-fg text on a dark theme is
+      // invisible.
       let fg_r = cell.fg_r,
         fg_g = cell.fg_g,
         fg_b = cell.fg_b;
 
       if (cell.flags & CellFlags.INVERSE) {
-        // When inverted, foreground becomes background
+        // When inverted, foreground becomes background.
         fg_r = cell.bg_r;
         fg_g = cell.bg_g;
         fg_b = cell.bg_b;
       }
 
-      this.ctx.fillStyle = this.rgbToCSS(fg_r, fg_g, fg_b);
+      const fgIsDefault = fg_r === 0 && fg_g === 0 && fg_b === 0;
+      this.ctx.fillStyle = fgIsDefault
+        ? this.theme.foreground
+        : this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
     // Apply faint effect
