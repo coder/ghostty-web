@@ -23,6 +23,8 @@ import {
   type RenderStateCursor,
   RenderStateData,
   RenderStateOption,
+  RenderStateRowData,
+  RowCellsData,
   TerminalData,
   type TerminalHandle,
   TerminalScreen,
@@ -261,6 +263,8 @@ export class GhosttyTerminal {
   private memory: WebAssembly.Memory;
   private handle: TerminalHandle;
   private renderHandle: number = 0;
+  private rowIter: number = 0;
+  private rowCells: number = 0;
   private _cols: number;
   private _rows: number;
 
@@ -273,6 +277,13 @@ export class GhosttyTerminal {
 
   /** Cell pool for zero-allocation rendering */
   private cellPool: GhosttyCell[] = [];
+
+  /**
+   * Per-row dirty state for the current render-state snapshot. Cleared on
+   * update() and populated lazily by isRowDirty() (or as a side effect of
+   * getViewport, which iterates rows anyway).
+   */
+  private rowDirtyCache: boolean[] | null = null;
 
   constructor(
     exports: GhosttyWasmExports,
@@ -323,25 +334,77 @@ export class GhosttyTerminal {
     // getCursor/getColors/getViewport. Render state is updated explicitly via
     // update() rather than implicitly per read, since it's relatively cheap
     // when the terminal hasn't changed but still costs a WASM crossing.
-    {
-      const stateP = this.exports.ghostty_wasm_alloc_opaque();
-      if (stateP === 0) {
-        this.exports.ghostty_terminal_free(this.handle);
-        throw new Error('Failed to allocate render state handle');
-      }
-      try {
-        const r = this.exports.ghostty_render_state_new(0, stateP);
-        if (r !== 0) {
-          this.exports.ghostty_terminal_free(this.handle);
-          throw new Error(`ghostty_render_state_new failed: ${r}`);
-        }
-        this.renderHandle = new DataView(this.memory.buffer).getUint32(stateP, true);
-      } finally {
-        this.exports.ghostty_wasm_free_opaque(stateP);
-      }
-    }
+    this.renderHandle = this.allocOpaqueOrFail(
+      'ghostty_render_state_new',
+      (out) => this.exports.ghostty_render_state_new(0, out)
+    );
+    // Pre-allocate the row iterator and row-cells iterators once and reuse
+    // them across frames. They're populated from the render state in
+    // getViewport via _get(ROW_ITERATOR) and _row_get(ROW_DATA_CELLS); the
+    // handles themselves stay live for the terminal's lifetime.
+    this.rowIter = this.allocOpaqueOrFail(
+      'ghostty_render_state_row_iterator_new',
+      (out) => this.exports.ghostty_render_state_row_iterator_new(0, out)
+    );
+    this.rowCells = this.allocOpaqueOrFail(
+      'ghostty_render_state_row_cells_new',
+      (out) => this.exports.ghostty_render_state_row_cells_new(0, out)
+    );
 
     this.initCellPool();
+  }
+
+  /**
+   * Allocate an opaque handle through one of the new(allocator, *outHandle)
+   * factory functions. Wraps the boilerplate of: alloc out-pointer, call
+   * factory, check Result, read the handle, free out-pointer.
+   *
+   * If the factory call fails, frees any already-acquired terminal/render
+   * resources so the caller-throwing flow doesn't leak across the partially
+   * constructed object.
+   */
+  private allocOpaqueOrFail(
+    name: string,
+    factory: (outPtr: number) => number
+  ): number {
+    const outPtr = this.exports.ghostty_wasm_alloc_opaque();
+    if (outPtr === 0) {
+      this.cleanupOnConstructorFailure();
+      throw new Error(`Failed to allocate handle for ${name}`);
+    }
+    try {
+      const r = factory(outPtr);
+      if (r !== 0) {
+        this.cleanupOnConstructorFailure();
+        throw new Error(`${name} failed: ${r}`);
+      }
+      return new DataView(this.memory.buffer).getUint32(outPtr, true);
+    } finally {
+      this.exports.ghostty_wasm_free_opaque(outPtr);
+    }
+  }
+
+  /**
+   * Release any resources that have been allocated by the constructor up to
+   * this point. Called when a subsequent step fails so we don't leak handles
+   * before the throw propagates.
+   */
+  private cleanupOnConstructorFailure(): void {
+    if (this.rowCells) {
+      this.exports.ghostty_render_state_row_cells_free(this.rowCells);
+      this.rowCells = 0;
+    }
+    if (this.rowIter) {
+      this.exports.ghostty_render_state_row_iterator_free(this.rowIter);
+      this.rowIter = 0;
+    }
+    if (this.renderHandle) {
+      this.exports.ghostty_render_state_free(this.renderHandle);
+      this.renderHandle = 0;
+    }
+    if (this.handle) {
+      this.exports.ghostty_terminal_free(this.handle);
+    }
   }
 
   // ==========================================================================
@@ -447,6 +510,14 @@ export class GhosttyTerminal {
       this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
       this.viewportBufferPtr = 0;
     }
+    if (this.rowCells) {
+      this.exports.ghostty_render_state_row_cells_free(this.rowCells);
+      this.rowCells = 0;
+    }
+    if (this.rowIter) {
+      this.exports.ghostty_render_state_row_iterator_free(this.rowIter);
+      this.rowIter = 0;
+    }
     if (this.renderHandle) {
       this.exports.ghostty_render_state_free(this.renderHandle);
       this.renderHandle = 0;
@@ -474,6 +545,8 @@ export class GhosttyTerminal {
   update(): DirtyState {
     const r = this.exports.ghostty_render_state_update(this.renderHandle, this.handle);
     if (r !== 0) throw new Error(`ghostty_render_state_update failed: ${r}`);
+    // Per-row dirty cache is tied to the previous snapshot.
+    this.rowDirtyCache = null;
     // GhosttyRenderStateDirty is a 4-byte enum (FALSE=0, PARTIAL=1, FULL=2).
     return this.rsGetU32(RenderStateData.DIRTY) as DirtyState;
   }
@@ -526,11 +599,50 @@ export class GhosttyTerminal {
 
   /**
    * Check if a specific row is dirty.
-   * TODO: rewire onto the row iterator API (ghostty_render_state_row_get with
-   * RENDER_STATE_ROW_DATA_DIRTY).
+   *
+   * Backed by a per-row cache populated lazily — first call after update()
+   * walks the iterator once and reads the dirty flag for each row, then
+   * subsequent calls are O(1). getViewport() also populates the cache as a
+   * side effect so a typical "update → for-each-row isRowDirty → getViewport"
+   * render loop only iterates rows once.
    */
-  isRowDirty(_y: number): boolean {
-    throw new Error('isRowDirty not yet implemented for the new render-state API');
+  isRowDirty(y: number): boolean {
+    if (y < 0 || y >= this._rows) return false;
+    if (this.rowDirtyCache === null) this.refreshRowDirtyCache();
+    return this.rowDirtyCache![y] ?? false;
+  }
+
+  /** Walk the row iterator once and capture per-row dirty flags. */
+  private refreshRowDirtyCache(): void {
+    const cache = new Array<boolean>(this._rows).fill(false);
+    this.populateHandle(
+      (out) =>
+        this.exports.ghostty_render_state_get(
+          this.renderHandle,
+          RenderStateData.ROW_ITERATOR,
+          out
+        ),
+      this.rowIter
+    );
+    const dirtyPtr = this.exports.ghostty_wasm_alloc_u8();
+    try {
+      let row = 0;
+      while (
+        row < this._rows &&
+        this.exports.ghostty_render_state_row_iterator_next(this.rowIter)
+      ) {
+        this.exports.ghostty_render_state_row_get(
+          this.rowIter,
+          RenderStateRowData.DIRTY,
+          dirtyPtr
+        );
+        cache[row] = new DataView(this.memory.buffer).getUint8(dirtyPtr) !== 0;
+        row++;
+      }
+    } finally {
+      this.exports.ghostty_wasm_free_u8(dirtyPtr);
+    }
+    this.rowDirtyCache = cache;
   }
 
   /**
@@ -544,16 +656,196 @@ export class GhosttyTerminal {
   }
 
   /**
-   * Get ALL viewport cells in ONE WASM call - the key performance optimization!
-   * Returns a reusable cell array (zero allocation after warmup).
+   * Populate the cellPool from the current render state and return it.
+   *
+   * The new C ABI replaces coder's single ghostty_render_state_get_viewport()
+   * buffer-fill with a row iterator + per-row cells iterator. We allocate
+   * both iterators once at construction time and re-populate them per call:
+   *
+   *   _get(state, ROW_ITERATOR, &rowIter)
+   *   while (row_iterator_next(rowIter)) {
+   *     _row_get(rowIter, ROW_DATA_CELLS, &rowCells)
+   *     while (row_cells_next(rowCells)) {
+   *       _row_cells_get(rowCells, GRAPHEMES_LEN, &len)
+   *       _row_cells_get(rowCells, GRAPHEMES_BUF, &codepoint)  // if len > 0
+   *       _row_cells_get(rowCells, FG_COLOR/BG_COLOR, &rgb)    // INVALID_VALUE if unset
+   *     }
+   *   }
+   *
+   * This is intentionally minimal: we capture codepoint + fg/bg only.
+   * Style flags, cell width (double-width), and hyperlink IDs are deferred
+   * — they require parsing the GhosttyStyle sized struct and the per-cell
+   * ghostty_cell_get(WIDE)/HAS_HYPERLINK paths. The cellPool fields keep
+   * placeholder defaults (flags=0, width=1, hyperlink_id=0).
+   *
+   * Performance: ~3-4 WASM crossings per visible cell. For an 80x24 viewport
+   * that's ~6k crossings per frame. Profile before optimizing — likely
+   * candidates are _row_cells_get_multi for batched reads, or RAW + a
+   * cached layout map for direct memory access.
    */
   getViewport(): GhosttyCell[] {
-    // TODO: rewire onto the row iterator + row_cells API:
-    //   - _get(state, ROW_ITERATOR, &iter)
-    //   - while (_row_iterator_next(iter)) { _row_get(iter, ROW_DATA_CELLS, &cells); ... }
-    // The reusable viewportBufferPtr can hold a single row's worth of cells
-    // and be re-driven each iteration.
-    throw new Error('getViewport not yet implemented for the new render-state API');
+    this.update();
+
+    // Pre-zero the pool so cells we don't visit (iterator ends early, or
+    // we exceed the configured cols/rows) read as empty.
+    this.zeroCellPool();
+
+    // Populate the row iterator from the render state.
+    // _get(state, ROW_ITERATOR, &iter) reads `*ptr` to get our pre-allocated
+    // iterator handle, then re-binds it to the current frame's row data.
+    this.populateHandle(
+      (out) => this.exports.ghostty_render_state_get(this.renderHandle, RenderStateData.ROW_ITERATOR, out),
+      this.rowIter
+    );
+
+    // Reusable scratch buffers — declared once outside the loops since cell
+    // counts are dominant. 4 bytes covers u32 (grapheme len, codepoint).
+    // 3 bytes covers GhosttyColorRgb. 1 byte covers per-row dirty bool.
+    const u32Ptr = this.exports.ghostty_wasm_alloc_u8_array(4);
+    const rgbPtr = this.exports.ghostty_wasm_alloc_u8_array(3);
+    const dirtyPtr = this.exports.ghostty_wasm_alloc_u8();
+    // Populate the row dirty cache as a side effect — saves a redundant
+    // iterator walk if the renderer also calls isRowDirty() on this snapshot.
+    const dirtyCache = new Array<boolean>(this._rows).fill(false);
+    try {
+      let row = 0;
+      while (
+        row < this._rows &&
+        this.exports.ghostty_render_state_row_iterator_next(this.rowIter)
+      ) {
+        // Capture per-row dirty for the cache.
+        this.exports.ghostty_render_state_row_get(
+          this.rowIter,
+          RenderStateRowData.DIRTY,
+          dirtyPtr
+        );
+        dirtyCache[row] =
+          new DataView(this.memory.buffer).getUint8(dirtyPtr) !== 0;
+
+        // Bind rowCells to this row.
+        this.populateHandle(
+          (out) =>
+            this.exports.ghostty_render_state_row_get(
+              this.rowIter,
+              RenderStateRowData.CELLS,
+              out
+            ),
+          this.rowCells
+        );
+
+        let col = 0;
+        while (
+          col < this._cols &&
+          this.exports.ghostty_render_state_row_cells_next(this.rowCells)
+        ) {
+          const cell = this.cellPool[row * this._cols + col]!;
+
+          // Grapheme length. 0 = empty cell.
+          this.exports.ghostty_render_state_row_cells_get(
+            this.rowCells,
+            RowCellsData.GRAPHEMES_LEN,
+            u32Ptr
+          );
+          const memView = new DataView(this.memory.buffer);
+          const graphemeLen = memView.getUint32(u32Ptr, true);
+          cell.grapheme_len = graphemeLen;
+
+          if (graphemeLen > 0) {
+            // GRAPHEMES_BUF writes graphemeLen u32 codepoints. We only need
+            // the base codepoint here; multi-codepoint clusters go through
+            // getGrapheme() separately.
+            this.exports.ghostty_render_state_row_cells_get(
+              this.rowCells,
+              RowCellsData.GRAPHEMES_BUF,
+              u32Ptr
+            );
+            cell.codepoint = new DataView(this.memory.buffer).getUint32(u32Ptr, true);
+          } else {
+            cell.codepoint = 0;
+          }
+
+          // Resolved fg/bg. Returns INVALID_VALUE (non-zero) when the cell
+          // has no explicit color; leave the pool default (0,0,0) which the
+          // renderer interprets as "use terminal default."
+          cell.fg_r = cell.fg_g = cell.fg_b = 0;
+          cell.bg_r = cell.bg_g = cell.bg_b = 0;
+          if (
+            this.exports.ghostty_render_state_row_cells_get(
+              this.rowCells,
+              RowCellsData.FG_COLOR,
+              rgbPtr
+            ) === 0
+          ) {
+            const u8 = new Uint8Array(this.memory.buffer, rgbPtr, 3);
+            cell.fg_r = u8[0]!;
+            cell.fg_g = u8[1]!;
+            cell.fg_b = u8[2]!;
+          }
+          if (
+            this.exports.ghostty_render_state_row_cells_get(
+              this.rowCells,
+              RowCellsData.BG_COLOR,
+              rgbPtr
+            ) === 0
+          ) {
+            const u8 = new Uint8Array(this.memory.buffer, rgbPtr, 3);
+            cell.bg_r = u8[0]!;
+            cell.bg_g = u8[1]!;
+            cell.bg_b = u8[2]!;
+          }
+
+          // TODO: derive flags from STYLE, width from RAW + cell_get(WIDE),
+          // hyperlink_id from RAW + cell_get(HAS_HYPERLINK).
+          cell.flags = 0;
+          cell.width = 1;
+          cell.hyperlink_id = 0;
+
+          col++;
+        }
+        row++;
+      }
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(u32Ptr, 4);
+      this.exports.ghostty_wasm_free_u8_array(rgbPtr, 3);
+      this.exports.ghostty_wasm_free_u8(dirtyPtr);
+    }
+
+    this.rowDirtyCache = dirtyCache;
+    return this.cellPool;
+  }
+
+  /**
+   * Helper for the in/out pointer pattern used by ROW_ITERATOR / ROW_DATA_CELLS:
+   * write a handle into a 4-byte slot, hand the slot to a populator, then
+   * free the slot. The handle value itself is unchanged; the populator uses
+   * it to find and rebind the iterator's internal data.
+   */
+  private populateHandle(
+    populator: (slotPtr: number) => number,
+    handle: number
+  ): void {
+    const slot = this.exports.ghostty_wasm_alloc_u8_array(4);
+    new DataView(this.memory.buffer).setUint32(slot, handle, true);
+    populator(slot);
+    this.exports.ghostty_wasm_free_u8_array(slot, 4);
+  }
+
+  /**
+   * Reset every cell in the pool to "empty" so cells we don't visit during
+   * iteration (e.g. iterator stopped early, or grid resized down) don't
+   * carry stale values from a previous frame.
+   */
+  private zeroCellPool(): void {
+    for (let i = 0; i < this.cellPool.length; i++) {
+      const cell = this.cellPool[i]!;
+      cell.codepoint = 0;
+      cell.fg_r = cell.fg_g = cell.fg_b = 0;
+      cell.bg_r = cell.bg_g = cell.bg_b = 0;
+      cell.flags = 0;
+      cell.width = 1;
+      cell.hyperlink_id = 0;
+      cell.grapheme_len = 0;
+    }
   }
 
   // ==========================================================================

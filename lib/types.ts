@@ -443,10 +443,29 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ): number;
   ghostty_render_state_set(state: number, option: number, valuePtr: number): number;
   ghostty_render_state_colors_get(state: number, outColorsPtr: number): number;
-  // Row iteration (not yet wired up on the TS side):
-  // ghostty_render_state_row_get / _row_set / _row_iterator_*
-  // _row_cells_get / _row_cells_get_multi / _row_cells_select
-  // (used to implement isRowDirty / getViewport / getGrapheme)
+  // Row iterator: pre-allocated once, repopulated from the render state via
+  // ghostty_render_state_get(state, ROW_ITERATOR, &iter).
+  ghostty_render_state_row_iterator_new(allocatorPtr: number, outIterPtrPtr: number): number;
+  ghostty_render_state_row_iterator_free(iter: number): void;
+  ghostty_render_state_row_iterator_next(iter: number): boolean;
+  ghostty_render_state_row_get(iter: number, key: number, outPtr: number): number;
+  ghostty_render_state_row_set(iter: number, option: number, valuePtr: number): number;
+  // Row cells iterator: per-row, populated from a row via
+  // ghostty_render_state_row_get(iter, ROW_DATA_CELLS, &cells).
+  ghostty_render_state_row_cells_new(allocatorPtr: number, outCellsPtrPtr: number): number;
+  ghostty_render_state_row_cells_free(cells: number): void;
+  ghostty_render_state_row_cells_next(cells: number): boolean;
+  ghostty_render_state_row_cells_select(cells: number, col: number): number;
+  ghostty_render_state_row_cells_get(cells: number, key: number, outPtr: number): number;
+  ghostty_render_state_row_cells_get_multi(
+    cells: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  // Per-cell direct access (when you have a raw GhosttyCell).
+  ghostty_cell_get(cell: number, key: number, outPtr: number): number;
 
   // Generic terminal property API. Mirrors render_state_get/set: a single
   // entry point keyed by GhosttyTerminalData (see TerminalData enum).
@@ -559,6 +578,35 @@ export enum TerminalData {
 export enum TerminalScreen {
   PRIMARY = 0,
   ALTERNATE = 1,
+}
+
+/**
+ * Keys for ghostty_render_state_row_get(). Mirrors GhosttyRenderStateRowData.
+ */
+export enum RenderStateRowData {
+  DIRTY = 1,
+  RAW = 2,
+  CELLS = 3,
+}
+
+/**
+ * Options for ghostty_render_state_row_set(). Mirrors GhosttyRenderStateRowOption.
+ */
+export enum RenderStateRowOption {
+  DIRTY = 0,
+}
+
+/**
+ * Keys for ghostty_render_state_row_cells_get(). Mirrors
+ * GhosttyRenderStateRowCellsData.
+ */
+export enum RowCellsData {
+  RAW = 1,
+  STYLE = 2,
+  GRAPHEMES_LEN = 3,
+  GRAPHEMES_BUF = 4,
+  BG_COLOR = 5,
+  FG_COLOR = 6,
 }
 
 /**
