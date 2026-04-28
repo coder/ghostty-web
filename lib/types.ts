@@ -448,47 +448,26 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   // _row_cells_get / _row_cells_get_multi / _row_cells_select
   // (used to implement isRowDirty / getViewport / getGrapheme)
 
-  // Terminal modes
-  ghostty_terminal_is_alternate_screen(terminal: TerminalHandle): boolean;
-  ghostty_terminal_has_mouse_tracking(terminal: TerminalHandle): number;
-  ghostty_terminal_get_mode(terminal: TerminalHandle, mode: number, isAnsi: boolean): number;
-
-  // Scrollback API
-  ghostty_terminal_get_scrollback_length(terminal: TerminalHandle): number;
-  ghostty_terminal_get_scrollback_line(
+  // Generic terminal property API. Mirrors render_state_get/set: a single
+  // entry point keyed by GhosttyTerminalData (see TerminalData enum).
+  ghostty_terminal_get(terminal: TerminalHandle, key: number, outPtr: number): number;
+  ghostty_terminal_get_multi(
     terminal: TerminalHandle,
-    offset: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns cells written or -1 on error
-  ghostty_terminal_get_scrollback_grapheme(
-    terminal: TerminalHandle,
-    offset: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns codepoint count or -1 on error
-  ghostty_terminal_is_row_wrapped(terminal: TerminalHandle, row: number): number;
-
-  // Hyperlink API
-  ghostty_terminal_get_hyperlink_uri(
-    terminal: TerminalHandle,
-    row: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
-  ghostty_terminal_get_scrollback_hyperlink_uri(
-    terminal: TerminalHandle,
-    offset: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
-
-  // Response API (for DSR and other terminal queries)
-  ghostty_terminal_has_response(terminal: TerminalHandle): boolean;
-  ghostty_terminal_read_response(terminal: TerminalHandle, bufPtr: number, bufLen: number): number; // Returns bytes written, 0 if no response, -1 on error
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_terminal_set(terminal: TerminalHandle, option: number, valuePtr: number): number;
+  // Mode queries: mode is a packed u16 (low 15 bits = mode value, bit 15 = ANSI flag).
+  ghostty_terminal_mode_get(terminal: TerminalHandle, mode: number, outBoolPtr: number): number;
+  ghostty_terminal_mode_set(terminal: TerminalHandle, mode: number, value: boolean): number;
+  // grid_ref / point_from_grid_ref: row/cell-level access. Not yet wired
+  // up on the TS side (used to implement isRowWrapped / getHyperlinkUri /
+  // scrollback iteration).
+  // Response handling moved to a callback model: install via
+  // ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_WRITE_PTY, callback). Old
+  // has_response / read_response polling API is gone.
 }
 
 // ============================================================================
@@ -542,6 +521,53 @@ export enum CursorVisualStyle {
   BLOCK = 1,
   UNDERLINE = 2,
   BLOCK_HOLLOW = 3,
+}
+
+/**
+ * Keys for ghostty_terminal_get(). Mirrors GhosttyTerminalData.
+ * Only entries actually used by the TS layer are listed here; the upstream
+ * enum has more (TITLE, PWD, SCROLLBAR, KITTY_KEYBOARD_FLAGS, palettes, ...).
+ */
+export enum TerminalData {
+  COLS = 1,
+  ROWS = 2,
+  CURSOR_X = 3,
+  CURSOR_Y = 4,
+  CURSOR_PENDING_WRAP = 5,
+  ACTIVE_SCREEN = 6,
+  CURSOR_VISIBLE = 7,
+  KITTY_KEYBOARD_FLAGS = 8,
+  SCROLLBAR = 9,
+  CURSOR_STYLE = 10,
+  MOUSE_TRACKING = 11,
+  TITLE = 12,
+  PWD = 13,
+  TOTAL_ROWS = 14,
+  SCROLLBACK_ROWS = 15,
+  WIDTH_PX = 16,
+  HEIGHT_PX = 17,
+  COLOR_FOREGROUND = 18,
+  COLOR_BACKGROUND = 19,
+  COLOR_CURSOR = 20,
+  COLOR_PALETTE = 21,
+}
+
+/**
+ * Active screen identifier. Mirrors GhosttyTerminalScreen.
+ * Returned as the value for TerminalData.ACTIVE_SCREEN.
+ */
+export enum TerminalScreen {
+  PRIMARY = 0,
+  ALTERNATE = 1,
+}
+
+/**
+ * Pack a terminal mode number + ANSI flag into the u16 wire format used by
+ * ghostty_terminal_mode_get/_set. Bits 0–14 hold the value (u15), bit 15
+ * is set for ANSI modes (cleared for DEC private modes).
+ */
+export function packMode(mode: number, isAnsi: boolean): number {
+  return (mode & 0x7fff) | (isAnsi ? 0x8000 : 0);
 }
 
 /**

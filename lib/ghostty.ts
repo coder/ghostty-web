@@ -17,12 +17,15 @@ import {
   KeyEncoderOption,
   type KeyEvent,
   type KittyKeyFlags,
+  packMode,
   type RGB,
   type RenderStateColors,
   type RenderStateCursor,
   RenderStateData,
   RenderStateOption,
+  TerminalData,
   type TerminalHandle,
+  TerminalScreen,
 } from './types';
 
 // Re-export types for convenience
@@ -385,6 +388,30 @@ export class GhosttyTerminal {
     return rgb;
   }
 
+  // ==========================================================================
+  // Terminal property scratch helpers
+  //
+  // Same pattern as rsGet* but against ghostty_terminal_get(terminal, key,
+  // *out). The TerminalData enum encodes the value type; pick the matching
+  // helper by output size.
+  // ==========================================================================
+
+  private tGetU8(key: number): number {
+    const p = this.exports.ghostty_wasm_alloc_u8();
+    this.exports.ghostty_terminal_get(this.handle, key, p);
+    const v = new DataView(this.memory.buffer).getUint8(p);
+    this.exports.ghostty_wasm_free_u8(p);
+    return v;
+  }
+
+  private tGetU32(key: number): number {
+    const p = this.exports.ghostty_wasm_alloc_u8_array(4);
+    this.exports.ghostty_terminal_get(this.handle, key, p);
+    const v = new DataView(this.memory.buffer).getUint32(p, true);
+    this.exports.ghostty_wasm_free_u8_array(p, 4);
+    return v;
+  }
+
   get cols(): number {
     return this._cols;
   }
@@ -572,7 +599,8 @@ export class GhosttyTerminal {
   // ==========================================================================
 
   isAlternateScreen(): boolean {
-    return !!this.exports.ghostty_terminal_is_alternate_screen(this.handle);
+    // ACTIVE_SCREEN returns a GhosttyTerminalScreen enum (4-byte int).
+    return this.tGetU32(TerminalData.ACTIVE_SCREEN) === TerminalScreen.ALTERNATE;
   }
 
   hasBracketedPaste(): boolean {
@@ -586,7 +614,7 @@ export class GhosttyTerminal {
   }
 
   hasMouseTracking(): boolean {
-    return this.exports.ghostty_terminal_has_mouse_tracking(this.handle) !== 0;
+    return this.tGetU8(TerminalData.MOUSE_TRACKING) !== 0;
   }
 
   // ==========================================================================
@@ -600,7 +628,8 @@ export class GhosttyTerminal {
 
   /** Get number of scrollback lines (history, not including active screen) */
   getScrollbackLength(): number {
-    return this.exports.ghostty_terminal_get_scrollback_length(this.handle);
+    // SCROLLBACK_ROWS is size_t — 4 bytes on wasm32.
+    return this.tGetU32(TerminalData.SCROLLBACK_ROWS);
   }
 
   /**
@@ -608,197 +637,71 @@ export class GhosttyTerminal {
    * Ensures render state is fresh by calling update().
    * @param offset 0 = oldest line, (length-1) = most recent scrollback line
    */
-  getScrollbackLine(offset: number): GhosttyCell[] | null {
-    const neededSize = this._cols * GhosttyTerminal.CELL_SIZE;
-
-    // Ensure buffer is allocated
-    if (!this.viewportBufferPtr || this.viewportBufferSize < neededSize) {
-      if (this.viewportBufferPtr) {
-        this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      }
-      this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(neededSize);
-      this.viewportBufferSize = neededSize;
-    }
-
-    // Call update() to ensure render state is fresh (needed for colors).
-    // This is safe to call multiple times - dirty state persists until markClean().
-    this.update();
-
-    const count = this.exports.ghostty_terminal_get_scrollback_line(
-      this.handle,
-      offset,
-      this.viewportBufferPtr,
-      this._cols
-    );
-
-    if (count < 0) return null;
-
-    // Parse cells
-    const cells: GhosttyCell[] = [];
-    const buffer = this.memory.buffer;
-    const u8 = new Uint8Array(buffer, this.viewportBufferPtr, count * GhosttyTerminal.CELL_SIZE);
-    const view = new DataView(buffer, this.viewportBufferPtr, count * GhosttyTerminal.CELL_SIZE);
-
-    for (let i = 0; i < count; i++) {
-      const cellOffset = i * GhosttyTerminal.CELL_SIZE;
-      cells.push({
-        codepoint: view.getUint32(cellOffset, true),
-        fg_r: u8[cellOffset + 4],
-        fg_g: u8[cellOffset + 5],
-        fg_b: u8[cellOffset + 6],
-        bg_r: u8[cellOffset + 7],
-        bg_g: u8[cellOffset + 8],
-        bg_b: u8[cellOffset + 9],
-        flags: u8[cellOffset + 10],
-        width: u8[cellOffset + 11],
-        hyperlink_id: view.getUint16(cellOffset + 12, true),
-        grapheme_len: u8[cellOffset + 14],
-      });
-    }
-
-    return cells;
+  getScrollbackLine(_offset: number): GhosttyCell[] | null {
+    // TODO: rewire onto the row iterator API:
+    //   _grid_ref(terminal, ...) for scrollback rows + _row_cells_get(...)
+    // Old per-row buffer fill API (ghostty_terminal_get_scrollback_line) is gone.
+    throw new Error('getScrollbackLine not yet implemented for the new C ABI');
   }
 
   /** Check if a row in the active screen is wrapped (soft-wrapped to next line) */
-  isRowWrapped(row: number): boolean {
-    return this.exports.ghostty_terminal_is_row_wrapped(this.handle, row) !== 0;
+  isRowWrapped(_row: number): boolean {
+    // TODO: rewire onto grid_ref / row API.
+    throw new Error('isRowWrapped not yet implemented for the new C ABI');
   }
 
   /**
    * Get the hyperlink URI for a cell at the given position.
-   * @param row Row index (0-based, in active viewport)
-   * @param col Column index (0-based)
    * @returns The URI string, or null if no hyperlink at that position
    */
-  getHyperlinkUri(row: number, col: number): string | null {
-    // Check if WASM has this function (requires rebuilt WASM with hyperlink support)
-    if (!this.exports.ghostty_terminal_get_hyperlink_uri) {
-      return null;
-    }
-
-    // Try with initial buffer, retry with larger if needed (for very long URLs)
-    const bufferSizes = [2048, 8192, 32768];
-
-    for (const bufSize of bufferSizes) {
-      const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
-
-      try {
-        const bytesWritten = this.exports.ghostty_terminal_get_hyperlink_uri(
-          this.handle,
-          row,
-          col,
-          bufPtr,
-          bufSize
-        );
-
-        // 0 means no hyperlink at this position
-        if (bytesWritten === 0) return null;
-
-        // -1 means buffer too small, try next size
-        if (bytesWritten === -1) continue;
-
-        // Negative values other than -1 are errors
-        if (bytesWritten < 0) return null;
-
-        const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesWritten);
-        return new TextDecoder().decode(bytes.slice());
-      } finally {
-        this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
-      }
-    }
-
-    // URI too long even for largest buffer
-    return null;
+  getHyperlinkUri(_row: number, _col: number): string | null {
+    // TODO: rewire onto grid_ref + cell hyperlink lookup. Old buffer-fill
+    // API (ghostty_terminal_get_hyperlink_uri) is gone.
+    throw new Error('getHyperlinkUri not yet implemented for the new C ABI');
   }
 
   /**
    * Get the hyperlink URI for a cell in the scrollback buffer.
-   * @param offset Scrollback line offset (0 = oldest, scrollback_len-1 = newest)
-   * @param col Column index (0-based)
-   * @returns The URI string, or null if no hyperlink at that position
    */
-  getScrollbackHyperlinkUri(offset: number, col: number): string | null {
-    // Check if WASM has this function
-    if (!this.exports.ghostty_terminal_get_scrollback_hyperlink_uri) {
-      return null;
-    }
-
-    // Try with initial buffer, retry with larger if needed (for very long URLs)
-    const bufferSizes = [2048, 8192, 32768];
-
-    for (const bufSize of bufferSizes) {
-      const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
-
-      try {
-        const bytesWritten = this.exports.ghostty_terminal_get_scrollback_hyperlink_uri(
-          this.handle,
-          offset,
-          col,
-          bufPtr,
-          bufSize
-        );
-
-        // 0 means no hyperlink at this position
-        if (bytesWritten === 0) return null;
-
-        // -1 means buffer too small, try next size
-        if (bytesWritten === -1) continue;
-
-        // Negative values other than -1 are errors
-        if (bytesWritten < 0) return null;
-
-        const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesWritten);
-        return new TextDecoder().decode(bytes.slice());
-      } finally {
-        this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
-      }
-    }
-
-    // URI too long even for largest buffer
-    return null;
+  getScrollbackHyperlinkUri(_offset: number, _col: number): string | null {
+    // TODO: same path as getHyperlinkUri once grid_ref is wired up.
+    throw new Error('getScrollbackHyperlinkUri not yet implemented for the new C ABI');
   }
 
   /**
    * Check if there are pending responses from the terminal.
-   * Responses are generated by escape sequences like DSR (Device Status Report).
+   *
+   * NOTE: the upstream C ABI replaced the polling has_response/read_response
+   * pair with a callback model: install one via
+   * ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_WRITE_PTY, fn) and the terminal
+   * invokes it synchronously during vt_write() with response bytes. Until the
+   * callback infrastructure is wired up on the JS side, we report "no
+   * responses" so callers (e.g. demo/PTY echo) degrade gracefully.
    */
   hasResponse(): boolean {
-    return this.exports.ghostty_terminal_has_response(this.handle);
+    return false;
   }
 
   /**
-   * Read pending responses from the terminal.
-   * Returns the response string, or null if no responses pending.
-   *
-   * Responses are generated by escape sequences that require replies:
-   * - DSR 6 (cursor position): Returns \x1b[row;colR
-   * - DSR 5 (operating status): Returns \x1b[0n
+   * Read pending responses from the terminal. See hasResponse() for the
+   * status of the callback-based replacement.
    */
   readResponse(): string | null {
-    if (!this.hasResponse()) return null;
-
-    const bufSize = 256; // Most responses are small
-    const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
-
-    try {
-      const bytesRead = this.exports.ghostty_terminal_read_response(this.handle, bufPtr, bufSize);
-
-      if (bytesRead <= 0) return null;
-
-      const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesRead);
-      return new TextDecoder().decode(bytes.slice());
-    } finally {
-      this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
-    }
+    return null;
   }
 
   /**
-   * Query arbitrary terminal mode by number
+   * Query arbitrary terminal mode by number.
    * @param mode Mode number (e.g., 25 for cursor visibility, 2004 for bracketed paste)
    * @param isAnsi True for ANSI modes, false for DEC modes (default: false)
    */
   getMode(mode: number, isAnsi: boolean = false): boolean {
-    return this.exports.ghostty_terminal_get_mode(this.handle, mode, isAnsi) !== 0;
+    const packed = packMode(mode, isAnsi);
+    const out = this.exports.ghostty_wasm_alloc_u8();
+    this.exports.ghostty_terminal_mode_get(this.handle, packed, out);
+    const v = new DataView(this.memory.buffer).getUint8(out);
+    this.exports.ghostty_wasm_free_u8(out);
+    return v !== 0;
   }
 
   // ==========================================================================
@@ -880,26 +783,9 @@ export class GhosttyTerminal {
    * @param col Column index
    * @returns Array of codepoints, or null on error
    */
-  getScrollbackGrapheme(offset: number, col: number): number[] | null {
-    // Reuse the same buffer as getGrapheme
-    if (!this.graphemeBuffer) {
-      this.graphemeBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(16 * 4);
-      this.graphemeBuffer = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, 16);
-    }
-
-    const count = this.exports.ghostty_terminal_get_scrollback_grapheme(
-      this.handle,
-      offset,
-      col,
-      this.graphemeBufferPtr,
-      16
-    );
-
-    if (count < 0) return null;
-
-    // Re-create view in case memory grew
-    const view = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, count);
-    return Array.from(view);
+  getScrollbackGrapheme(_offset: number, _col: number): number[] | null {
+    // TODO: rewire onto grid_ref + row_cells_get(GRAPHEMES) for scrollback rows.
+    throw new Error('getScrollbackGrapheme not yet implemented for the new C ABI');
   }
 
   /**
