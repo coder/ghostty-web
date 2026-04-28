@@ -427,29 +427,26 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     dataLen: number
   ): void;
 
-  // RenderState API - high-performance rendering (ONE call gets ALL data)
-  ghostty_render_state_update(terminal: TerminalHandle): number; // 0=none, 1=partial, 2=full
-  ghostty_render_state_get_cols(terminal: TerminalHandle): number;
-  ghostty_render_state_get_rows(terminal: TerminalHandle): number;
-  ghostty_render_state_get_cursor_x(terminal: TerminalHandle): number;
-  ghostty_render_state_get_cursor_y(terminal: TerminalHandle): number;
-  ghostty_render_state_get_cursor_visible(terminal: TerminalHandle): boolean;
-  ghostty_render_state_get_bg_color(terminal: TerminalHandle): number; // 0xRRGGBB
-  ghostty_render_state_get_fg_color(terminal: TerminalHandle): number; // 0xRRGGBB
-  ghostty_render_state_is_row_dirty(terminal: TerminalHandle, row: number): boolean;
-  ghostty_render_state_mark_clean(terminal: TerminalHandle): void;
-  ghostty_render_state_get_viewport(
-    terminal: TerminalHandle,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns total cells written or -1 on error
-  ghostty_render_state_get_grapheme(
-    terminal: TerminalHandle,
-    row: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns count of codepoints or -1 on error
+  // RenderState API — render state is a separate object created from a terminal.
+  // Read fields via the generic _get(state, key, *out) interface keyed by
+  // GhosttyRenderStateData; see RenderStateData enum.
+  ghostty_render_state_new(allocatorPtr: number, statePtrPtr: number): number;
+  ghostty_render_state_free(state: number): void;
+  ghostty_render_state_update(state: number, terminal: TerminalHandle): number;
+  ghostty_render_state_get(state: number, key: number, outPtr: number): number;
+  ghostty_render_state_get_multi(
+    state: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_render_state_set(state: number, option: number, valuePtr: number): number;
+  ghostty_render_state_colors_get(state: number, outColorsPtr: number): number;
+  // Row iteration (not yet wired up on the TS side):
+  // ghostty_render_state_row_get / _row_set / _row_iterator_*
+  // _row_cells_get / _row_cells_get_multi / _row_cells_select
+  // (used to implement isRowDirty / getViewport / getGrapheme)
 
   // Terminal modes
   ghostty_terminal_is_alternate_screen(terminal: TerminalHandle): boolean;
@@ -499,12 +496,52 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
 // ============================================================================
 
 /**
- * Dirty state from RenderState
+ * Dirty state from RenderState. Mirrors GhosttyRenderStateDirty.
  */
 export enum DirtyState {
   NONE = 0,
   PARTIAL = 1,
   FULL = 2,
+}
+
+/**
+ * Keys for ghostty_render_state_get(). Mirrors GhosttyRenderStateData.
+ */
+export enum RenderStateData {
+  COLS = 1,
+  ROWS = 2,
+  DIRTY = 3,
+  ROW_ITERATOR = 4,
+  COLOR_BACKGROUND = 5,
+  COLOR_FOREGROUND = 6,
+  COLOR_CURSOR = 7,
+  COLOR_CURSOR_HAS_VALUE = 8,
+  COLOR_PALETTE = 9,
+  CURSOR_VISUAL_STYLE = 10,
+  CURSOR_VISIBLE = 11,
+  CURSOR_BLINKING = 12,
+  CURSOR_PASSWORD_INPUT = 13,
+  CURSOR_VIEWPORT_HAS_VALUE = 14,
+  CURSOR_VIEWPORT_X = 15,
+  CURSOR_VIEWPORT_Y = 16,
+  CURSOR_VIEWPORT_WIDE_TAIL = 17,
+}
+
+/**
+ * Options for ghostty_render_state_set(). Mirrors GhosttyRenderStateOption.
+ */
+export enum RenderStateOption {
+  DIRTY = 0,
+}
+
+/**
+ * Visual cursor style. Mirrors GhosttyRenderStateCursorVisualStyle.
+ */
+export enum CursorVisualStyle {
+  BAR = 0,
+  BLOCK = 1,
+  UNDERLINE = 2,
+  BLOCK_HOLLOW = 3,
 }
 
 /**

@@ -8,6 +8,7 @@
 
 import {
   CellFlags,
+  CursorVisualStyle,
   type Cursor,
   DirtyState,
   type GhosttyCell,
@@ -19,6 +20,8 @@ import {
   type RGB,
   type RenderStateColors,
   type RenderStateCursor,
+  RenderStateData,
+  RenderStateOption,
   type TerminalHandle,
 } from './types';
 
@@ -254,6 +257,7 @@ export class GhosttyTerminal {
   private exports: GhosttyWasmExports;
   private memory: WebAssembly.Memory;
   private handle: TerminalHandle;
+  private renderHandle: number = 0;
   private _cols: number;
   private _rows: number;
 
@@ -312,7 +316,73 @@ export class GhosttyTerminal {
     // ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_COLOR_*) once the option
     // bindings are wired up.
 
+    // Create the render state that owns the per-frame snapshot read by
+    // getCursor/getColors/getViewport. Render state is updated explicitly via
+    // update() rather than implicitly per read, since it's relatively cheap
+    // when the terminal hasn't changed but still costs a WASM crossing.
+    {
+      const stateP = this.exports.ghostty_wasm_alloc_opaque();
+      if (stateP === 0) {
+        this.exports.ghostty_terminal_free(this.handle);
+        throw new Error('Failed to allocate render state handle');
+      }
+      try {
+        const r = this.exports.ghostty_render_state_new(0, stateP);
+        if (r !== 0) {
+          this.exports.ghostty_terminal_free(this.handle);
+          throw new Error(`ghostty_render_state_new failed: ${r}`);
+        }
+        this.renderHandle = new DataView(this.memory.buffer).getUint32(stateP, true);
+      } finally {
+        this.exports.ghostty_wasm_free_opaque(stateP);
+      }
+    }
+
     this.initCellPool();
+  }
+
+  // ==========================================================================
+  // RenderState scratch helpers
+  //
+  // The new render-state API exposes a single ghostty_render_state_get(state,
+  // key, *out) entry point keyed by GhosttyRenderStateData. Each helper
+  // allocates a small scratch buffer of the right size, performs the read,
+  // and frees. Per-call allocation is intentionally simple; if profiling
+  // shows it's hot, we can replace these with a single reusable scratch
+  // buffer carved up by offset.
+  // ==========================================================================
+
+  private rsGetU8(key: number): number {
+    const p = this.exports.ghostty_wasm_alloc_u8();
+    this.exports.ghostty_render_state_get(this.renderHandle, key, p);
+    const v = new DataView(this.memory.buffer).getUint8(p);
+    this.exports.ghostty_wasm_free_u8(p);
+    return v;
+  }
+
+  private rsGetU16(key: number): number {
+    const p = this.exports.ghostty_wasm_alloc_u8_array(2);
+    this.exports.ghostty_render_state_get(this.renderHandle, key, p);
+    const v = new DataView(this.memory.buffer).getUint16(p, true);
+    this.exports.ghostty_wasm_free_u8_array(p, 2);
+    return v;
+  }
+
+  private rsGetU32(key: number): number {
+    const p = this.exports.ghostty_wasm_alloc_u8_array(4);
+    this.exports.ghostty_render_state_get(this.renderHandle, key, p);
+    const v = new DataView(this.memory.buffer).getUint32(p, true);
+    this.exports.ghostty_wasm_free_u8_array(p, 4);
+    return v;
+  }
+
+  private rsGetRgb(key: number): RGB {
+    const p = this.exports.ghostty_wasm_alloc_u8_array(3);
+    this.exports.ghostty_render_state_get(this.renderHandle, key, p);
+    const buf = new Uint8Array(this.memory.buffer, p, 3);
+    const rgb: RGB = { r: buf[0]!, g: buf[1]!, b: buf[2]! };
+    this.exports.ghostty_wasm_free_u8_array(p, 3);
+    return rgb;
   }
 
   get cols(): number {
@@ -350,6 +420,10 @@ export class GhosttyTerminal {
       this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
       this.viewportBufferPtr = 0;
     }
+    if (this.renderHandle) {
+      this.exports.ghostty_render_state_free(this.renderHandle);
+      this.renderHandle = 0;
+    }
     this.exports.ghostty_terminal_free(this.handle);
   }
 
@@ -371,61 +445,75 @@ export class GhosttyTerminal {
    * Safe to call multiple times - dirty state persists until markClean().
    */
   update(): DirtyState {
-    return this.exports.ghostty_render_state_update(this.handle) as DirtyState;
+    const r = this.exports.ghostty_render_state_update(this.renderHandle, this.handle);
+    if (r !== 0) throw new Error(`ghostty_render_state_update failed: ${r}`);
+    // GhosttyRenderStateDirty is a 4-byte enum (FALSE=0, PARTIAL=1, FULL=2).
+    return this.rsGetU32(RenderStateData.DIRTY) as DirtyState;
   }
 
   /**
    * Get cursor state from render state.
-   * Ensures render state is fresh by calling update().
+   * Calls update() first; safe to call repeatedly within a frame.
    */
   getCursor(): RenderStateCursor {
-    // Call update() to ensure render state is fresh.
-    // This is safe to call multiple times - dirty state persists until markClean().
     this.update();
+
+    const inViewport = this.rsGetU8(RenderStateData.CURSOR_VIEWPORT_HAS_VALUE) !== 0;
+    const visible = this.rsGetU8(RenderStateData.CURSOR_VISIBLE) !== 0;
+    const blinking = this.rsGetU8(RenderStateData.CURSOR_BLINKING) !== 0;
+    const styleRaw = this.rsGetU32(RenderStateData.CURSOR_VISUAL_STYLE);
+
+    const viewportX = inViewport ? this.rsGetU16(RenderStateData.CURSOR_VIEWPORT_X) : -1;
+    const viewportY = inViewport ? this.rsGetU16(RenderStateData.CURSOR_VIEWPORT_Y) : -1;
+
+    // Coder's interface only knows three styles; collapse BLOCK_HOLLOW into block.
+    const style: RenderStateCursor['style'] =
+      styleRaw === CursorVisualStyle.BAR
+        ? 'bar'
+        : styleRaw === CursorVisualStyle.UNDERLINE
+          ? 'underline'
+          : 'block';
+
     return {
-      x: this.exports.ghostty_render_state_get_cursor_x(this.handle),
-      y: this.exports.ghostty_render_state_get_cursor_y(this.handle),
-      viewportX: this.exports.ghostty_render_state_get_cursor_x(this.handle),
-      viewportY: this.exports.ghostty_render_state_get_cursor_y(this.handle),
-      visible: this.exports.ghostty_render_state_get_cursor_visible(this.handle),
-      blinking: false, // TODO: Add blinking support
-      style: 'block', // TODO: Add style support
+      x: Math.max(0, viewportX),
+      y: Math.max(0, viewportY),
+      viewportX,
+      viewportY,
+      visible,
+      blinking,
+      style,
     };
   }
 
   /**
-   * Get default colors from render state
+   * Get default fg/bg/cursor colors from render state.
    */
   getColors(): RenderStateColors {
-    const bg = this.exports.ghostty_render_state_get_bg_color(this.handle);
-    const fg = this.exports.ghostty_render_state_get_fg_color(this.handle);
-    return {
-      background: {
-        r: (bg >> 16) & 0xff,
-        g: (bg >> 8) & 0xff,
-        b: bg & 0xff,
-      },
-      foreground: {
-        r: (fg >> 16) & 0xff,
-        g: (fg >> 8) & 0xff,
-        b: fg & 0xff,
-      },
-      cursor: null, // TODO: Add cursor color support
-    };
+    this.update();
+    const background = this.rsGetRgb(RenderStateData.COLOR_BACKGROUND);
+    const foreground = this.rsGetRgb(RenderStateData.COLOR_FOREGROUND);
+    const hasCursor = this.rsGetU8(RenderStateData.COLOR_CURSOR_HAS_VALUE) !== 0;
+    const cursor = hasCursor ? this.rsGetRgb(RenderStateData.COLOR_CURSOR) : null;
+    return { background, foreground, cursor };
   }
 
   /**
-   * Check if a specific row is dirty
+   * Check if a specific row is dirty.
+   * TODO: rewire onto the row iterator API (ghostty_render_state_row_get with
+   * RENDER_STATE_ROW_DATA_DIRTY).
    */
-  isRowDirty(y: number): boolean {
-    return this.exports.ghostty_render_state_is_row_dirty(this.handle, y);
+  isRowDirty(_y: number): boolean {
+    throw new Error('isRowDirty not yet implemented for the new render-state API');
   }
 
   /**
-   * Mark render state as clean (call after rendering)
+   * Mark render state as clean (call after rendering).
    */
   markClean(): void {
-    this.exports.ghostty_render_state_mark_clean(this.handle);
+    const p = this.exports.ghostty_wasm_alloc_u8_array(4);
+    new DataView(this.memory.buffer).setUint32(p, DirtyState.NONE, true);
+    this.exports.ghostty_render_state_set(this.renderHandle, RenderStateOption.DIRTY, p);
+    this.exports.ghostty_wasm_free_u8_array(p, 4);
   }
 
   /**
@@ -433,30 +521,12 @@ export class GhosttyTerminal {
    * Returns a reusable cell array (zero allocation after warmup).
    */
   getViewport(): GhosttyCell[] {
-    const totalCells = this._cols * this._rows;
-    const neededSize = totalCells * GhosttyTerminal.CELL_SIZE;
-
-    // Ensure buffer is allocated
-    if (!this.viewportBufferPtr || this.viewportBufferSize < neededSize) {
-      if (this.viewportBufferPtr) {
-        this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      }
-      this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(neededSize);
-      this.viewportBufferSize = neededSize;
-    }
-
-    // Get all cells in one call
-    const count = this.exports.ghostty_render_state_get_viewport(
-      this.handle,
-      this.viewportBufferPtr,
-      totalCells
-    );
-
-    if (count < 0) return this.cellPool;
-
-    // Parse cells into pool (reuses existing objects)
-    this.parseCellsIntoPool(this.viewportBufferPtr, totalCells);
-    return this.cellPool;
+    // TODO: rewire onto the row iterator + row_cells API:
+    //   - _get(state, ROW_ITERATOR, &iter)
+    //   - while (_row_iterator_next(iter)) { _row_get(iter, ROW_DATA_CELLS, &cells); ... }
+    // The reusable viewportBufferPtr can hold a single row's worth of cells
+    // and be re-driven each iteration.
+    throw new Error('getViewport not yet implemented for the new render-state API');
   }
 
   // ==========================================================================
@@ -788,26 +858,10 @@ export class GhosttyTerminal {
    * (Hindi, emoji with ZWJ, etc.) it returns multiple codepoints.
    * @returns Array of codepoints, or null on error
    */
-  getGrapheme(row: number, col: number): number[] | null {
-    // Allocate buffer on first use (16 codepoints should be enough for any grapheme)
-    if (!this.graphemeBuffer) {
-      this.graphemeBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(16 * 4);
-      this.graphemeBuffer = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, 16);
-    }
-
-    const count = this.exports.ghostty_render_state_get_grapheme(
-      this.handle,
-      row,
-      col,
-      this.graphemeBufferPtr,
-      16
-    );
-
-    if (count < 0) return null;
-
-    // Re-create view in case memory grew
-    const view = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, count);
-    return Array.from(view);
+  getGrapheme(_row: number, _col: number): number[] | null {
+    // TODO: rewire onto the row cells API:
+    //   _row_cells_select(cells, RAW) -> _row_cells_get(cells, GRAPHEMES, ...)
+    throw new Error('getGrapheme not yet implemented for the new render-state API');
   }
 
   /**
