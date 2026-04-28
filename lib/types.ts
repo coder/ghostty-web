@@ -464,10 +464,35 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     valuesPtr: number,
     outWrittenPtr: number
   ): number;
-  // Per-cell direct access (when you have a raw GhosttyCell).
-  ghostty_cell_get(cell: number, key: number, outPtr: number): number;
+  // Per-cell direct access. GhosttyCell is a u64 — passed as bigint in JS.
+  ghostty_cell_get(cell: bigint, key: number, outPtr: number): number;
   // Per-row direct access. GhosttyRow is a u64 — passed as bigint in JS.
   ghostty_row_get(row: bigint, key: number, outPtr: number): number;
+  // Grid references: read cells / rows / graphemes / hyperlinks at a
+  // specific GhosttyPoint. Useful for off-viewport (scrollback / history)
+  // access where the render-state row iterator doesn't reach.
+  // Note: refs are invalidated by ANY terminal mutation — read and copy out
+  // before the next vt_write.
+  ghostty_terminal_grid_ref(
+    terminal: TerminalHandle,
+    pointPtr: number,
+    outRefPtr: number
+  ): number;
+  ghostty_grid_ref_cell(refPtr: number, outCellPtr: number): number;
+  ghostty_grid_ref_row(refPtr: number, outRowPtr: number): number;
+  ghostty_grid_ref_graphemes(
+    refPtr: number,
+    bufPtr: number,
+    bufLen: number,
+    outLenPtr: number
+  ): number;
+  ghostty_grid_ref_hyperlink_uri(
+    refPtr: number,
+    bufPtr: number,
+    bufLen: number,
+    outLenPtr: number
+  ): number;
+  ghostty_grid_ref_style(refPtr: number, outStylePtr: number): number;
 
   // Generic terminal property API. Mirrors render_state_get/set: a single
   // entry point keyed by GhosttyTerminalData (see TerminalData enum).
@@ -571,6 +596,29 @@ export enum TerminalData {
   COLOR_BACKGROUND = 19,
   COLOR_CURSOR = 20,
   COLOR_PALETTE = 21,
+  COLOR_FOREGROUND_DEFAULT = 22,
+  COLOR_BACKGROUND_DEFAULT = 23,
+  COLOR_CURSOR_DEFAULT = 24,
+  COLOR_PALETTE_DEFAULT = 25,
+}
+
+/**
+ * Options for ghostty_terminal_set(). Mirrors GhosttyTerminalOption.
+ * Only the entries the TS layer touches are listed; the upstream enum has
+ * more (callbacks for BELL/TITLE_CHANGED/etc., kitty-image limits, ...).
+ */
+export enum TerminalOption {
+  USERDATA = 0,
+  WRITE_PTY = 1,
+  BELL = 2,
+  ENQUIRY = 3,
+  XTVERSION = 4,
+  TITLE_CHANGED = 5,
+  SIZE = 6,
+  COLOR_FOREGROUND = 11,
+  COLOR_BACKGROUND = 12,
+  COLOR_CURSOR = 13,
+  COLOR_PALETTE = 14,
 }
 
 /**
@@ -621,6 +669,35 @@ export enum RowData {
   GRAPHEME = 3,
   STYLED = 4,
   HYPERLINK = 5,
+}
+
+/**
+ * Tag values for GhosttyPoint. Mirrors GhosttyPointTag. The tag selects
+ * which coordinate space y is interpreted in.
+ */
+export enum PointTag {
+  ACTIVE = 0,
+  VIEWPORT = 1,
+  SCREEN = 2,
+  HISTORY = 3,
+}
+
+/**
+ * Keys for ghostty_cell_get(). Mirrors GhosttyCellData. Used with the
+ * raw GhosttyCell value obtained via grid_ref_cell or row_cells_get(RAW).
+ */
+export enum CellData {
+  CODEPOINT = 1,
+  CONTENT_TAG = 2,
+  WIDE = 3,
+  HAS_TEXT = 4,
+  HAS_STYLING = 5,
+  STYLE_ID = 6,
+  HAS_HYPERLINK = 7,
+  PROTECTED = 8,
+  SEMANTIC_CONTENT = 9,
+  COLOR_PALETTE = 10,
+  COLOR_RGB = 11,
 }
 
 /**

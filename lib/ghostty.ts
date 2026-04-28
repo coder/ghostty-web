@@ -24,10 +24,14 @@ import {
   RenderStateData,
   RenderStateOption,
   RenderStateRowData,
+  RenderStateRowOption,
+  PointTag,
   RowCellsData,
   RowData,
+  CellData,
   TerminalData,
   type TerminalHandle,
+  TerminalOption,
   TerminalScreen,
 } from './types';
 
@@ -269,12 +273,6 @@ export class GhosttyTerminal {
   private _cols: number;
   private _rows: number;
 
-  /** Size of GhosttyCell in WASM (16 bytes) */
-  private static readonly CELL_SIZE = 16;
-
-  /** Reusable buffer for viewport operations */
-  private viewportBufferPtr: number = 0;
-  private viewportBufferSize: number = 0;
 
   /** Cell pool for zero-allocation rendering */
   private cellPool: GhosttyCell[] = [];
@@ -333,9 +331,17 @@ export class GhosttyTerminal {
 
     if (!this.handle) throw new Error('Failed to create terminal');
 
-    // TODO: apply config.fgColor / bgColor / cursorColor / palette via
-    // ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_COLOR_*) once the option
-    // bindings are wired up.
+    // Apply theme colors + palette overrides. The constructor's options
+    // struct only carries cols/rows/scrollback, so colors land here via
+    // ghostty_terminal_set(COLOR_*).
+    if (config) this.applyConfig(config);
+
+    // Mode 2027 (grapheme clustering) is what lets the terminal treat
+    // multi-codepoint clusters (flag emoji, ZWJ sequences, skin tones) as
+    // a single cell. Coder's old C-side patch enabled it inside the
+    // terminal_new() shim; the new public C ABI doesn't, so we enable it
+    // here from JS to preserve coder's defaults.
+    this.exports.ghostty_terminal_mode_set(this.handle, packMode(2027, false), true);
 
     // Create the render state that owns the per-frame snapshot read by
     // getCursor/getColors/getViewport. Render state is updated explicitly via
@@ -389,6 +395,65 @@ export class GhosttyTerminal {
     } finally {
       this.exports.ghostty_wasm_free_opaque(outPtr);
     }
+  }
+
+  /**
+   * Apply user-supplied colors + palette overrides to the freshly-created
+   * terminal via ghostty_terminal_set(COLOR_*).
+   *
+   * For the palette: the new C ABI takes a full 256-entry array, but coder's
+   * config carries only the legacy 16 ANSI entries (each as a 0xRRGGBB int,
+   * 0 meaning "use default"). To preserve indices ≥16 we read the existing
+   * default palette first, overlay the non-zero entries from config, and
+   * write the merged 768-byte buffer back.
+   */
+  private applyConfig(config: GhosttyTerminalConfig): void {
+    if (config.fgColor) this.setColorOption(TerminalOption.COLOR_FOREGROUND, config.fgColor);
+    if (config.bgColor) this.setColorOption(TerminalOption.COLOR_BACKGROUND, config.bgColor);
+    if (config.cursorColor) {
+      this.setColorOption(TerminalOption.COLOR_CURSOR, config.cursorColor);
+    }
+
+    if (config.palette && config.palette.some((v) => v !== 0)) {
+      const PALETTE_SIZE = 256 * 3;
+      const ptr = this.exports.ghostty_wasm_alloc_u8_array(PALETTE_SIZE);
+      try {
+        // Seed from the upstream default palette so untouched indices
+        // keep their canonical ANSI colors.
+        const seedRes = this.exports.ghostty_terminal_get(
+          this.handle,
+          TerminalData.COLOR_PALETTE_DEFAULT,
+          ptr
+        );
+        if (seedRes !== 0) {
+          // Couldn't read defaults — fall back to all-black so we don't
+          // smear stale memory into the palette.
+          new Uint8Array(this.memory.buffer, ptr, PALETTE_SIZE).fill(0);
+        }
+        const buf = new Uint8Array(this.memory.buffer, ptr, PALETTE_SIZE);
+        const limit = Math.min(config.palette.length, 16);
+        for (let i = 0; i < limit; i++) {
+          const c = config.palette[i]!;
+          if (c === 0) continue; // 0 = "leave default in place"
+          buf[i * 3 + 0] = (c >> 16) & 0xff;
+          buf[i * 3 + 1] = (c >> 8) & 0xff;
+          buf[i * 3 + 2] = c & 0xff;
+        }
+        this.exports.ghostty_terminal_set(this.handle, TerminalOption.COLOR_PALETTE, ptr);
+      } finally {
+        this.exports.ghostty_wasm_free_u8_array(ptr, PALETTE_SIZE);
+      }
+    }
+  }
+
+  private setColorOption(opt: TerminalOption, rgb: number): void {
+    const ptr = this.exports.ghostty_wasm_alloc_u8_array(3);
+    const buf = new Uint8Array(this.memory.buffer, ptr, 3);
+    buf[0] = (rgb >> 16) & 0xff;
+    buf[1] = (rgb >> 8) & 0xff;
+    buf[2] = rgb & 0xff;
+    this.exports.ghostty_terminal_set(this.handle, opt, ptr);
+    this.exports.ghostty_wasm_free_u8_array(ptr, 3);
   }
 
   /**
@@ -508,15 +573,10 @@ export class GhosttyTerminal {
     // TODO: thread real cell pixel dims (currently 0 = unknown/disabled,
     // affects size reports and image protocols only).
     this.exports.ghostty_terminal_resize(this.handle, cols, rows, 0, 0);
-    this.invalidateBuffers();
     this.initCellPool();
   }
 
   free(): void {
-    if (this.viewportBufferPtr) {
-      this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      this.viewportBufferPtr = 0;
-    }
     if (this.rowCells) {
       this.exports.ghostty_render_state_row_cells_free(this.rowCells);
       this.rowCells = 0;
@@ -697,13 +757,43 @@ export class GhosttyTerminal {
   }
 
   /**
-   * Mark render state as clean (call after rendering).
+   * Mark render state as clean — clears both global and per-row dirty.
+   *
+   * Per the upstream contract, "setting one dirty state doesn't unset the
+   * other." Global dirty is cleared via _set(OPTION_DIRTY, FALSE); per-row
+   * dirty is cleared by walking the row iterator and calling _row_set on
+   * each. Without the per-row pass, the next update() would still report
+   * the old per-row flags as dirty even though the terminal hasn't changed.
    */
   markClean(): void {
     const p = this.exports.ghostty_wasm_alloc_u8_array(4);
     new DataView(this.memory.buffer).setUint32(p, DirtyState.NONE, true);
     this.exports.ghostty_render_state_set(this.renderHandle, RenderStateOption.DIRTY, p);
     this.exports.ghostty_wasm_free_u8_array(p, 4);
+
+    // Re-bind the iterator to the current state and clear each row's dirty.
+    this.populateHandle(
+      (out) =>
+        this.exports.ghostty_render_state_get(
+          this.renderHandle,
+          RenderStateData.ROW_ITERATOR,
+          out
+        ),
+      this.rowIter
+    );
+    const falsePtr = this.exports.ghostty_wasm_alloc_u8();
+    new DataView(this.memory.buffer).setUint8(falsePtr, 0);
+    while (this.exports.ghostty_render_state_row_iterator_next(this.rowIter)) {
+      this.exports.ghostty_render_state_row_set(
+        this.rowIter,
+        RenderStateRowOption.DIRTY,
+        falsePtr
+      );
+    }
+    this.exports.ghostty_wasm_free_u8(falsePtr);
+
+    // Caches captured the now-stale "dirty" state.
+    this.rowDirtyCache = null;
   }
 
   /**
@@ -1033,32 +1123,161 @@ export class GhosttyTerminal {
 
   /**
    * Get a line from the scrollback buffer.
-   * Ensures render state is fresh by calling update().
-   * @param offset 0 = oldest line, (length-1) = most recent scrollback line
+   * @param offset 0 = oldest scrollback line, (scrollbackLength-1) = most
+   *   recent scrollback line.
+   *
+   * Uses ghostty_terminal_grid_ref with POINT_TAG_HISTORY to address rows
+   * outside the active viewport. The render-state row iterator only walks
+   * the viewport, so scrollback access has to go through grid_ref.
+   *
+   * Cell content is currently codepoint-only; fg/bg colors, style flags,
+   * and hyperlinks are deferred (defaults: 0 colors, flags=0, width=1).
+   * The text-extraction tests that drove this commit only check codepoints.
    */
-  getScrollbackLine(_offset: number): GhosttyCell[] | null {
-    // TODO: rewire onto the row iterator API:
-    //   _grid_ref(terminal, ...) for scrollback rows + _row_cells_get(...)
-    // Old per-row buffer fill API (ghostty_terminal_get_scrollback_line) is gone.
-    throw new Error('getScrollbackLine not yet implemented for the new C ABI');
+  getScrollbackLine(offset: number): GhosttyCell[] | null {
+    return this.readGridLine(PointTag.HISTORY, offset);
   }
 
   /**
-   * Get the hyperlink URI for a cell at the given position.
-   * @returns The URI string, or null if no hyperlink at that position
+   * Get the hyperlink URI for a cell at the given position in the active
+   * viewport. Returns null when no hyperlink is attached.
    */
-  getHyperlinkUri(_row: number, _col: number): string | null {
-    // TODO: rewire onto grid_ref + cell hyperlink lookup. Old buffer-fill
-    // API (ghostty_terminal_get_hyperlink_uri) is gone.
-    throw new Error('getHyperlinkUri not yet implemented for the new C ABI');
+  getHyperlinkUri(row: number, col: number): string | null {
+    if (row < 0 || row >= this._rows) return null;
+    if (col < 0 || col >= this._cols) return null;
+    return this.readHyperlinkUri(PointTag.ACTIVE, row, col);
   }
 
   /**
    * Get the hyperlink URI for a cell in the scrollback buffer.
    */
-  getScrollbackHyperlinkUri(_offset: number, _col: number): string | null {
-    // TODO: same path as getHyperlinkUri once grid_ref is wired up.
-    throw new Error('getScrollbackHyperlinkUri not yet implemented for the new C ABI');
+  getScrollbackHyperlinkUri(offset: number, col: number): string | null {
+    if (col < 0 || col >= this._cols) return null;
+    return this.readHyperlinkUri(PointTag.HISTORY, offset, col);
+  }
+
+  // ==========================================================================
+  // grid_ref helpers
+  //
+  // GhosttyPoint  : 24 bytes (tag@0:u32, value@8:union 16 bytes).
+  //                 The union's first member is GhosttyPointCoordinate
+  //                 (x@0:u16, y@4:u32).
+  // GhosttyGridRef: 12 bytes — sized struct (size@0:u32, node@4:opaque,
+  //                 x@8:u16, y@10:u16). x/y are public so we can step
+  //                 along a row by mutating ref.x in place rather than
+  //                 re-resolving the point per cell.
+  //
+  // A grid ref is invalidated by ANY terminal mutation. The whole helper
+  // body must run between vt_writes — read everything we need, copy out,
+  // free.
+  // ==========================================================================
+
+  private readGridLine(tag: PointTag, y: number): GhosttyCell[] | null {
+    const pointPtr = this.allocPoint(tag, 0, y);
+    const refPtr = this.exports.ghostty_wasm_alloc_u8_array(12);
+    new DataView(this.memory.buffer).setUint32(refPtr, 12, true); // size field
+    try {
+      if (this.exports.ghostty_terminal_grid_ref(this.handle, pointPtr, refPtr) !== 0) {
+        return null;
+      }
+
+      const cells: GhosttyCell[] = new Array(this._cols);
+      const cellPtr = this.exports.ghostty_wasm_alloc_u8_array(8);
+      const u32Ptr = this.exports.ghostty_wasm_alloc_u8_array(4);
+      try {
+        for (let col = 0; col < this._cols; col++) {
+          // Step along the row by mutating ref.x in place.
+          new DataView(this.memory.buffer).setUint16(refPtr + 8, col, true);
+          if (this.exports.ghostty_grid_ref_cell(refPtr, cellPtr) !== 0) {
+            cells[col] = this.makeEmptyCell();
+            continue;
+          }
+          const cellU64 = new DataView(this.memory.buffer).getBigUint64(cellPtr, true);
+          this.exports.ghostty_cell_get(cellU64, CellData.CODEPOINT, u32Ptr);
+          const cp = new DataView(this.memory.buffer).getUint32(u32Ptr, true);
+          cells[col] = { ...this.makeEmptyCell(), codepoint: cp };
+        }
+      } finally {
+        this.exports.ghostty_wasm_free_u8_array(cellPtr, 8);
+        this.exports.ghostty_wasm_free_u8_array(u32Ptr, 4);
+      }
+      return cells;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(pointPtr, 24);
+      this.exports.ghostty_wasm_free_u8_array(refPtr, 12);
+    }
+  }
+
+  private readHyperlinkUri(tag: PointTag, y: number, col: number): string | null {
+    const pointPtr = this.allocPoint(tag, col, y);
+    const refPtr = this.exports.ghostty_wasm_alloc_u8_array(12);
+    new DataView(this.memory.buffer).setUint32(refPtr, 12, true);
+    try {
+      if (this.exports.ghostty_terminal_grid_ref(this.handle, pointPtr, refPtr) !== 0) {
+        return null;
+      }
+      // Two-pass read: first call with len=0 to get required size, then
+      // allocate exactly. Most cells have no hyperlink — we get out_len=0
+      // on the first call and skip the second alloc entirely.
+      const outLenPtr = this.exports.ghostty_wasm_alloc_usize();
+      try {
+        // First pass: pass NULL buf (0) and len=0; out_len gets populated.
+        // ghostty_grid_ref_hyperlink_uri returns OUT_OF_SPACE when there
+        // is data; SUCCESS with out_len=0 when there is none.
+        this.exports.ghostty_grid_ref_hyperlink_uri(refPtr, 0, 0, outLenPtr);
+        const needed = new DataView(this.memory.buffer).getUint32(outLenPtr, true);
+        if (needed === 0) return null;
+
+        const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(needed);
+        try {
+          const r = this.exports.ghostty_grid_ref_hyperlink_uri(
+            refPtr,
+            bufPtr,
+            needed,
+            outLenPtr
+          );
+          if (r !== 0) return null;
+          const written = new DataView(this.memory.buffer).getUint32(outLenPtr, true);
+          const bytes = new Uint8Array(this.memory.buffer, bufPtr, written);
+          return new TextDecoder().decode(bytes.slice());
+        } finally {
+          this.exports.ghostty_wasm_free_u8_array(bufPtr, needed);
+        }
+      } finally {
+        this.exports.ghostty_wasm_free_usize(outLenPtr);
+      }
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(pointPtr, 24);
+      this.exports.ghostty_wasm_free_u8_array(refPtr, 12);
+    }
+  }
+
+  private allocPoint(tag: PointTag, x: number, y: number): number {
+    // GhosttyPoint = { tag: u32 @ 0, padding: 4, value.coordinate: { x: u16 @ 0, y: u32 @ 4 } @ 8 }
+    const ptr = this.exports.ghostty_wasm_alloc_u8_array(24);
+    const view = new DataView(this.memory.buffer);
+    // Zero the padding bytes too, since we don't want stale memory in the union.
+    new Uint8Array(this.memory.buffer, ptr, 24).fill(0);
+    view.setUint32(ptr + 0, tag, true);
+    view.setUint16(ptr + 8, x, true);
+    view.setUint32(ptr + 12, y, true);
+    return ptr;
+  }
+
+  private makeEmptyCell(): GhosttyCell {
+    return {
+      codepoint: 0,
+      fg_r: 0,
+      fg_g: 0,
+      fg_b: 0,
+      bg_r: 0,
+      bg_g: 0,
+      bg_b: 0,
+      flags: 0,
+      width: 1,
+      hyperlink_id: 0,
+      grapheme_len: 0,
+    };
   }
 
   /**
@@ -1121,32 +1340,6 @@ export class GhosttyTerminal {
       }
     }
   }
-
-  private parseCellsIntoPool(ptr: number, count: number): void {
-    const buffer = this.memory.buffer;
-    const u8 = new Uint8Array(buffer, ptr, count * GhosttyTerminal.CELL_SIZE);
-    const view = new DataView(buffer, ptr, count * GhosttyTerminal.CELL_SIZE);
-
-    for (let i = 0; i < count; i++) {
-      const offset = i * GhosttyTerminal.CELL_SIZE;
-      const cell = this.cellPool[i];
-      cell.codepoint = view.getUint32(offset, true);
-      cell.fg_r = u8[offset + 4];
-      cell.fg_g = u8[offset + 5];
-      cell.fg_b = u8[offset + 6];
-      cell.bg_r = u8[offset + 7];
-      cell.bg_g = u8[offset + 8];
-      cell.bg_b = u8[offset + 9];
-      cell.flags = u8[offset + 10];
-      cell.width = u8[offset + 11];
-      cell.hyperlink_id = view.getUint16(offset + 12, true);
-      cell.grapheme_len = u8[offset + 14]; // grapheme_len is at byte 14
-    }
-  }
-
-  /** Small buffer for grapheme lookups (reused to avoid allocation) */
-  private graphemeBuffer: Uint32Array | null = null;
-  private graphemeBufferPtr: number = 0;
 
   /**
    * Get all codepoints for a grapheme cluster at the given position.
@@ -1236,9 +1429,46 @@ export class GhosttyTerminal {
    * @param col Column index
    * @returns Array of codepoints, or null on error
    */
-  getScrollbackGrapheme(_offset: number, _col: number): number[] | null {
-    // TODO: rewire onto grid_ref + row_cells_get(GRAPHEMES) for scrollback rows.
-    throw new Error('getScrollbackGrapheme not yet implemented for the new C ABI');
+  getScrollbackGrapheme(offset: number, col: number): number[] | null {
+    if (col < 0 || col >= this._cols) return null;
+
+    const pointPtr = this.allocPoint(PointTag.HISTORY, col, offset);
+    const refPtr = this.exports.ghostty_wasm_alloc_u8_array(12);
+    new DataView(this.memory.buffer).setUint32(refPtr, 12, true);
+    try {
+      if (this.exports.ghostty_terminal_grid_ref(this.handle, pointPtr, refPtr) !== 0) {
+        return null;
+      }
+      // Same two-pass pattern as readHyperlinkUri: query length first, then
+      // allocate the exact codepoint buffer.
+      const outLenPtr = this.exports.ghostty_wasm_alloc_usize();
+      try {
+        this.exports.ghostty_grid_ref_graphemes(refPtr, 0, 0, outLenPtr);
+        const needed = new DataView(this.memory.buffer).getUint32(outLenPtr, true);
+        if (needed === 0) return [];
+
+        const bytes = needed * 4; // codepoints are u32
+        const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bytes);
+        try {
+          const r = this.exports.ghostty_grid_ref_graphemes(
+            refPtr,
+            bufPtr,
+            needed,
+            outLenPtr
+          );
+          if (r !== 0) return null;
+          const written = new DataView(this.memory.buffer).getUint32(outLenPtr, true);
+          return Array.from(new Uint32Array(this.memory.buffer, bufPtr, written));
+        } finally {
+          this.exports.ghostty_wasm_free_u8_array(bufPtr, bytes);
+        }
+      } finally {
+        this.exports.ghostty_wasm_free_usize(outLenPtr);
+      }
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(pointPtr, 24);
+      this.exports.ghostty_wasm_free_u8_array(refPtr, 12);
+    }
   }
 
   /**
@@ -1250,16 +1480,4 @@ export class GhosttyTerminal {
     return String.fromCodePoint(...codepoints);
   }
 
-  private invalidateBuffers(): void {
-    if (this.viewportBufferPtr) {
-      this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      this.viewportBufferPtr = 0;
-      this.viewportBufferSize = 0;
-    }
-    if (this.graphemeBufferPtr) {
-      this.exports.ghostty_wasm_free_u8_array(this.graphemeBufferPtr, 16 * 4);
-      this.graphemeBufferPtr = 0;
-    }
-    this.graphemeBuffer = null;
-  }
 }
