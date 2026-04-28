@@ -466,6 +466,8 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ): number;
   // Per-cell direct access (when you have a raw GhosttyCell).
   ghostty_cell_get(cell: number, key: number, outPtr: number): number;
+  // Per-row direct access. GhosttyRow is a u64 — passed as bigint in JS.
+  ghostty_row_get(row: bigint, key: number, outPtr: number): number;
 
   // Generic terminal property API. Mirrors render_state_get/set: a single
   // entry point keyed by GhosttyTerminalData (see TerminalData enum).
@@ -607,6 +609,18 @@ export enum RowCellsData {
   GRAPHEMES_BUF = 4,
   BG_COLOR = 5,
   FG_COLOR = 6,
+}
+
+/**
+ * Keys for ghostty_row_get(). Mirrors GhosttyRowData. Used with the raw
+ * GhosttyRow value obtained via _render_state_row_get(iter, RAW, &row).
+ */
+export enum RowData {
+  WRAP = 1,
+  WRAP_CONTINUATION = 2,
+  GRAPHEME = 3,
+  STYLED = 4,
+  HYPERLINK = 5,
 }
 
 /**
