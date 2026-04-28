@@ -6,6 +6,7 @@
  * snapshot of all render data in a single update call.
  */
 
+import { makeWritePtyTrampoline, type WritePtyCallback } from './write_pty_trampoline';
 import {
   CellFlags,
   CursorVisualStyle,
@@ -290,6 +291,39 @@ export class GhosttyTerminal {
    */
   private rowWrapCache: boolean[] | null = null;
 
+  /**
+   * Bytes the terminal would have written back to a real PTY in response
+   * to query sequences (DSR, XTVERSION, in-band size reports, ...).
+   * Captured by the WRITE_PTY callback installed in the constructor and
+   * drained by readResponse(). Each slot is one callback invocation, so
+   * a single response sequence may span multiple slots.
+   */
+  private pendingResponses: Uint8Array[] = [];
+
+  /**
+   * Per-table registry for the WRITE_PTY callback. Keyed on the WASM
+   * module's __indirect_function_table so that multiple Ghostty.load()
+   * instances each get their own trampoline slot and routing map —
+   * terminal handles are only unique within a single WASM instance, and
+   * indices into one module's table are meaningless in another.
+   *
+   * `index` is the slot we own in that table; `instancesByHandle` routes
+   * incoming WRITE_PTY callbacks back to the matching GhosttyTerminal.
+   */
+  private static writePtyRegistries = new WeakMap<
+    WebAssembly.Table,
+    { index: number; instancesByHandle: Map<number, GhosttyTerminal> }
+  >();
+
+  /**
+   * Cached pointer to this terminal's registry. We only need it to
+   * deregister cleanly in free() / cleanupOnConstructorFailure().
+   */
+  private writePtyRegistry?: {
+    index: number;
+    instancesByHandle: Map<number, GhosttyTerminal>;
+  };
+
   constructor(
     exports: GhosttyWasmExports,
     memory: WebAssembly.Memory,
@@ -331,17 +365,32 @@ export class GhosttyTerminal {
 
     if (!this.handle) throw new Error('Failed to create terminal');
 
-    // Apply theme colors + palette overrides. The constructor's options
-    // struct only carries cols/rows/scrollback, so colors land here via
-    // ghostty_terminal_set(COLOR_*).
-    if (config) this.applyConfig(config);
+    // Everything below could fail; if it does we need to undo the
+    // post-terminal_new init (registry entry, callback wiring) in
+    // addition to the WASM resource frees that cleanupOnConstructorFailure
+    // already handles.
+    try {
+      // Install the trampoline callback so the terminal can deliver
+      // response bytes (DSR, XTVERSION, in-band size reports, ...) back
+      // to JS. Resolves / creates the per-table registry on first use,
+      // registers `this` in it, then sets WRITE_PTY on the terminal.
+      this.installWritePtyCallback();
 
-    // Mode 2027 (grapheme clustering) is what lets the terminal treat
-    // multi-codepoint clusters (flag emoji, ZWJ sequences, skin tones) as
-    // a single cell. Coder's old C-side patch enabled it inside the
-    // terminal_new() shim; the new public C ABI doesn't, so we enable it
-    // here from JS to preserve coder's defaults.
-    this.exports.ghostty_terminal_mode_set(this.handle, packMode(2027, false), true);
+      // Apply theme colors + palette overrides. The constructor's options
+      // struct only carries cols/rows/scrollback, so colors land here via
+      // ghostty_terminal_set(COLOR_*).
+      if (config) this.applyConfig(config);
+
+      // Mode 2027 (grapheme clustering) is what lets the terminal treat
+      // multi-codepoint clusters (flag emoji, ZWJ sequences, skin tones)
+      // as a single cell. Coder's old C-side patch enabled it inside the
+      // terminal_new() shim; the new public C ABI doesn't, so we enable
+      // it here from JS to preserve coder's defaults.
+      this.exports.ghostty_terminal_mode_set(this.handle, packMode(2027, false), true);
+    } catch (e) {
+      this.cleanupOnConstructorFailure();
+      throw e;
+    }
 
     // Create the render state that owns the per-frame snapshot read by
     // getCursor/getColors/getViewport. Render state is updated explicitly via
@@ -462,6 +511,10 @@ export class GhosttyTerminal {
    * before the throw propagates.
    */
   private cleanupOnConstructorFailure(): void {
+    if (this.writePtyRegistry) {
+      this.writePtyRegistry.instancesByHandle.delete(this.handle);
+      this.writePtyRegistry = undefined;
+    }
     if (this.rowCells) {
       this.exports.ghostty_render_state_row_cells_free(this.rowCells);
       this.rowCells = 0;
@@ -577,6 +630,9 @@ export class GhosttyTerminal {
   }
 
   free(): void {
+    if (this.writePtyRegistry) {
+      this.writePtyRegistry.instancesByHandle.delete(this.handle);
+    }
     if (this.rowCells) {
       this.exports.ghostty_render_state_row_cells_free(this.rowCells);
       this.rowCells = 0;
@@ -1281,25 +1337,87 @@ export class GhosttyTerminal {
   }
 
   /**
-   * Check if there are pending responses from the terminal.
+   * Whether any terminal response bytes are queued for readResponse().
    *
-   * NOTE: the upstream C ABI replaced the polling has_response/read_response
-   * pair with a callback model: install one via
-   * ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_WRITE_PTY, fn) and the terminal
-   * invokes it synchronously during vt_write() with response bytes. Until the
-   * callback infrastructure is wired up on the JS side, we report "no
-   * responses" so callers (e.g. demo/PTY echo) degrade gracefully.
+   * Responses are delivered synchronously during vt_write() by the
+   * WRITE_PTY callback (e.g. DSR replies, XTVERSION, in-band size reports).
+   * They sit in pendingResponses until drained.
    */
   hasResponse(): boolean {
-    return false;
+    return this.pendingResponses.length > 0;
   }
 
   /**
-   * Read pending responses from the terminal. See hasResponse() for the
-   * status of the callback-based replacement.
+   * Drain queued response bytes, decode as UTF-8, return as a single
+   * string. Multiple callback invocations are concatenated. Returns null
+   * when nothing's pending so the demo's echo loop can short-circuit.
    */
   readResponse(): string | null {
-    return null;
+    if (this.pendingResponses.length === 0) return null;
+    let total = 0;
+    for (const chunk of this.pendingResponses) total += chunk.length;
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of this.pendingResponses) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.pendingResponses.length = 0;
+    return new TextDecoder().decode(merged);
+  }
+
+  /**
+   * Install the WRITE_PTY callback through the trampoline.
+   *
+   * The trampoline is shared across all terminals that come from the
+   * same WASM instance, but NOT across instances — terminal handles are
+   * only unique within their parent module, and table indices in module
+   * A are meaningless in module B's table. So we keep a per-table
+   * registry (WeakMap keyed on the indirect function table) that owns
+   * the slot index plus the handle→instance routing map for that table.
+   *
+   * On first use for a given table we instantiate the trampoline,
+   * `table.grow(1)`, and `table.set(idx, fwd)`. Subsequent terminals
+   * from the same module reuse the registry and just register their
+   * handle in instancesByHandle.
+   */
+  private installWritePtyCallback(): void {
+    const table = (this.exports as unknown as { __indirect_function_table: WebAssembly.Table })
+      .__indirect_function_table;
+
+    let registry = GhosttyTerminal.writePtyRegistries.get(table);
+    if (!registry) {
+      const instancesByHandle = new Map<number, GhosttyTerminal>();
+      const dispatch: WritePtyCallback = (handle, _userdata, dataPtr, dataLen) => {
+        const term = instancesByHandle.get(handle);
+        if (!term) return;
+        // Copy out — the underlying WASM memory may be mutated or
+        // detached by the next allocation, and the chunk lives until
+        // readResponse drains it.
+        term.pendingResponses.push(
+          new Uint8Array(term.memory.buffer, dataPtr, dataLen).slice(),
+        );
+      };
+      const fwd = makeWritePtyTrampoline(dispatch);
+      const idx = table.grow(1);
+      table.set(idx, fwd);
+      registry = { index: idx, instancesByHandle };
+      GhosttyTerminal.writePtyRegistries.set(table, registry);
+    }
+
+    // Register `this` so the dispatcher (closed over instancesByHandle)
+    // can route incoming bytes to the right pendingResponses queue.
+    registry.instancesByHandle.set(this.handle, this);
+    this.writePtyRegistry = registry;
+
+    // The third arg to _set is the value — for callbacks ("pointer
+    // types"), the value IS the function pointer, i.e. the table index
+    // we just installed, passed directly.
+    this.exports.ghostty_terminal_set(
+      this.handle,
+      TerminalOption.WRITE_PTY,
+      registry.index,
+    );
   }
 
   /**
