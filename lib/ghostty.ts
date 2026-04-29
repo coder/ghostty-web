@@ -1578,9 +1578,32 @@ export class GhosttyTerminal {
         return null;
       }
 
+      // Pre-fetch the terminal's effective palette (256 RGB triples =
+      // 768 bytes) so we can resolve PALETTE-tagged style colors per
+      // cell without a round-trip per resolution. Cells with style
+      // colors of tag NONE leave fg_r/g/b at 0; the renderer's
+      // isDefaultFg path treats that as "use theme default."
+      const PAL_SIZE = 768;
+      const palettePtr = this.exports.ghostty_wasm_alloc_u8_array(PAL_SIZE);
+      const palOk =
+        this.exports.ghostty_terminal_get(
+          this.handle,
+          TerminalData.COLOR_PALETTE,
+          palettePtr
+        ) === 0;
+      const palette = palOk
+        ? new Uint8Array(this.memory.buffer, palettePtr, PAL_SIZE).slice()
+        : null;
+
       const cells: GhosttyCell[] = new Array(this._cols);
       const cellPtr = this.exports.ghostty_wasm_alloc_u8_array(8);
       const u32Ptr = this.exports.ghostty_wasm_alloc_u8_array(4);
+      const widePtr = this.exports.ghostty_wasm_alloc_u8_array(4);
+      // Style is the 72-byte GhosttyStyle sized struct. Initialize the
+      // size discriminator once; the populator overwrites the rest.
+      const STYLE_SIZE = 72;
+      const stylePtr = this.exports.ghostty_wasm_alloc_u8_array(STYLE_SIZE);
+      new DataView(this.memory.buffer).setUint32(stylePtr, STYLE_SIZE, true);
       try {
         for (let col = 0; col < this._cols; col++) {
           // Step along the row by mutating ref.x in place.
@@ -1589,19 +1612,113 @@ export class GhosttyTerminal {
             cells[col] = this.makeEmptyCell();
             continue;
           }
-          const cellU64 = new DataView(this.memory.buffer).getBigUint64(cellPtr, true);
+          const memView = new DataView(this.memory.buffer);
+          const cellU64 = memView.getBigUint64(cellPtr, true);
+
+          // Codepoint.
           this.exports.ghostty_cell_get(cellU64, CellData.CODEPOINT, u32Ptr);
           const cp = new DataView(this.memory.buffer).getUint32(u32Ptr, true);
-          cells[col] = { ...this.makeEmptyCell(), codepoint: cp };
+
+          // Width: same NARROW/WIDE/SPACER mapping as getViewport.
+          this.exports.ghostty_cell_get(cellU64, CellData.WIDE, widePtr);
+          const wide = new DataView(this.memory.buffer).getUint32(widePtr, true);
+          const width =
+            wide === CellWide.WIDE
+              ? 2
+              : wide === CellWide.SPACER_TAIL || wide === CellWide.SPACER_HEAD
+                ? 0
+                : 1;
+
+          // Style: per-position via grid_ref_style (not via cell —
+          // styles aren't stored in the cell value, they're attached
+          // to the row's pin position).
+          new DataView(this.memory.buffer).setUint32(
+            stylePtr,
+            STYLE_SIZE,
+            true
+          );
+          const styleOk =
+            this.exports.ghostty_grid_ref_style(refPtr, stylePtr) === 0;
+
+          const cell = this.makeEmptyCell();
+          cell.codepoint = cp;
+          cell.width = width;
+
+          if (styleOk) {
+            const u8 = new Uint8Array(this.memory.buffer, stylePtr, STYLE_SIZE);
+            const v = new DataView(this.memory.buffer);
+            // Flag bytes 56..63; underline (i32) at 64.
+            let f = 0;
+            if (u8[56]) f |= CellFlags.BOLD;
+            if (u8[57]) f |= CellFlags.ITALIC;
+            if (u8[58]) f |= CellFlags.FAINT;
+            if (u8[59]) f |= CellFlags.BLINK;
+            if (u8[60]) f |= CellFlags.INVERSE;
+            if (u8[61]) f |= CellFlags.INVISIBLE;
+            if (u8[62]) f |= CellFlags.STRIKETHROUGH;
+            if (v.getInt32(stylePtr + 64, true) !== 0) f |= CellFlags.UNDERLINE;
+            cell.flags = f;
+
+            // fg_color at offset 8, bg_color at offset 24.
+            // Each is 16 bytes: tag@0:u32, padding to 8, value@8:union.
+            // Value union: palette index at first byte; or rgb (r,g,b)
+            // in first 3 bytes; or u64 padding for ABI stability.
+            this.resolveStyleColor(stylePtr + 8, palette, cell, /*isFg=*/ true);
+            this.resolveStyleColor(stylePtr + 24, palette, cell, /*isFg=*/ false);
+          }
+
+          cells[col] = cell;
         }
       } finally {
         this.exports.ghostty_wasm_free_u8_array(cellPtr, 8);
         this.exports.ghostty_wasm_free_u8_array(u32Ptr, 4);
+        this.exports.ghostty_wasm_free_u8_array(widePtr, 4);
+        this.exports.ghostty_wasm_free_u8_array(stylePtr, STYLE_SIZE);
+        this.exports.ghostty_wasm_free_u8_array(palettePtr, PAL_SIZE);
       }
       return cells;
     } finally {
       this.exports.ghostty_wasm_free_u8_array(pointPtr, 24);
       this.exports.ghostty_wasm_free_u8_array(refPtr, 12);
+    }
+  }
+
+  /**
+   * Decode a GhosttyStyleColor (16 bytes at colorPtr — tag@0:u32,
+   * value@8:union) and write the resolved RGB into the cell's fg_*
+   * or bg_* triple. Tag values: NONE=0 (leaves zeros so the renderer's
+   * theme fallback kicks in), PALETTE=1 (looks up the terminal's
+   * effective palette), RGB=2 (direct read).
+   */
+  private resolveStyleColor(
+    colorPtr: number,
+    palette: Uint8Array | null,
+    cell: GhosttyCell,
+    isFg: boolean
+  ): void {
+    const view = new DataView(this.memory.buffer);
+    const tag = view.getUint32(colorPtr + 0, true);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (tag === 1 /* PALETTE */ && palette) {
+      const idx = view.getUint8(colorPtr + 8);
+      r = palette[idx * 3 + 0]!;
+      g = palette[idx * 3 + 1]!;
+      b = palette[idx * 3 + 2]!;
+    } else if (tag === 2 /* RGB */) {
+      r = view.getUint8(colorPtr + 8);
+      g = view.getUint8(colorPtr + 9);
+      b = view.getUint8(colorPtr + 10);
+    }
+    if (isFg) {
+      cell.fg_r = r;
+      cell.fg_g = g;
+      cell.fg_b = b;
+    } else {
+      cell.bg_r = r;
+      cell.bg_g = g;
+      cell.bg_b = b;
     }
   }
 
