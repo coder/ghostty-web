@@ -13,8 +13,13 @@ import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Node-pty for cross-platform PTY support
-import pty from '@lydell/node-pty';
+// Node-pty for cross-platform PTY support. The 1.2.0-beta.x line adds a
+// `pixelSize` argument to resize(), which sets ws_xpixel / ws_ypixel in
+// the slave PTY's winsize struct so kitty kittens (icat etc.) can detect
+// graphics support via TIOCGWINSZ instead of falling back to terminal
+// queries. Lydell's fork is based on 1.1.0-beta14 (pre-pixelSize), so we
+// use upstream's beta directly.
+import pty from 'node-pty';
 // WebSocket server
 import { WebSocketServer } from 'ws';
 
@@ -463,7 +468,18 @@ wss.on('connection', (ws, req) => {
       try {
         const msg = JSON.parse(message);
         if (msg.type === 'resize') {
-          ptyProcess.resize(msg.cols, msg.rows);
+          // node-pty 1.2.0+ accepts a third pixelSize arg that sets
+          // ws_xpixel / ws_ypixel in the PTY winsize struct. Without it,
+          // kitty kittens (icat, etc.) read zeros via TIOCGWINSZ and
+          // refuse to render images.
+          if (msg.xpixel > 0 && msg.ypixel > 0) {
+            ptyProcess.resize(msg.cols, msg.rows, {
+              width: msg.xpixel,
+              height: msg.ypixel,
+            });
+          } else {
+            ptyProcess.resize(msg.cols, msg.rows);
+          }
           return;
         }
       } catch (e) {
