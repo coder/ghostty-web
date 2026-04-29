@@ -786,6 +786,60 @@ export enum KittyImageCompression {
 }
 
 /**
+ * Parsed GhosttyKittyGraphicsPlacementRenderInfo — everything the renderer
+ * needs about a single placement to composite it on the canvas.
+ *
+ * Wire layout on wasm32 (48 bytes, extern struct, 4-byte aligned):
+ *   size:               u32 @ 0   (sized-struct discriminator; we just write 48)
+ *   pixel_width:        u32 @ 4
+ *   pixel_height:       u32 @ 8
+ *   grid_cols:          u32 @ 12
+ *   grid_rows:          u32 @ 16
+ *   viewport_col:       i32 @ 20
+ *   viewport_row:       i32 @ 24
+ *   viewport_visible:   bool @ 28 (1 byte + 3 bytes padding to next u32)
+ *   source_x:           u32 @ 32
+ *   source_y:           u32 @ 36
+ *   source_width:       u32 @ 40
+ *   source_height:      u32 @ 44
+ */
+export interface KittyPlacementInfo {
+  imageId: number;
+  /** Destination size on the canvas, in pixels. */
+  pixelWidth: number;
+  pixelHeight: number;
+  /** Destination size on the grid, in cells. */
+  gridCols: number;
+  gridRows: number;
+  /** Top-left in viewport-relative cells. Negative when scrolled partway off the top. */
+  viewportCol: number;
+  viewportRow: number;
+  /** Whether any part of the placement intersects the visible viewport. */
+  viewportVisible: boolean;
+  /** Source rect within the image, in pixels (already clamped to image bounds). */
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+}
+
+/** Size in bytes of GhosttyKittyGraphicsPlacementRenderInfo on wasm32. */
+export const KITTY_PLACEMENT_RENDER_INFO_SIZE = 48;
+
+/**
+ * Image bytes + metadata returned by GhosttyTerminal.getKittyImageRgba.
+ * `data` is a *view* into WASM memory and is invalidated by the next
+ * mutating terminal call — copy out before vt_write if you need to retain.
+ */
+export interface KittyImagePixels {
+  width: number;
+  height: number;
+  format: KittyImageFormat;
+  /** Borrowed view into WASM memory; copy before vt_write to retain. */
+  data: Uint8Array;
+}
+
+/**
  * Active screen identifier. Mirrors GhosttyTerminalScreen.
  * Returned as the value for TerminalData.ACTIVE_SCREEN.
  */

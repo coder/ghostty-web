@@ -35,6 +35,13 @@ import {
   RowData,
   CellData,
   CellWide,
+  KITTY_PLACEMENT_RENDER_INFO_SIZE,
+  KittyGraphicsData,
+  KittyGraphicsImageData,
+  type KittyImagePixels,
+  KittyGraphicsPlacementData,
+  KittyImageFormat,
+  type KittyPlacementInfo,
   TerminalData,
   type TerminalHandle,
   TerminalOption,
@@ -686,6 +693,200 @@ export class GhosttyTerminal {
       ptr
     );
     this.exports.ghostty_wasm_free_u8_array(ptr, 8);
+  }
+
+  // ==========================================================================
+  // Kitty graphics — placement iteration + image data lookup.
+  //
+  // The renderer calls these per frame: iterate visible placements, look up
+  // pixel data for each, composite onto the canvas. All handles returned
+  // here (storage, image) are borrowed from the terminal and invalidated by
+  // ANY mutating terminal call (vt_write, resize, reset, ...).
+  // Callers must finish any read/copy before the next mutation.
+  // ==========================================================================
+
+  /**
+   * Get the kitty graphics storage handle for the active screen, or null
+   * if storage is disabled or no images are stored. Cheap to call; returns
+   * a borrowed pointer.
+   */
+  getKittyGraphics(): number | null {
+    const out = this.exports.ghostty_wasm_alloc_u8_array(4);
+    try {
+      const r = this.exports.ghostty_terminal_get(
+        this.handle,
+        TerminalData.KITTY_GRAPHICS,
+        out
+      );
+      if (r !== 0) return null;
+      const handle = new DataView(this.memory.buffer).getUint32(out, true);
+      return handle === 0 ? null : handle;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(out, 4);
+    }
+  }
+
+  /**
+   * Iterate placements in the active screen, yielding render-ready info
+   * for each. The optional `onlyVisible` flag (default true) drops
+   * placements that don't intersect the viewport — most renderers want
+   * this. Use `false` if you need to track invalidated regions for
+   * partial damage.
+   *
+   * Internally this uses the upstream placement iterator + the one-shot
+   * placement_render_info call (fills 12 fields in one WASM crossing
+   * instead of 5 separate getters).
+   */
+  *iterPlacements(
+    graphics: number,
+    onlyVisible: boolean = true,
+  ): Generator<KittyPlacementInfo> {
+    // Allocate iterator + scratch buffers once for the whole walk.
+    const iterPP = this.exports.ghostty_wasm_alloc_opaque();
+    if (iterPP === 0) return;
+    let iter = 0;
+    try {
+      const r = this.exports.ghostty_kitty_graphics_placement_iterator_new(0, iterPP);
+      if (r !== 0) return;
+      iter = new DataView(this.memory.buffer).getUint32(iterPP, true);
+      if (iter === 0) return;
+
+      // Bind the iterator to the current placements.
+      const handlePtr = this.exports.ghostty_wasm_alloc_u8_array(4);
+      try {
+        new DataView(this.memory.buffer).setUint32(handlePtr, iter, true);
+        this.exports.ghostty_kitty_graphics_get(
+          graphics,
+          KittyGraphicsData.PLACEMENT_ITERATOR,
+          handlePtr
+        );
+      } finally {
+        this.exports.ghostty_wasm_free_u8_array(handlePtr, 4);
+      }
+
+      const idPtr = this.exports.ghostty_wasm_alloc_u8_array(4);
+      const infoPtr = this.exports.ghostty_wasm_alloc_u8_array(
+        KITTY_PLACEMENT_RENDER_INFO_SIZE
+      );
+      // Sized struct: write the discriminator once, the populator
+      // overwrites the rest each call.
+      new DataView(this.memory.buffer).setUint32(
+        infoPtr,
+        KITTY_PLACEMENT_RENDER_INFO_SIZE,
+        true
+      );
+      try {
+        while (this.exports.ghostty_kitty_graphics_placement_next(iter)) {
+          // Look up image_id for this placement so we can pair it with
+          // pixel data in the caller.
+          this.exports.ghostty_kitty_graphics_placement_get(
+            iter,
+            KittyGraphicsPlacementData.IMAGE_ID,
+            idPtr
+          );
+          const imageId = new DataView(this.memory.buffer).getUint32(idPtr, true);
+
+          // Resolve the image handle — placement_render_info needs it.
+          const imageHandle = this.exports.ghostty_kitty_graphics_image(
+            graphics,
+            imageId
+          );
+          if (imageHandle === 0) continue;
+
+          // Reset the size discriminator (the populator may have written
+          // the actual struct size back, but we don't rely on that — be
+          // explicit so the call always sees the buffer as fully owned).
+          new DataView(this.memory.buffer).setUint32(
+            infoPtr,
+            KITTY_PLACEMENT_RENDER_INFO_SIZE,
+            true
+          );
+          const r2 = this.exports.ghostty_kitty_graphics_placement_render_info(
+            iter,
+            imageHandle,
+            this.handle,
+            infoPtr
+          );
+          if (r2 !== 0) continue;
+
+          const v = new DataView(this.memory.buffer);
+          const info: KittyPlacementInfo = {
+            imageId,
+            pixelWidth: v.getUint32(infoPtr + 4, true),
+            pixelHeight: v.getUint32(infoPtr + 8, true),
+            gridCols: v.getUint32(infoPtr + 12, true),
+            gridRows: v.getUint32(infoPtr + 16, true),
+            viewportCol: v.getInt32(infoPtr + 20, true),
+            viewportRow: v.getInt32(infoPtr + 24, true),
+            viewportVisible: v.getUint8(infoPtr + 28) !== 0,
+            sourceX: v.getUint32(infoPtr + 32, true),
+            sourceY: v.getUint32(infoPtr + 36, true),
+            sourceWidth: v.getUint32(infoPtr + 40, true),
+            sourceHeight: v.getUint32(infoPtr + 44, true),
+          };
+          if (onlyVisible && !info.viewportVisible) continue;
+          yield info;
+        }
+      } finally {
+        this.exports.ghostty_wasm_free_u8_array(idPtr, 4);
+        this.exports.ghostty_wasm_free_u8_array(
+          infoPtr,
+          KITTY_PLACEMENT_RENDER_INFO_SIZE
+        );
+      }
+    } finally {
+      if (iter !== 0) {
+        this.exports.ghostty_kitty_graphics_placement_iterator_free(iter);
+      }
+      this.exports.ghostty_wasm_free_opaque(iterPP);
+    }
+  }
+
+  /**
+   * Get the pixel data + metadata for an image by id. Returns null if the
+   * image isn't stored or isn't in a format we can hand the renderer
+   * directly (RGB / RGBA / GRAY / GRAY_ALPHA).
+   *
+   * The returned `data` is a borrowed view into WASM memory — copy before
+   * the next vt_write if you need to retain. Most callers will turn this
+   * into an ImageData / canvas immediately and discard the view.
+   */
+  getKittyImagePixels(graphics: number, imageId: number): KittyImagePixels | null {
+    const image = this.exports.ghostty_kitty_graphics_image(graphics, imageId);
+    if (image === 0) return null;
+
+    const u32Ptr = this.exports.ghostty_wasm_alloc_u8_array(4);
+    try {
+      const view = new DataView(this.memory.buffer);
+      const read = (key: number): number => {
+        if (
+          this.exports.ghostty_kitty_graphics_image_get(image, key, u32Ptr) !== 0
+        ) {
+          return 0;
+        }
+        return new DataView(this.memory.buffer).getUint32(u32Ptr, true);
+      };
+
+      const width = read(KittyGraphicsImageData.WIDTH);
+      const height = read(KittyGraphicsImageData.HEIGHT);
+      const format = read(KittyGraphicsImageData.FORMAT) as KittyImageFormat;
+      const dataPtr = read(KittyGraphicsImageData.DATA_PTR);
+      const dataLen = read(KittyGraphicsImageData.DATA_LEN);
+      void view;
+
+      if (width === 0 || height === 0 || dataPtr === 0 || dataLen === 0) {
+        return null;
+      }
+
+      return {
+        width,
+        height,
+        format,
+        data: new Uint8Array(this.memory.buffer, dataPtr, dataLen),
+      };
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(u32Ptr, 4);
+    }
   }
 
   /**

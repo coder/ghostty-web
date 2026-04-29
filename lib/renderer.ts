@@ -12,8 +12,8 @@
 
 import type { ITheme } from './interfaces';
 import type { SelectionManager } from './selection-manager';
-import type { GhosttyCell, ILink } from './types';
-import { CellFlags } from './types';
+import type { GhosttyCell, ILink, KittyImagePixels, KittyPlacementInfo } from './types';
+import { CellFlags, KittyImageFormat } from './types';
 
 // Interface for objects that can be rendered
 export interface IRenderable {
@@ -30,6 +30,13 @@ export interface IRenderable {
    * For simple cells, returns the single character.
    */
   getGraphemeString?(row: number, col: number): string;
+
+  // Kitty graphics — optional. When implemented, the renderer composites
+  // images onto the canvas after text rendering. GhosttyTerminal provides
+  // these; other IRenderable implementations (e.g. test fakes) can omit.
+  getKittyGraphics?(): number | null;
+  iterPlacements?(graphics: number, onlyVisible?: boolean): Iterable<KittyPlacementInfo>;
+  getKittyImagePixels?(graphics: number, imageId: number): KittyImagePixels | null;
 }
 
 export interface IScrollbackProvider {
@@ -113,6 +120,18 @@ export class CanvasRenderer {
 
   // Current buffer being rendered (for grapheme lookups)
   private currentBuffer: IRenderable | null = null;
+
+  /**
+   * Decoded kitty graphics images, keyed by image id. Each entry caches
+   * a canvas painted from the WASM-side RGBA bytes so per-frame compositing
+   * is just a drawImage call. We track dataLen to invalidate on
+   * re-transmission (the kitty protocol allows reusing an id with new
+   * bytes); a length mismatch is a cheap, correct staleness signal.
+   */
+  private kittyImageCache = new Map<
+    number,
+    { canvas: HTMLCanvasElement; dataLen: number }
+  >();
 
   // Selection manager (for rendering selection)
   private selectionManager?: SelectionManager;
@@ -483,6 +502,13 @@ export class CanvasRenderer {
 
     // Link underlines are drawn during cell rendering (see renderCell)
 
+    // Composite kitty graphics images on top of the text. MVP z-order is
+    // "above text" — programs sending images typically clear the cell area
+    // first, so there's nothing meaningful underneath. A future commit can
+    // split into below/above-text passes via PlacementLayer if real apps
+    // need it.
+    this.renderKittyImages(buffer);
+
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
       this.renderCursor(cursor.x, cursor.y);
@@ -718,6 +744,115 @@ export class CanvasRenderer {
         this.ctx.stroke();
       }
     }
+  }
+
+  /**
+   * Composite all visible kitty graphics placements onto the canvas.
+   * Cheap when no graphics are active (one method check, one terminal_get).
+   * Decode work is amortized across frames via kittyImageCache.
+   */
+  private renderKittyImages(buffer: IRenderable): void {
+    if (!buffer.getKittyGraphics || !buffer.iterPlacements || !buffer.getKittyImagePixels) {
+      return;
+    }
+    const graphics = buffer.getKittyGraphics();
+    if (graphics === null) return;
+
+    for (const p of buffer.iterPlacements(graphics)) {
+      let cached = this.kittyImageCache.get(p.imageId);
+      const pixels = buffer.getKittyImagePixels(graphics, p.imageId);
+      if (!pixels) continue;
+
+      // Cache miss or stale (image was re-transmitted with new bytes
+      // under the same id). dataLen is a cheap discriminator that catches
+      // the common cases without hashing.
+      if (!cached || cached.dataLen !== pixels.data.length) {
+        const canvas = this.decodeKittyImageToCanvas(pixels);
+        if (!canvas) continue;
+        cached = { canvas, dataLen: pixels.data.length };
+        this.kittyImageCache.set(p.imageId, cached);
+      }
+
+      // Composite. Source/dest rects come straight from the C ABI's
+      // PlacementRenderInfo; viewport_col/row may be negative when a
+      // placement has scrolled partway off the top — drawImage handles
+      // that correctly (clips to the canvas).
+      this.ctx.drawImage(
+        cached.canvas,
+        p.sourceX,
+        p.sourceY,
+        p.sourceWidth,
+        p.sourceHeight,
+        p.viewportCol * this.metrics.width,
+        p.viewportRow * this.metrics.height,
+        p.pixelWidth,
+        p.pixelHeight,
+      );
+    }
+  }
+
+  /**
+   * Decode a kitty graphics image into a canvas suitable for drawImage.
+   * Expands non-RGBA formats into RGBA via putImageData; PNG payloads
+   * (which require a JS-side decoder set up via ghostty_sys_set) are
+   * not supported in this MVP and return null.
+   */
+  private decodeKittyImageToCanvas(
+    pixels: KittyImagePixels,
+  ): HTMLCanvasElement | null {
+    const { width, height, format, data } = pixels;
+    if (width === 0 || height === 0) return null;
+
+    // Allocate a fresh ArrayBuffer (not a WASM-memory view) so that
+    //   (a) the bytes survive the next vt_write that might detach the
+    //       WASM memory buffer, and
+    //   (b) ImageData accepts the buffer (it rejects ArrayBufferLike
+    //       which would include SharedArrayBuffer).
+    const rgba = new Uint8ClampedArray(new ArrayBuffer(width * height * 4));
+    switch (format) {
+      case KittyImageFormat.RGBA:
+        rgba.set(data);
+        break;
+      case KittyImageFormat.RGB:
+        for (let i = 0, o = 0; i < data.length; i += 3, o += 4) {
+          rgba[o] = data[i]!;
+          rgba[o + 1] = data[i + 1]!;
+          rgba[o + 2] = data[i + 2]!;
+          rgba[o + 3] = 255;
+        }
+        break;
+      case KittyImageFormat.GRAY:
+        for (let i = 0, o = 0; i < data.length; i++, o += 4) {
+          const v = data[i]!;
+          rgba[o] = v;
+          rgba[o + 1] = v;
+          rgba[o + 2] = v;
+          rgba[o + 3] = 255;
+        }
+        break;
+      case KittyImageFormat.GRAY_ALPHA:
+        for (let i = 0, o = 0; i < data.length; i += 2, o += 4) {
+          const v = data[i]!;
+          rgba[o] = v;
+          rgba[o + 1] = v;
+          rgba[o + 2] = v;
+          rgba[o + 3] = data[i + 1]!;
+        }
+        break;
+      default:
+        // PNG and unknown formats — skip silently. The terminal would have
+        // dropped a PNG payload at parse time anyway unless a decoder was
+        // installed via ghostty_sys_set(DECODE_PNG, fn).
+        return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+    return canvas;
   }
 
   /**
