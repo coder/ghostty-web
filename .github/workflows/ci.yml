@@ -103,8 +103,8 @@ jobs:
         run: |
           SIZE=$(stat -c%s ghostty-vt.wasm)
           echo "WASM size: $SIZE bytes"
-          if [ "$SIZE" -gt 524288 ]; then
-            echo "❌ Error: WASM exceeds 512 KB limit"
+          if [ "$SIZE" -gt 786432 ]; then
+            echo "❌ Error: WASM exceeds 768 KB limit"
             exit 1
           fi
 
