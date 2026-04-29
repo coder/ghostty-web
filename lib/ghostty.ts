@@ -8,23 +8,26 @@
 
 import { decode as decodePng } from 'fast-png';
 import {
-  type DecodePngCallback,
-  makeCallbackTrampolines,
-  type SizeCallback,
-  type WritePtyCallback,
-} from './write_pty_trampoline';
-import {
+  CellData,
   CellFlags,
-  CursorVisualStyle,
+  CellWide,
   type Cursor,
+  CursorVisualStyle,
   DirtyState,
   type GhosttyCell,
   type GhosttyTerminalConfig,
   type GhosttyWasmExports,
+  KITTY_PLACEMENT_RENDER_INFO_SIZE,
   KeyEncoderOption,
   type KeyEvent,
+  KittyGraphicsData,
+  KittyGraphicsImageData,
+  KittyGraphicsPlacementData,
+  type KittyImageFormat,
+  type KittyImagePixels,
   type KittyKeyFlags,
-  packMode,
+  type KittyPlacementInfo,
+  PointTag,
   type RGB,
   type RenderStateColors,
   type RenderStateCursor,
@@ -32,24 +35,21 @@ import {
   RenderStateOption,
   RenderStateRowData,
   RenderStateRowOption,
-  PointTag,
   RowCellsData,
   RowData,
-  CellData,
-  CellWide,
-  KITTY_PLACEMENT_RENDER_INFO_SIZE,
-  KittyGraphicsData,
-  KittyGraphicsImageData,
-  type KittyImagePixels,
-  KittyGraphicsPlacementData,
-  KittyImageFormat,
-  type KittyPlacementInfo,
   SysOption,
   TerminalData,
   type TerminalHandle,
   TerminalOption,
   TerminalScreen,
+  packMode,
 } from './types';
+import {
+  type DecodePngCallback,
+  type SizeCallback,
+  type WritePtyCallback,
+  makeCallbackTrampolines,
+} from './write_pty_trampoline';
 
 // Re-export types for convenience
 export {

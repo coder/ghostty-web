@@ -11,7 +11,7 @@
  */
 
 import type { ITheme } from './interfaces';
-import { diacriticToInt, KITTY_PLACEHOLDER } from './kitty_diacritics';
+import { KITTY_PLACEHOLDER, diacriticToInt } from './kitty_diacritics';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink, KittyImagePixels, KittyPlacementInfo } from './types';
 import { CellFlags, KittyImageFormat } from './types';
