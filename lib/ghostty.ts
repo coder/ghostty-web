@@ -1385,8 +1385,17 @@ export class GhosttyTerminal {
                 ? 0
                 : 1;
 
-          // TODO: hyperlink_id from RAW + cell_get(HAS_HYPERLINK).
-          cell.hyperlink_id = 0;
+          // OSC 8 hyperlink presence. Coder's old packed cell struct
+          // exposed this as effectively a 0/1 boolean (despite the
+          // u16-sized field) — the renderer compares
+          // hyperlink_id === hoveredId to mean "this cell is part of
+          // some hyperlink, same as the hovered one" rather than
+          // "the *same* hyperlink instance," with link-detector
+          // identifying actual links via URI + position range. We
+          // preserve that contract here.
+          this.exports.ghostty_cell_get(cellU64, CellData.HAS_HYPERLINK, widePtr);
+          cell.hyperlink_id =
+            new DataView(this.memory.buffer).getUint8(widePtr) !== 0 ? 1 : 0;
 
           col++;
         }
@@ -1629,6 +1638,13 @@ export class GhosttyTerminal {
                 ? 0
                 : 1;
 
+          // Hyperlink presence as 0/1 — same approximation getViewport
+          // uses (link-detector identifies actual links by URI +
+          // position range; the renderer just needs the indicator).
+          this.exports.ghostty_cell_get(cellU64, CellData.HAS_HYPERLINK, widePtr);
+          const hasHyperlink =
+            new DataView(this.memory.buffer).getUint8(widePtr) !== 0;
+
           // Style: per-position via grid_ref_style (not via cell —
           // styles aren't stored in the cell value, they're attached
           // to the row's pin position).
@@ -1643,6 +1659,7 @@ export class GhosttyTerminal {
           const cell = this.makeEmptyCell();
           cell.codepoint = cp;
           cell.width = width;
+          cell.hyperlink_id = hasHyperlink ? 1 : 0;
 
           if (styleOk) {
             const u8 = new Uint8Array(this.memory.buffer, stylePtr, STYLE_SIZE);
