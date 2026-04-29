@@ -408,11 +408,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_key_event_set_utf8(event: number, ptr: number, len: number): void;
 
   // Terminal lifecycle
-  ghostty_terminal_new(
-    allocatorPtr: number,
-    terminalPtrPtr: number,
-    optionsPtr: number
-  ): number; // GhosttyResult (0 = success)
+  ghostty_terminal_new(allocatorPtr: number, terminalPtrPtr: number, optionsPtr: number): number; // GhosttyResult (0 = success)
   ghostty_terminal_free(terminal: TerminalHandle): void;
   ghostty_terminal_resize(
     terminal: TerminalHandle,
@@ -421,11 +417,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     cellWidthPx: number,
     cellHeightPx: number
   ): number;
-  ghostty_terminal_vt_write(
-    terminal: TerminalHandle,
-    dataPtr: number,
-    dataLen: number
-  ): void;
+  ghostty_terminal_vt_write(terminal: TerminalHandle, dataPtr: number, dataLen: number): void;
 
   // RenderState API — render state is a separate object created from a terminal.
   // Read fields via the generic _get(state, key, *out) interface keyed by
@@ -473,11 +465,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   // access where the render-state row iterator doesn't reach.
   // Note: refs are invalidated by ANY terminal mutation — read and copy out
   // before the next vt_write.
-  ghostty_terminal_grid_ref(
-    terminal: TerminalHandle,
-    pointPtr: number,
-    outRefPtr: number
-  ): number;
+  ghostty_terminal_grid_ref(terminal: TerminalHandle, pointPtr: number, outRefPtr: number): number;
   ghostty_grid_ref_cell(refPtr: number, outCellPtr: number): number;
   ghostty_grid_ref_row(refPtr: number, outRowPtr: number): number;
   ghostty_grid_ref_graphemes(

@@ -121,7 +121,7 @@ function cachedMatchesPixels(
     dataPtr: number;
     dataLen: number;
   },
-  pixels: KittyImagePixels,
+  pixels: KittyImagePixels
 ): boolean {
   return (
     cached.width === pixels.width &&
@@ -791,9 +791,7 @@ export class CanvasRenderer {
       }
 
       const fgIsDefault = fg_r === 0 && fg_g === 0 && fg_b === 0;
-      this.ctx.fillStyle = fgIsDefault
-        ? this.theme.foreground
-        : this.rgbToCSS(fg_r, fg_g, fg_b);
+      this.ctx.fillStyle = fgIsDefault ? this.theme.foreground : this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
     // Apply faint effect
@@ -979,7 +977,7 @@ export class CanvasRenderer {
   private getOrDecodeKittyImage(
     buffer: IRenderable,
     graphics: number,
-    imageId: number,
+    imageId: number
   ): HTMLCanvasElement | null {
     const cached = this.kittyImageCache.get(imageId);
     const pixels = buffer.getKittyImagePixels?.(graphics, imageId);
@@ -1059,7 +1057,7 @@ export class CanvasRenderer {
       destX,
       destY,
       this.metrics.width,
-      this.metrics.height,
+      this.metrics.height
     );
     return true;
   }
@@ -1103,7 +1101,7 @@ export class CanvasRenderer {
         p.viewportCol * this.metrics.width,
         p.viewportRow * this.metrics.height,
         p.pixelWidth,
-        p.pixelHeight,
+        p.pixelHeight
       );
     }
   }
@@ -1114,9 +1112,7 @@ export class CanvasRenderer {
    * (which require a JS-side decoder set up via ghostty_sys_set) are
    * not supported in this MVP and return null.
    */
-  private decodeKittyImageToCanvas(
-    pixels: KittyImagePixels,
-  ): HTMLCanvasElement | null {
+  private decodeKittyImageToCanvas(pixels: KittyImagePixels): HTMLCanvasElement | null {
     const { width, height, format, data } = pixels;
     if (width === 0 || height === 0) return null;
 
