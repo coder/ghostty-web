@@ -106,6 +106,32 @@ export const DEFAULT_THEME: Required<ITheme> = {
 // CanvasRenderer Class
 // ============================================================================
 
+/**
+ * Staleness check for kittyImageCache: an entry is reusable iff every
+ * identity field matches the just-fetched KittyImagePixels. Width/height/
+ * format catch geometry/format changes (which can keep dataLen identical —
+ * e.g., 100×50 RGBA and 50×100 RGBA both serialize to 20000 bytes), and
+ * dataPtr (the WASM byteOffset) catches re-allocations from retransmits.
+ */
+function cachedMatchesPixels(
+  cached: {
+    width: number;
+    height: number;
+    format: KittyImageFormat;
+    dataPtr: number;
+    dataLen: number;
+  },
+  pixels: KittyImagePixels,
+): boolean {
+  return (
+    cached.width === pixels.width &&
+    cached.height === pixels.height &&
+    cached.format === pixels.format &&
+    cached.dataPtr === pixels.data.byteOffset &&
+    cached.dataLen === pixels.data.length
+  );
+}
+
 export class CanvasRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -132,13 +158,24 @@ export class CanvasRenderer {
   /**
    * Decoded kitty graphics images, keyed by image id. Each entry caches
    * a canvas painted from the WASM-side RGBA bytes so per-frame compositing
-   * is just a drawImage call. We track dataLen to invalidate on
-   * re-transmission (the kitty protocol allows reusing an id with new
-   * bytes); a length mismatch is a cheap, correct staleness signal.
+   * is just a drawImage call.
+   *
+   * Staleness key combines width/height/format/dataPtr/dataLen — the
+   * kitty protocol allows reusing an id with new bytes, and dataLen alone
+   * is too weak (transposed dims or format change can keep byte count
+   * identical). dataPtr is the WASM byteOffset, which changes whenever
+   * ghostty frees + re-allocates the image bytes (i.e., on retransmit).
    */
   private kittyImageCache = new Map<
     number,
-    { canvas: HTMLCanvasElement; dataLen: number }
+    {
+      canvas: HTMLCanvasElement;
+      width: number;
+      height: number;
+      format: KittyImageFormat;
+      dataPtr: number;
+      dataLen: number;
+    }
   >();
 
   /**
@@ -174,6 +211,10 @@ export class CanvasRenderer {
       sourceY: number;
       sourceWidth: number;
       sourceHeight: number;
+      imgWidth: number;
+      imgHeight: number;
+      imgFormat: KittyImageFormat;
+      dataPtr: number;
       dataLen: number;
     }
   >();
@@ -881,7 +922,6 @@ export class CanvasRenderer {
           }
           this.currentDirectPlacements.push(p);
           const pixels = buffer.getKittyImagePixels?.(graphics, p.imageId);
-          const dataLen = pixels?.data.length ?? 0;
           const sig = {
             viewportCol: p.viewportCol,
             viewportRow: p.viewportRow,
@@ -891,7 +931,11 @@ export class CanvasRenderer {
             sourceY: p.sourceY,
             sourceWidth: p.sourceWidth,
             sourceHeight: p.sourceHeight,
-            dataLen,
+            imgWidth: pixels?.width ?? 0,
+            imgHeight: pixels?.height ?? 0,
+            imgFormat: pixels?.format ?? (0 as KittyImageFormat),
+            dataPtr: pixels?.data.byteOffset ?? 0,
+            dataLen: pixels?.data.length ?? 0,
           };
           newSigs.set(p.imageId, sig);
           const prev = this.lastKittyDirectSigs.get(p.imageId);
@@ -905,6 +949,10 @@ export class CanvasRenderer {
             prev.sourceY !== sig.sourceY ||
             prev.sourceWidth !== sig.sourceWidth ||
             prev.sourceHeight !== sig.sourceHeight ||
+            prev.imgWidth !== sig.imgWidth ||
+            prev.imgHeight !== sig.imgHeight ||
+            prev.imgFormat !== sig.imgFormat ||
+            prev.dataPtr !== sig.dataPtr ||
             prev.dataLen !== sig.dataLen;
           if (changed) {
             markRows(sig.viewportRow, sig.pixelHeight);
@@ -936,10 +984,17 @@ export class CanvasRenderer {
     const cached = this.kittyImageCache.get(imageId);
     const pixels = buffer.getKittyImagePixels?.(graphics, imageId);
     if (!pixels) return cached?.canvas ?? null;
-    if (cached && cached.dataLen === pixels.data.length) return cached.canvas;
+    if (cached && cachedMatchesPixels(cached, pixels)) return cached.canvas;
     const canvas = this.decodeKittyImageToCanvas(pixels);
     if (!canvas) return null;
-    this.kittyImageCache.set(imageId, { canvas, dataLen: pixels.data.length });
+    this.kittyImageCache.set(imageId, {
+      canvas,
+      width: pixels.width,
+      height: pixels.height,
+      format: pixels.format,
+      dataPtr: pixels.data.byteOffset,
+      dataLen: pixels.data.length,
+    });
     return canvas;
   }
 
@@ -1019,13 +1074,19 @@ export class CanvasRenderer {
       const pixels = buffer.getKittyImagePixels(graphics, p.imageId);
       if (!pixels) continue;
 
-      // Cache miss or stale (image was re-transmitted with new bytes
-      // under the same id). dataLen is a cheap discriminator that catches
-      // the common cases without hashing.
-      if (!cached || cached.dataLen !== pixels.data.length) {
+      // Cache miss or stale (image was re-transmitted under the same id).
+      // See kittyImageCache docstring for staleness-key rationale.
+      if (!cached || !cachedMatchesPixels(cached, pixels)) {
         const canvas = this.decodeKittyImageToCanvas(pixels);
         if (!canvas) continue;
-        cached = { canvas, dataLen: pixels.data.length };
+        cached = {
+          canvas,
+          width: pixels.width,
+          height: pixels.height,
+          format: pixels.format,
+          dataPtr: pixels.data.byteOffset,
+          dataLen: pixels.data.length,
+        };
         this.kittyImageCache.set(p.imageId, cached);
       }
 

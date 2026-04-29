@@ -738,6 +738,11 @@ export class Terminal implements ITerminalCore {
     const config = this.buildWasmConfig();
     this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, config);
 
+    // The fresh WASM terminal starts with zero cell pixel dims, so CSI
+    // 14/16/18 t and kitty graphics sizing would silently report zeros
+    // until a font/resize event re-pushed them. Reapply now.
+    this.updateWasmPixelSize();
+
     // Clear renderer
     this.renderer!.clear();
 
