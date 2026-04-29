@@ -90,9 +90,13 @@ export type DecodePngCallback = (
 let compiled: WebAssembly.Module | null = null;
 
 export interface TrampolineExports {
-  writePtyFwd: Function;
-  sizeFwd: Function;
-  decodePngFwd: Function;
+  // Funcrefs for installation into the main module's
+  // __indirect_function_table. Their JS-side type matches their
+  // corresponding callback signatures since the trampoline body just
+  // forwards arguments through.
+  writePtyFwd: WritePtyCallback;
+  sizeFwd: SizeCallback;
+  decodePngFwd: DecodePngCallback;
 }
 
 export function makeCallbackTrampolines(
@@ -109,8 +113,8 @@ export function makeCallbackTrampolines(
     },
   });
   return {
-    writePtyFwd: inst.exports.write_pty_fwd as Function,
-    sizeFwd: inst.exports.size_fwd as Function,
-    decodePngFwd: inst.exports.decode_png_fwd as Function,
+    writePtyFwd: inst.exports.write_pty_fwd as unknown as WritePtyCallback,
+    sizeFwd: inst.exports.size_fwd as unknown as SizeCallback,
+    decodePngFwd: inst.exports.decode_png_fwd as unknown as DecodePngCallback,
   };
 }
