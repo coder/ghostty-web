@@ -150,6 +150,43 @@ export class CanvasRenderer {
   private kittyVirtualPlacements = new Map<number, KittyPlacementInfo>();
 
   /**
+   * Direct (non-virtual) placements that need compositing this frame.
+   * Built once per render() in precomputeKittyState so renderKittyImages
+   * doesn't re-walk the iterator. Empty when no kitty graphics are active.
+   */
+  private currentDirectPlacements: KittyPlacementInfo[] = [];
+
+  /**
+   * Last frame's direct-placement signatures, keyed by image id. Used to
+   * detect placement add/remove/move/redecode so we can mark the affected
+   * rows for repaint (clearing stale image pixels) and skip the composite
+   * pass entirely when nothing has changed. dataLen is the same staleness
+   * discriminator used by kittyImageCache.
+   */
+  private lastKittyDirectSigs = new Map<
+    number,
+    {
+      viewportCol: number;
+      viewportRow: number;
+      pixelWidth: number;
+      pixelHeight: number;
+      sourceX: number;
+      sourceY: number;
+      sourceWidth: number;
+      sourceHeight: number;
+      dataLen: number;
+    }
+  >();
+
+  /**
+   * Rows whose image footprint changed since last frame (placement added,
+   * removed, moved, resized, or re-decoded under the same id). Added to
+   * rowsToRender so the underlying text repaints — which clears stale
+   * image pixels — before we composite the current placements on top.
+   */
+  private kittyDamagedRows = new Set<number>();
+
+  /**
    * Cached IRenderable on the current render() call so renderCellText
    * can call into it (e.g. getGrapheme) without us threading the buffer
    * through every helper. Set at the top of render(), cleared at the end.
@@ -316,18 +353,20 @@ export class CanvasRenderer {
   ): void {
     // Store buffer reference for grapheme lookups in renderCell
     this.currentBuffer = buffer;
-    // Pre-frame: build the virtual-placement index so unicode-placeholder
-    // cells can look up their target image's grid layout in O(1) during
-    // the per-cell text pass. Also stash buffer + graphics handle for
-    // renderPlaceholderCell, which needs access to getGrapheme +
-    // getKittyImagePixels.
-    this.precomputeKittyState(buffer);
     this.currentRenderBuffer = buffer;
 
     // getCursor() calls update() internally to ensure fresh state.
     // Multiple update() calls are safe - dirty state persists until clearDirty().
     const cursor = buffer.getCursor();
     const dims = buffer.getDimensions();
+
+    // Pre-frame: build the virtual-placement index so unicode-placeholder
+    // cells can look up their target image's grid layout in O(1) during
+    // the per-cell text pass. Also collects direct placements + computes
+    // kittyDamagedRows (rows where a placement was added/removed/moved/
+    // re-decoded, so the text underneath needs repainting to clear stale
+    // image pixels).
+    this.precomputeKittyState(buffer, dims.rows);
     const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
 
     // Check if buffer needs full redraw (e.g., screen change between normal/alternate)
@@ -481,7 +520,11 @@ export class CanvasRenderer {
       const needsRender =
         viewportY > 0
           ? true
-          : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
+          : forceAll ||
+            buffer.isRowDirty(y) ||
+            selectionRows.has(y) ||
+            hyperlinkRows.has(y) ||
+            this.kittyDamagedRows.has(y);
 
       if (needsRender) {
         rowsToRender.add(y);
@@ -538,7 +581,16 @@ export class CanvasRenderer {
     // first, so there's nothing meaningful underneath. A future commit can
     // split into below/above-text passes via PlacementLayer if real apps
     // need it.
-    this.renderKittyImages(buffer);
+    //
+    // Skip when no rows were repainted: the previous frame's image pixels
+    // are still on the canvas and unchanged, and re-issuing drawImage with
+    // source-over compositing onto translucent images would accumulate
+    // alpha. Placement adds/removes/moves seed kittyDamagedRows in
+    // precomputeKittyState, which forces those rows into rowsToRender and
+    // flips anyLinesRendered to true.
+    if (this.currentDirectPlacements.length > 0 && anyLinesRendered) {
+      this.renderKittyImages();
+    }
 
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
@@ -801,21 +853,73 @@ export class CanvasRenderer {
    * Also caches the storage handle for renderPlaceholderCell so the
    * per-cell hot path doesn't have to re-resolve it.
    */
-  private precomputeKittyState(buffer: IRenderable): void {
+  private precomputeKittyState(buffer: IRenderable, dimsRows: number): void {
     this.kittyVirtualPlacements.clear();
+    this.currentDirectPlacements = [];
+    this.kittyDamagedRows.clear();
     this.currentKittyGraphics = null;
-    if (!buffer.getKittyGraphics || !buffer.iterPlacements) return;
-    const graphics = buffer.getKittyGraphics();
-    if (graphics === null) return;
-    this.currentKittyGraphics = graphics;
-    // onlyVisible=false so we receive virtual placements too. Direct
-    // placements are still iterated (and cached implicitly via
-    // renderKittyImages); we just collect virtuals here.
-    for (const p of buffer.iterPlacements(graphics, false)) {
-      if (p.isVirtual) {
-        this.kittyVirtualPlacements.set(p.imageId, p);
+
+    const newSigs: typeof this.lastKittyDirectSigs = new Map();
+    const cellH = this.metrics.height;
+    const markRows = (viewportRow: number, pixelHeight: number): void => {
+      const rowStart = Math.max(0, Math.floor(viewportRow));
+      const rowEnd = Math.min(dimsRows, Math.ceil(viewportRow + pixelHeight / cellH));
+      for (let r = rowStart; r < rowEnd; r++) this.kittyDamagedRows.add(r);
+    };
+
+    if (buffer.getKittyGraphics && buffer.iterPlacements) {
+      const graphics = buffer.getKittyGraphics();
+      if (graphics !== null) {
+        this.currentKittyGraphics = graphics;
+        // onlyVisible=false so virtual placements come through too. We
+        // partition: virtuals into kittyVirtualPlacements (placeholder-cell
+        // lookup), directs into currentDirectPlacements (composite pass).
+        for (const p of buffer.iterPlacements(graphics, false)) {
+          if (p.isVirtual) {
+            this.kittyVirtualPlacements.set(p.imageId, p);
+            continue;
+          }
+          this.currentDirectPlacements.push(p);
+          const pixels = buffer.getKittyImagePixels?.(graphics, p.imageId);
+          const dataLen = pixels?.data.length ?? 0;
+          const sig = {
+            viewportCol: p.viewportCol,
+            viewportRow: p.viewportRow,
+            pixelWidth: p.pixelWidth,
+            pixelHeight: p.pixelHeight,
+            sourceX: p.sourceX,
+            sourceY: p.sourceY,
+            sourceWidth: p.sourceWidth,
+            sourceHeight: p.sourceHeight,
+            dataLen,
+          };
+          newSigs.set(p.imageId, sig);
+          const prev = this.lastKittyDirectSigs.get(p.imageId);
+          const changed =
+            !prev ||
+            prev.viewportCol !== sig.viewportCol ||
+            prev.viewportRow !== sig.viewportRow ||
+            prev.pixelWidth !== sig.pixelWidth ||
+            prev.pixelHeight !== sig.pixelHeight ||
+            prev.sourceX !== sig.sourceX ||
+            prev.sourceY !== sig.sourceY ||
+            prev.sourceWidth !== sig.sourceWidth ||
+            prev.sourceHeight !== sig.sourceHeight ||
+            prev.dataLen !== sig.dataLen;
+          if (changed) {
+            markRows(sig.viewportRow, sig.pixelHeight);
+            if (prev) markRows(prev.viewportRow, prev.pixelHeight);
+          }
+        }
       }
     }
+
+    // Removed placements (were drawn last frame, gone now): mark their
+    // rows so text repaint clears stale image pixels.
+    for (const [id, prev] of this.lastKittyDirectSigs) {
+      if (!newSigs.has(id)) markRows(prev.viewportRow, prev.pixelHeight);
+    }
+    this.lastKittyDirectSigs = newSigs;
   }
 
   /**
@@ -905,14 +1009,12 @@ export class CanvasRenderer {
     return true;
   }
 
-  private renderKittyImages(buffer: IRenderable): void {
-    if (!buffer.getKittyGraphics || !buffer.iterPlacements || !buffer.getKittyImagePixels) {
-      return;
-    }
-    const graphics = buffer.getKittyGraphics();
-    if (graphics === null) return;
+  private renderKittyImages(): void {
+    const buffer = this.currentRenderBuffer;
+    const graphics = this.currentKittyGraphics;
+    if (!buffer || graphics === null || !buffer.getKittyImagePixels) return;
 
-    for (const p of buffer.iterPlacements(graphics)) {
+    for (const p of this.currentDirectPlacements) {
       let cached = this.kittyImageCache.get(p.imageId);
       const pixels = buffer.getKittyImagePixels(graphics, p.imageId);
       if (!pixels) continue;

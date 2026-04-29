@@ -248,12 +248,32 @@ const HTML_TEMPLATE = `<!doctype html>
       const wsUrl = protocol + '//' + window.location.host + '/ws?cols=' + term.cols + '&rows=' + term.rows;
       let ws;
 
+      // Read total canvas pixel dims (CSS pixels). The server stuffs these
+      // into ws_xpixel / ws_ypixel via node-pty's resize(cols, rows, pixelSize)
+      // so kittens like icat see non-zero TIOCGWINSZ pixel fields.
+      function getPixelSize() {
+        const canvas = container.querySelector('canvas');
+        return canvas
+          ? { xpixel: canvas.clientWidth, ypixel: canvas.clientHeight }
+          : { xpixel: 0, ypixel: 0 };
+      }
+
       function connect() {
         setStatus('connecting', 'Connecting...');
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
           setStatus('connected', 'Connected');
+          // Push initial pixel dims so TIOCGWINSZ-gated tools see them
+          // before the first resize event.
+          const px = getPixelSize();
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols: term.cols,
+            rows: term.rows,
+            xpixel: px.xpixel,
+            ypixel: px.ypixel,
+          }));
         };
 
         ws.onmessage = (event) => {
@@ -283,7 +303,14 @@ const HTML_TEMPLATE = `<!doctype html>
       // Handle resize - notify PTY when terminal dimensions change
       term.onResize(({ cols, rows }) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+          const px = getPixelSize();
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols,
+            rows,
+            xpixel: px.xpixel,
+            ypixel: px.ypixel,
+          }));
         }
       });
 
