@@ -250,6 +250,10 @@ export class Terminal implements ITerminalCore {
     this.canvas.style.width = `${metrics.width * this.cols}px`;
     this.canvas.style.height = `${metrics.height * this.rows}px`;
 
+    // Push the new per-cell pixel size into the WASM terminal so size
+    // reports / kitty graphics see the updated metrics.
+    this.updateWasmPixelSize();
+
     // Force full re-render with new font
     this.renderer.render(this.wasmTerm, true, this.viewportY, this);
   }
@@ -427,6 +431,10 @@ export class Terminal implements ITerminalCore {
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
+
+      // Push initial cell pixel dims into the WASM terminal — needed for
+      // size reports and kitty graphics from the very first vt_write.
+      this.updateWasmPixelSize();
 
       // Create mouse tracking configuration
       const canvas = this.canvas;
@@ -688,6 +696,11 @@ export class Terminal implements ITerminalCore {
       this.canvas!.height = metrics.height * rows;
       this.canvas!.style.width = `${metrics.width * cols}px`;
       this.canvas!.style.height = `${metrics.height * rows}px`;
+
+      // Refresh WASM cell pixel dims after the resize. Cell metrics
+      // typically don't change on a logical resize, but this handles
+      // DPR changes and is cheap (no-ops when values are unchanged).
+      this.updateWasmPixelSize();
 
       // Fire resize event
       this.resizeEmitter.fire({ cols, rows });
@@ -1128,6 +1141,23 @@ export class Terminal implements ITerminalCore {
   // ==========================================================================
   // Private Methods
   // ==========================================================================
+
+  /**
+   * Push the renderer's per-cell pixel size into the WASM terminal.
+   *
+   * Called from setup, open(), and resize() — everywhere the renderer
+   * may have rebuilt its FontMetrics. Affects in-band size reports
+   * (CSI 14/16/18 t) and kitty graphics placement sizing; without it
+   * the terminal returns zeros for those queries.
+   *
+   * GhosttyTerminal.setCellPixelSize short-circuits when the values
+   * haven't changed, so this is cheap to call from any of the above.
+   */
+  private updateWasmPixelSize(): void {
+    if (!this.renderer || !this.wasmTerm) return;
+    const metrics = this.renderer.getMetrics();
+    this.wasmTerm.setCellPixelSize(metrics.width, metrics.height);
+  }
 
   /**
    * Cancel the render loop

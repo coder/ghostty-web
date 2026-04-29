@@ -6,7 +6,11 @@
  * snapshot of all render data in a single update call.
  */
 
-import { makeWritePtyTrampoline, type WritePtyCallback } from './write_pty_trampoline';
+import {
+  makeCallbackTrampolines,
+  type SizeCallback,
+  type WritePtyCallback,
+} from './write_pty_trampoline';
 import {
   CellFlags,
   CursorVisualStyle,
@@ -280,6 +284,15 @@ export class GhosttyTerminal {
   private cellPool: GhosttyCell[] = [];
 
   /**
+   * Cell pixel dimensions last pushed to the WASM terminal via
+   * ghostty_terminal_resize. Zero means "unknown / disabled" — kitty
+   * graphics image sizing and CSI 14/16/18 t in-band size reports will
+   * return zero/no-op until setCellPixelSize() is called with real values.
+   */
+  private cellWidthPx = 0;
+  private cellHeightPx = 0;
+
+  /**
    * Per-row dirty state for the current render-state snapshot. Cleared on
    * update() and populated lazily by isRowDirty() (or as a side effect of
    * getViewport, which iterates rows anyway).
@@ -302,26 +315,33 @@ export class GhosttyTerminal {
   private pendingResponses: Uint8Array[] = [];
 
   /**
-   * Per-table registry for the WRITE_PTY callback. Keyed on the WASM
+   * Per-table registry for callback trampolines. Keyed on the WASM
    * module's __indirect_function_table so that multiple Ghostty.load()
-   * instances each get their own trampoline slot and routing map —
+   * instances each get their own trampoline slots and routing map —
    * terminal handles are only unique within a single WASM instance, and
    * indices into one module's table are meaningless in another.
    *
-   * `index` is the slot we own in that table; `instancesByHandle` routes
-   * incoming WRITE_PTY callbacks back to the matching GhosttyTerminal.
+   * One trampoline pair (write_pty + size) is installed per table; their
+   * slot indices live here alongside the routing map. The dispatchers
+   * close over the same instancesByHandle so any GhosttyTerminal coming
+   * from this WASM module routes correctly.
    */
-  private static writePtyRegistries = new WeakMap<
+  private static callbackRegistries = new WeakMap<
     WebAssembly.Table,
-    { index: number; instancesByHandle: Map<number, GhosttyTerminal> }
+    {
+      writePtyIndex: number;
+      sizeIndex: number;
+      instancesByHandle: Map<number, GhosttyTerminal>;
+    }
   >();
 
   /**
    * Cached pointer to this terminal's registry. We only need it to
    * deregister cleanly in free() / cleanupOnConstructorFailure().
    */
-  private writePtyRegistry?: {
-    index: number;
+  private callbackRegistry?: {
+    writePtyIndex: number;
+    sizeIndex: number;
     instancesByHandle: Map<number, GhosttyTerminal>;
   };
 
@@ -371,11 +391,12 @@ export class GhosttyTerminal {
     // addition to the WASM resource frees that cleanupOnConstructorFailure
     // already handles.
     try {
-      // Install the trampoline callback so the terminal can deliver
-      // response bytes (DSR, XTVERSION, in-band size reports, ...) back
-      // to JS. Resolves / creates the per-table registry on first use,
-      // registers `this` in it, then sets WRITE_PTY on the terminal.
-      this.installWritePtyCallback();
+      // Install the trampoline callbacks so the terminal can deliver
+      // response bytes (DSR, XTVERSION, etc.) back to JS via WRITE_PTY,
+      // and so the embedder can answer XTWINOPS size queries (CSI 14/16/18 t)
+      // via SIZE. Resolves / creates the per-table registry on first
+      // use, registers `this` in it, then sets the options on the terminal.
+      this.installCallbacks();
 
       // Apply theme colors + palette overrides. The constructor's options
       // struct only carries cols/rows/scrollback, so colors land here via
@@ -512,9 +533,9 @@ export class GhosttyTerminal {
    * before the throw propagates.
    */
   private cleanupOnConstructorFailure(): void {
-    if (this.writePtyRegistry) {
-      this.writePtyRegistry.instancesByHandle.delete(this.handle);
-      this.writePtyRegistry = undefined;
+    if (this.callbackRegistry) {
+      this.callbackRegistry.instancesByHandle.delete(this.handle);
+      this.callbackRegistry = undefined;
     }
     if (this.rowCells) {
       this.exports.ghostty_render_state_row_cells_free(this.rowCells);
@@ -624,15 +645,51 @@ export class GhosttyTerminal {
     if (cols === this._cols && rows === this._rows) return;
     this._cols = cols;
     this._rows = rows;
-    // TODO: thread real cell pixel dims (currently 0 = unknown/disabled,
-    // affects size reports and image protocols only).
-    this.exports.ghostty_terminal_resize(this.handle, cols, rows, 0, 0);
+    this.exports.ghostty_terminal_resize(
+      this.handle,
+      cols,
+      rows,
+      this.cellWidthPx,
+      this.cellHeightPx
+    );
     this.initCellPool();
   }
 
+  /**
+   * Push the renderer's per-cell pixel size into the WASM terminal.
+   *
+   * The new C ABI doesn't expose a separate "set pixel size" call —
+   * dimensions only flow through ghostty_terminal_resize, which takes
+   * (cols, rows, cell_width_px, cell_height_px). We cache the cell pixel
+   * dims on the instance so subsequent resize() calls keep the values
+   * stable, and short-circuit when nothing has changed.
+   *
+   * The width/height arguments are PER-CELL CSS pixels — matches what
+   * the renderer reports via getMetrics(). Coder's old setPixelSize
+   * took TOTAL screen pixels (cell_width * cols, cell_height * rows);
+   * we renamed to avoid silent value mis-passing.
+   *
+   * Affects in-band size reports (CSI 14/16/18 t) and kitty graphics
+   * placement sizing. Until called, those query paths return zero.
+   */
+  setCellPixelSize(cellWidthPx: number, cellHeightPx: number): void {
+    const w = Math.max(1, Math.round(cellWidthPx));
+    const h = Math.max(1, Math.round(cellHeightPx));
+    if (w === this.cellWidthPx && h === this.cellHeightPx) return;
+    this.cellWidthPx = w;
+    this.cellHeightPx = h;
+    this.exports.ghostty_terminal_resize(
+      this.handle,
+      this._cols,
+      this._rows,
+      w,
+      h
+    );
+  }
+
   free(): void {
-    if (this.writePtyRegistry) {
-      this.writePtyRegistry.instancesByHandle.delete(this.handle);
+    if (this.callbackRegistry) {
+      this.callbackRegistry.instancesByHandle.delete(this.handle);
     }
     if (this.rowCells) {
       this.exports.ghostty_render_state_row_cells_free(this.rowCells);
@@ -1396,28 +1453,34 @@ export class GhosttyTerminal {
   }
 
   /**
-   * Install the WRITE_PTY callback through the trampoline.
+   * Install the WRITE_PTY and SIZE trampoline callbacks.
    *
-   * The trampoline is shared across all terminals that come from the
+   * Trampolines are shared across all terminals that come from the
    * same WASM instance, but NOT across instances — terminal handles are
    * only unique within their parent module, and table indices in module
    * A are meaningless in module B's table. So we keep a per-table
    * registry (WeakMap keyed on the indirect function table) that owns
-   * the slot index plus the handle→instance routing map for that table.
+   * the slot indices plus the handle→instance routing map for that
+   * table.
    *
-   * On first use for a given table we instantiate the trampoline,
-   * `table.grow(1)`, and `table.set(idx, fwd)`. Subsequent terminals
-   * from the same module reuse the registry and just register their
-   * handle in instancesByHandle.
+   * On first use for a given table we instantiate the trampolines,
+   * `table.grow(2)`, and write both into the new slots. Subsequent
+   * terminals from the same module reuse the registry and just
+   * register their handle in instancesByHandle.
    */
-  private installWritePtyCallback(): void {
+  private installCallbacks(): void {
     const table = (this.exports as unknown as { __indirect_function_table: WebAssembly.Table })
       .__indirect_function_table;
 
-    let registry = GhosttyTerminal.writePtyRegistries.get(table);
+    let registry = GhosttyTerminal.callbackRegistries.get(table);
     if (!registry) {
       const instancesByHandle = new Map<number, GhosttyTerminal>();
-      const dispatch: WritePtyCallback = (handle, _userdata, dataPtr, dataLen) => {
+      const writePtyDispatch: WritePtyCallback = (
+        handle,
+        _userdata,
+        dataPtr,
+        dataLen,
+      ) => {
         const term = instancesByHandle.get(handle);
         if (!term) return;
         // Copy out — the underlying WASM memory may be mutated or
@@ -1427,17 +1490,40 @@ export class GhosttyTerminal {
           new Uint8Array(term.memory.buffer, dataPtr, dataLen).slice(),
         );
       };
-      const fwd = makeWritePtyTrampoline(dispatch);
-      const idx = table.grow(1);
-      table.set(idx, fwd);
-      registry = { index: idx, instancesByHandle };
-      GhosttyTerminal.writePtyRegistries.set(table, registry);
+      const sizeDispatch: SizeCallback = (handle, _userdata, outSizePtr) => {
+        const term = instancesByHandle.get(handle);
+        if (!term) return 0;
+        // Without real cell pixel dims the response would be nonsense;
+        // returning false (0) tells the terminal to silently drop the
+        // size query, matching coder's old behavior for unconfigured
+        // pixel sizes.
+        if (term.cellWidthPx === 0 || term.cellHeightPx === 0) return 0;
+        // GhosttySizeReportSize: rows@0:u16, cols@2:u16, cell_w@4:u32,
+        // cell_h@8:u32 (12 bytes total).
+        const view = new DataView(term.memory.buffer);
+        view.setUint16(outSizePtr + 0, term._rows, true);
+        view.setUint16(outSizePtr + 2, term._cols, true);
+        view.setUint32(outSizePtr + 4, term.cellWidthPx, true);
+        view.setUint32(outSizePtr + 8, term.cellHeightPx, true);
+        return 1;
+      };
+      const { writePtyFwd, sizeFwd } = makeCallbackTrampolines(
+        writePtyDispatch,
+        sizeDispatch,
+      );
+      // Grow once for both, write each into its slot.
+      const writePtyIndex = table.grow(1);
+      table.set(writePtyIndex, writePtyFwd);
+      const sizeIndex = table.grow(1);
+      table.set(sizeIndex, sizeFwd);
+      registry = { writePtyIndex, sizeIndex, instancesByHandle };
+      GhosttyTerminal.callbackRegistries.set(table, registry);
     }
 
-    // Register `this` so the dispatcher (closed over instancesByHandle)
-    // can route incoming bytes to the right pendingResponses queue.
+    // Register `this` so the dispatchers (both close over
+    // instancesByHandle) can route to the right instance.
     registry.instancesByHandle.set(this.handle, this);
-    this.writePtyRegistry = registry;
+    this.callbackRegistry = registry;
 
     // The third arg to _set is the value — for callbacks ("pointer
     // types"), the value IS the function pointer, i.e. the table index
@@ -1445,7 +1531,12 @@ export class GhosttyTerminal {
     this.exports.ghostty_terminal_set(
       this.handle,
       TerminalOption.WRITE_PTY,
-      registry.index,
+      registry.writePtyIndex,
+    );
+    this.exports.ghostty_terminal_set(
+      this.handle,
+      TerminalOption.SIZE,
+      registry.sizeIndex,
     );
   }
 
