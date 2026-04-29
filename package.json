@@ -61,6 +61,9 @@
     "lint:fix": "biome check --write .",
     "prepublishOnly": "bun run build"
   },
+  "dependencies": {
+    "fast-png": "^7.0.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@happy-dom/global-registrator": "^15.11.0",

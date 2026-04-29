@@ -583,6 +583,14 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     outWrittenPtr: number
   ): number;
   ghostty_terminal_set(terminal: TerminalHandle, option: number, valuePtr: number): number;
+  // System-wide options (process-global / per-WASM-instance). Used to
+  // install the PNG decoder callback for kitty graphics PNG payloads.
+  ghostty_sys_set(option: number, valuePtr: number): number;
+  // Allocate / free memory through the library's allocator. Used by
+  // callbacks (e.g. the PNG decoder) that need to hand WASM-allocated
+  // buffers back to the library.
+  ghostty_alloc(allocatorPtr: number, len: number): number;
+  ghostty_free(allocatorPtr: number, ptr: number, len: number): void;
   // Mode queries: mode is a packed u16 (low 15 bits = mode value, bit 15 = ANSI flag).
   ghostty_terminal_mode_get(terminal: TerminalHandle, mode: number, outBoolPtr: number): number;
   ghostty_terminal_mode_set(terminal: TerminalHandle, mode: number, value: boolean): number;
@@ -700,6 +708,16 @@ export enum TerminalOption {
   COLOR_CURSOR = 13,
   COLOR_PALETTE = 14,
   KITTY_IMAGE_STORAGE_LIMIT = 15,
+}
+
+/**
+ * Options for ghostty_sys_set(). Mirrors GhosttySysOption.
+ * Process-global / per-WASM-instance settings.
+ */
+export enum SysOption {
+  USERDATA = 0,
+  DECODE_PNG = 1,
+  LOG = 2,
 }
 
 /**
