@@ -1,0 +1,116 @@
+diff --git a/src/terminal/build_options.zig b/src/terminal/build_options.zig
+index 136e0f101..a1d9215cf 100644
+--- a/src/terminal/build_options.zig
++++ b/src/terminal/build_options.zig
+@@ -64,11 +64,14 @@ pub const Options = struct {
+         // We disable it on wasm32-freestanding because we at the least
+         // require the ability to get timestamps and there is no way to
+         // do that with freestanding targets.
+-        const target = m.resolved_target.?.result;
++        // ghostty-web: enabled with a monotonic-counter shim in
++        // src/terminal/kitty/graphics_image.zig (see Timestamp /
++        // transmitTimeNow) and a comptime guard against non-direct
++        // mediums.
+         opts.addOption(
+             bool,
+             "kitty_graphics",
+-            !(target.cpu.arch == .wasm32 and target.os.tag == .freestanding),
++            true,
+         );
+ 
+         // These are synthesized based on other options.
+diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
+index 8243a6323..0365263ef 100644
+--- a/src/terminal/kitty/graphics_image.zig
++++ b/src/terminal/kitty/graphics_image.zig
+@@ -18,6 +18,31 @@ const temp_dir = struct {
+ 
+ const log = std.log.scoped(.kitty_gfx);
+ 
++/// ghostty-web: WASM-safe substitute for std.time.Instant.
++/// On freestanding targets there's no clock; we use a monotonic counter
++/// which is sufficient for the LRU-eviction ordering this is used for.
++/// On native, we alias to std.time.Instant for full fidelity.
++pub const Timestamp = if (builtin.target.cpu.arch.isWasm()) struct {
++    value: u64 = 0,
++
++    pub fn order(self: @This(), other: @This()) std.math.Order {
++        return std.math.order(self.value, other.value);
++    }
++} else std.time.Instant;
++
++var wasm_next_transmit_time: u64 = 0;
++
++/// ghostty-web: Get a Timestamp for the current moment. On WASM this is
++/// a counter; on native it's the actual system clock.
++fn transmitTimeNow() !Timestamp {
++    if (comptime builtin.target.cpu.arch.isWasm()) {
++        wasm_next_transmit_time +%= 1;
++        return .{ .value = wasm_next_transmit_time };
++    } else {
++        return std.time.Instant.now();
++    }
++}
++
+ /// Maximum width or height of an image. Taken directly from Kitty.
+ const max_dimension = 10000;
+ 
+@@ -100,6 +125,14 @@ pub const LoadingImage = struct {
+             return result;
+         }
+ 
++        // ghostty-web: on freestanding/WASM we have no filesystem or shared
++        // memory, so any non-direct medium is unsupported. Bail here before
++        // the code below, which references std.fs.max_path_bytes and
++        // posix.realpath — both fail to compile on freestanding.
++        if (comptime builtin.target.cpu.arch.isWasm()) {
++            return error.UnsupportedMedium;
++        }
++
+         // Verify our capabilities and limits allow this.
+         {
+             // Special case if we don't support decoding PNGs and the format
+@@ -402,7 +435,7 @@ pub const LoadingImage = struct {
+         }
+ 
+         // Set our time
+-        self.image.transmit_time = std.time.Instant.now() catch |err| {
++        self.image.transmit_time = transmitTimeNow() catch |err| {
+             log.warn("failed to get time: {}", .{err});
+             return error.InternalError;
+         };
+@@ -512,7 +545,7 @@ pub const Image = struct {
+     format: command.Transmission.Format = .rgb,
+     compression: command.Transmission.Compression = .none,
+     data: []const u8 = "",
+-    transmit_time: std.time.Instant = undefined,
++    transmit_time: Timestamp = undefined,
+ 
+     /// Set this to true if this image was loaded by a command that
+     /// doesn't specify an ID or number, since such commands should
+diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
+index e017d5f79..c68db764c 100644
+--- a/src/terminal/kitty/graphics_storage.zig
++++ b/src/terminal/kitty/graphics_storage.zig
+@@ -9,8 +9,10 @@ const size = @import("../size.zig");
+ const command = @import("graphics_command.zig");
+ const PageList = @import("../PageList.zig");
+ const Screen = @import("../Screen.zig");
+-const LoadingImage = @import("graphics_image.zig").LoadingImage;
+-const Image = @import("graphics_image.zig").Image;
++const imagepkg = @import("graphics_image.zig");
++const LoadingImage = imagepkg.LoadingImage;
++const Image = imagepkg.Image;
++const Timestamp = imagepkg.Timestamp;
+ const Rect = @import("graphics_image.zig").Rect;
+ const Command = command.Command;
+ 
+@@ -526,7 +528,7 @@ pub const ImageStorage = struct {
+         // bit is fine compared to the megabytes we're looking to save.
+         const Candidate = struct {
+             id: u32,
+-            time: std.time.Instant,
++            time: Timestamp,
+             used: bool,
+         };
+ 

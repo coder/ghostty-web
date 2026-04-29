@@ -409,6 +409,13 @@ export class GhosttyTerminal {
       // terminal_new() shim; the new public C ABI doesn't, so we enable
       // it here from JS to preserve coder's defaults.
       this.exports.ghostty_terminal_mode_set(this.handle, packMode(2027, false), true);
+
+      // Enable kitty graphics by giving the terminal a non-zero image
+      // storage limit. The new C ABI ships kitty graphics disabled by
+      // default — image transmission commands are silently dropped at
+      // parse time until this limit is set. 64MB is enough for typical
+      // TUI use and matches what coder's old WASM defaulted to.
+      this.setKittyImageStorageLimit(64 * 1024 * 1024);
     } catch (e) {
       this.cleanupOnConstructorFailure();
       throw e;
@@ -653,6 +660,32 @@ export class GhosttyTerminal {
       this.cellHeightPx
     );
     this.initCellPool();
+  }
+
+  /**
+   * Set the maximum bytes of image data the terminal will retain across
+   * all kitty graphics images. Zero disables kitty graphics entirely
+   * (transmissions will be parsed and dropped). Set this BEFORE any
+   * image-bearing data is written to the terminal — there's no
+   * retroactive recovery of dropped images.
+   *
+   * Input is uint64_t* on the C side, so we use a u32-pair little-endian
+   * write to keep the byte count exact even past 4GB (probably overkill
+   * but free).
+   */
+  setKittyImageStorageLimit(bytes: number): void {
+    const ptr = this.exports.ghostty_wasm_alloc_u8_array(8);
+    const view = new DataView(this.memory.buffer);
+    const lo = bytes >>> 0;
+    const hi = Math.floor(bytes / 0x100000000) >>> 0;
+    view.setUint32(ptr + 0, lo, true);
+    view.setUint32(ptr + 4, hi, true);
+    this.exports.ghostty_terminal_set(
+      this.handle,
+      TerminalOption.KITTY_IMAGE_STORAGE_LIMIT,
+      ptr
+    );
+    this.exports.ghostty_wasm_free_u8_array(ptr, 8);
   }
 
   /**

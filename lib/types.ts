@@ -494,6 +494,84 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ): number;
   ghostty_grid_ref_style(refPtr: number, outStylePtr: number): number;
 
+  // Kitty graphics — placement iteration + image lookup. The graphics
+  // handle comes from ghostty_terminal_get(terminal, KITTY_GRAPHICS, *out)
+  // and is borrowed: invalidated by ANY mutating terminal call.
+  ghostty_kitty_graphics_get(graphics: number, key: number, outPtr: number): number;
+  ghostty_kitty_graphics_image(graphics: number, imageId: number): number; // returns image handle (0 if missing)
+  ghostty_kitty_graphics_image_get(image: number, key: number, outPtr: number): number;
+  ghostty_kitty_graphics_image_get_multi(
+    image: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_iterator_new(
+    allocatorPtr: number,
+    outIterPtrPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_iterator_free(iter: number): void;
+  ghostty_kitty_graphics_placement_iterator_set(
+    iter: number,
+    option: number,
+    valuePtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_next(iter: number): boolean;
+  ghostty_kitty_graphics_placement_get(iter: number, key: number, outPtr: number): number;
+  ghostty_kitty_graphics_placement_get_multi(
+    iter: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_rect(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outSelectionPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_pixel_size(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outWidthPtr: number,
+    outHeightPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_grid_size(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outColsPtr: number,
+    outRowsPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_viewport_pos(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outColPtr: number,
+    outRowPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_source_rect(
+    iter: number,
+    image: number,
+    outX: number,
+    outY: number,
+    outW: number,
+    outH: number
+  ): number;
+  // The all-in-one render path: fills a 44-byte PlacementRenderInfo
+  // sized struct in a single call. Use this in the hot render loop
+  // instead of stringing together pixel_size + grid_size + viewport_pos
+  // + source_rect.
+  ghostty_kitty_graphics_placement_render_info(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outInfoPtr: number
+  ): number;
+
   // Generic terminal property API. Mirrors render_state_get/set: a single
   // entry point keyed by GhosttyTerminalData (see TerminalData enum).
   ghostty_terminal_get(terminal: TerminalHandle, key: number, outPtr: number): number;
@@ -600,6 +678,8 @@ export enum TerminalData {
   COLOR_BACKGROUND_DEFAULT = 23,
   COLOR_CURSOR_DEFAULT = 24,
   COLOR_PALETTE_DEFAULT = 25,
+  KITTY_IMAGE_STORAGE_LIMIT = 26,
+  KITTY_GRAPHICS = 30,
 }
 
 /**
@@ -619,6 +699,90 @@ export enum TerminalOption {
   COLOR_BACKGROUND = 12,
   COLOR_CURSOR = 13,
   COLOR_PALETTE = 14,
+  KITTY_IMAGE_STORAGE_LIMIT = 15,
+}
+
+/**
+ * Keys for ghostty_kitty_graphics_get(). Mirrors GhosttyKittyGraphicsData.
+ */
+export enum KittyGraphicsData {
+  PLACEMENT_ITERATOR = 1,
+}
+
+/**
+ * Keys for ghostty_kitty_graphics_placement_get(). Mirrors
+ * GhosttyKittyGraphicsPlacementData. All values are u32 except Z (i32).
+ */
+export enum KittyGraphicsPlacementData {
+  IMAGE_ID = 1,
+  PLACEMENT_ID = 2,
+  IS_VIRTUAL = 3,
+  X_OFFSET = 4,
+  Y_OFFSET = 5,
+  SOURCE_X = 6,
+  SOURCE_Y = 7,
+  SOURCE_WIDTH = 8,
+  SOURCE_HEIGHT = 9,
+  COLUMNS = 10,
+  ROWS = 11,
+  Z = 12,
+}
+
+/**
+ * Keys for ghostty_kitty_graphics_image_get(). Mirrors GhosttyKittyGraphicsImageData.
+ */
+export enum KittyGraphicsImageData {
+  ID = 1,
+  NUMBER = 2,
+  WIDTH = 3,
+  HEIGHT = 4,
+  FORMAT = 5,
+  COMPRESSION = 6,
+  DATA_PTR = 7,
+  DATA_LEN = 8,
+}
+
+/**
+ * Z-layer filter for the placement iterator. Mirrors GhosttyKittyPlacementLayer.
+ */
+export enum KittyGraphicsPlacementLayer {
+  ALL = 0,
+  BELOW_BG = 1,
+  BELOW_TEXT = 2,
+  ABOVE_TEXT = 3,
+}
+
+/**
+ * Settable options on the placement iterator. Mirrors
+ * GhosttyKittyGraphicsPlacementIteratorOption.
+ */
+export enum KittyGraphicsPlacementIteratorOption {
+  LAYER = 0,
+}
+
+/**
+ * Pixel format of a Kitty graphics image. Mirrors GhosttyKittyImageFormat.
+ *   RGB:        24-bit, 3 bytes/px
+ *   RGBA:       32-bit, 4 bytes/px (the canvas-friendly path)
+ *   PNG:        compressed; needs a JS-side decoder hooked up via
+ *               ghostty_sys_set(DECODE_PNG, fn)
+ *   GRAY_ALPHA: 16-bit, 2 bytes/px
+ *   GRAY:       8-bit, 1 byte/px
+ */
+export enum KittyImageFormat {
+  RGB = 0,
+  RGBA = 1,
+  PNG = 2,
+  GRAY_ALPHA = 3,
+  GRAY = 4,
+}
+
+/**
+ * Compression of a Kitty graphics image. Mirrors GhosttyKittyImageCompression.
+ */
+export enum KittyImageCompression {
+  NONE = 0,
+  ZLIB_DEFLATE = 1,
 }
 
 /**
