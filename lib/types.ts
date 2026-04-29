@@ -839,6 +839,13 @@ export interface KittyPlacementInfo {
   sourceY: number;
   sourceWidth: number;
   sourceHeight: number;
+  /**
+   * Virtual placements have no fixed viewport position; their image is
+   * drawn into U+10EEEE placeholder cells written to the grid by the
+   * application. The renderer picks them up by image_id rather than
+   * iterating through them for direct compositing.
+   */
+  isVirtual: boolean;
 }
 
 /** Size in bytes of GhosttyKittyGraphicsPlacementRenderInfo on wasm32. */

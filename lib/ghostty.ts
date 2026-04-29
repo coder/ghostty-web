@@ -814,6 +814,17 @@ export class GhosttyTerminal {
           );
           if (r2 !== 0) continue;
 
+          // Fetch is_virtual via a separate placement_get — it isn't
+          // in the PlacementRenderInfo struct (which assumes a real
+          // viewport position).
+          this.exports.ghostty_kitty_graphics_placement_get(
+            iter,
+            KittyGraphicsPlacementData.IS_VIRTUAL,
+            idPtr // reuse the 4-byte slot; the value is a bool but written as u8
+          );
+          const isVirtual =
+            new DataView(this.memory.buffer).getUint8(idPtr) !== 0;
+
           const v = new DataView(this.memory.buffer);
           const info: KittyPlacementInfo = {
             imageId,
@@ -828,7 +839,12 @@ export class GhosttyTerminal {
             sourceY: v.getUint32(infoPtr + 36, true),
             sourceWidth: v.getUint32(infoPtr + 40, true),
             sourceHeight: v.getUint32(infoPtr + 44, true),
+            isVirtual,
           };
+          // onlyVisible filter: keep only visible direct placements. Virtual
+          // placements don't have a viewport position so viewportVisible
+          // is always false; callers walking unicode-placeholder grids
+          // pass onlyVisible=false to receive them.
           if (onlyVisible && !info.viewportVisible) continue;
           yield info;
         }

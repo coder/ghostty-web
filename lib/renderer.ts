@@ -11,6 +11,7 @@
  */
 
 import type { ITheme } from './interfaces';
+import { diacriticToInt, KITTY_PLACEHOLDER } from './kitty_diacritics';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink, KittyImagePixels, KittyPlacementInfo } from './types';
 import { CellFlags, KittyImageFormat } from './types';
@@ -37,6 +38,13 @@ export interface IRenderable {
   getKittyGraphics?(): number | null;
   iterPlacements?(graphics: number, onlyVisible?: boolean): Iterable<KittyPlacementInfo>;
   getKittyImagePixels?(graphics: number, imageId: number): KittyImagePixels | null;
+  /**
+   * Returns the full codepoint sequence for the cell at (row, col) in
+   * the active screen — the base codepoint followed by any combining
+   * marks. Used to decode unicode-placeholder cells (U+10EEEE plus
+   * combining diacritics that encode row/column slice positions).
+   */
+  getGrapheme?(row: number, col: number): number[] | null;
 }
 
 export interface IScrollbackProvider {
@@ -132,6 +140,22 @@ export class CanvasRenderer {
     number,
     { canvas: HTMLCanvasElement; dataLen: number }
   >();
+
+  /**
+   * Per-frame index of virtual placements keyed by image id. Populated
+   * once at the start of each render() pass (cheap — typically zero or
+   * a handful of entries). Looked up by U+10EEEE placeholder cells in
+   * renderPlaceholderCell to find the placement's grid dimensions.
+   */
+  private kittyVirtualPlacements = new Map<number, KittyPlacementInfo>();
+
+  /**
+   * Cached IRenderable on the current render() call so renderCellText
+   * can call into it (e.g. getGrapheme) without us threading the buffer
+   * through every helper. Set at the top of render(), cleared at the end.
+   */
+  private currentRenderBuffer: IRenderable | null = null;
+  private currentKittyGraphics: number | null = null;
 
   // Selection manager (for rendering selection)
   private selectionManager?: SelectionManager;
@@ -292,6 +316,13 @@ export class CanvasRenderer {
   ): void {
     // Store buffer reference for grapheme lookups in renderCell
     this.currentBuffer = buffer;
+    // Pre-frame: build the virtual-placement index so unicode-placeholder
+    // cells can look up their target image's grid layout in O(1) during
+    // the per-cell text pass. Also stash buffer + graphics handle for
+    // renderPlaceholderCell, which needs access to getGrapheme +
+    // getKittyImagePixels.
+    this.precomputeKittyState(buffer);
+    this.currentRenderBuffer = buffer;
 
     // getCursor() calls update() internally to ensure fresh state.
     // Multiple update() calls are safe - dirty state persists until clearDirty().
@@ -620,6 +651,16 @@ export class CanvasRenderer {
     const cellY = y * this.metrics.height;
     const cellWidth = this.metrics.width * cell.width;
 
+    // Kitty unicode placeholder: cells with codepoint U+10EEEE represent
+    // a slice of a virtually-placed image. Substitute the slice draw for
+    // text rendering. If it's not a valid placeholder (e.g., the image
+    // hasn't been transmitted yet), fall through and render as text —
+    // typically the system "missing glyph" box, which is the expected
+    // behavior for a stray U+10EEEE.
+    if (cell.codepoint === KITTY_PLACEHOLDER) {
+      if (this.renderPlaceholderCell(cell, x, y)) return;
+    }
+
     // Skip rendering if invisible
     if (cell.flags & CellFlags.INVISIBLE) {
       return;
@@ -751,6 +792,119 @@ export class CanvasRenderer {
    * Cheap when no graphics are active (one method check, one terminal_get).
    * Decode work is amortized across frames via kittyImageCache.
    */
+  /**
+   * Walk the placement iterator once at frame start, partitioning the
+   * results: virtual placements go into kittyVirtualPlacements (keyed
+   * by image id) for placeholder-cell lookup; direct visible placements
+   * stay implicit and get re-iterated by renderKittyImages later.
+   *
+   * Also caches the storage handle for renderPlaceholderCell so the
+   * per-cell hot path doesn't have to re-resolve it.
+   */
+  private precomputeKittyState(buffer: IRenderable): void {
+    this.kittyVirtualPlacements.clear();
+    this.currentKittyGraphics = null;
+    if (!buffer.getKittyGraphics || !buffer.iterPlacements) return;
+    const graphics = buffer.getKittyGraphics();
+    if (graphics === null) return;
+    this.currentKittyGraphics = graphics;
+    // onlyVisible=false so we receive virtual placements too. Direct
+    // placements are still iterated (and cached implicitly via
+    // renderKittyImages); we just collect virtuals here.
+    for (const p of buffer.iterPlacements(graphics, false)) {
+      if (p.isVirtual) {
+        this.kittyVirtualPlacements.set(p.imageId, p);
+      }
+    }
+  }
+
+  /**
+   * Get (or decode + cache) the canvas-ready bitmap for a kitty image.
+   * Returns null if the image isn't stored or decode fails. Shared by
+   * renderKittyImages (direct placements) and renderPlaceholderCell
+   * (unicode-placeholder cells).
+   */
+  private getOrDecodeKittyImage(
+    buffer: IRenderable,
+    graphics: number,
+    imageId: number,
+  ): HTMLCanvasElement | null {
+    const cached = this.kittyImageCache.get(imageId);
+    const pixels = buffer.getKittyImagePixels?.(graphics, imageId);
+    if (!pixels) return cached?.canvas ?? null;
+    if (cached && cached.dataLen === pixels.data.length) return cached.canvas;
+    const canvas = this.decodeKittyImageToCanvas(pixels);
+    if (!canvas) return null;
+    this.kittyImageCache.set(imageId, { canvas, dataLen: pixels.data.length });
+    return canvas;
+  }
+
+  /**
+   * Substitute a cell's text rendering with a slice of a kitty graphics
+   * image. Called from renderCellText when the cell's codepoint is
+   * U+10EEEE.
+   *
+   * Decodes the image_id from cell.fg_*  (low 24 bits; high byte from
+   * an optional third combining diacritic) and the row/col-of-image
+   * from the first two combining diacritics on the cell. Looks up the
+   * virtual placement (from precomputeKittyState) for grid dims, then
+   * draws the matching slice scaled to one terminal cell.
+   *
+   * Returns true if the cell was handled as a placeholder; false to
+   * fall through to normal text rendering (e.g., unknown image, no
+   * matching virtual placement, or malformed diacritics).
+   */
+  private renderPlaceholderCell(cell: GhosttyCell, x: number, y: number): boolean {
+    const buffer = this.currentRenderBuffer;
+    const graphics = this.currentKittyGraphics;
+    if (!buffer || graphics === null || !buffer.getGrapheme) return false;
+
+    // Image id from fg color (low 24 bits) + optional 3rd diacritic
+    // (high byte). The base codepoint at index 0 is U+10EEEE itself;
+    // [1]=row, [2]=col, [3]=image_id_msb (optional).
+    const codepoints = buffer.getGrapheme(y, x);
+    if (!codepoints || codepoints.length < 3) return false;
+    const rowD = diacriticToInt(codepoints[1]!);
+    const colD = diacriticToInt(codepoints[2]!);
+    if (rowD < 0 || colD < 0) return false;
+    const fgRgb = (cell.fg_r << 16) | (cell.fg_g << 8) | cell.fg_b;
+    let imageId = fgRgb;
+    if (codepoints.length >= 4) {
+      const msb = diacriticToInt(codepoints[3]!);
+      if (msb >= 0) imageId = (msb << 24) | fgRgb;
+    }
+
+    const placement = this.kittyVirtualPlacements.get(imageId);
+    if (!placement) return false;
+
+    const pixels = buffer.getKittyImagePixels?.(graphics, imageId);
+    if (!pixels) return false;
+    const canvas = this.getOrDecodeKittyImage(buffer, graphics, imageId);
+    if (!canvas) return false;
+
+    // Slice geometry: image is conceptually scaled to fit
+    // gridCols × gridRows cells; this cell shows one of those cells.
+    const srcW = pixels.width / placement.gridCols;
+    const srcH = pixels.height / placement.gridRows;
+    const srcX = colD * srcW;
+    const srcY = rowD * srcH;
+    const destX = x * this.metrics.width;
+    const destY = y * this.metrics.height;
+
+    this.ctx.drawImage(
+      canvas,
+      srcX,
+      srcY,
+      srcW,
+      srcH,
+      destX,
+      destY,
+      this.metrics.width,
+      this.metrics.height,
+    );
+    return true;
+  }
+
   private renderKittyImages(buffer: IRenderable): void {
     if (!buffer.getKittyGraphics || !buffer.iterPlacements || !buffer.getKittyImagePixels) {
       return;
