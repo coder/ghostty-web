@@ -701,6 +701,21 @@ export enum CellData {
 }
 
 /**
+ * Cell width classification. Mirrors GhosttyCellWide.
+ *   NARROW: single-column cell (most ASCII, BMP)
+ *   WIDE: leading half of a double-width cell (CJK, most emoji)
+ *   SPACER_TAIL: trailing half of a wide cell — placeholder, no glyph
+ *   SPACER_HEAD: leading placeholder when a wide cell would have crossed
+ *     the right margin and got pushed to the next row
+ */
+export enum CellWide {
+  NARROW = 0,
+  WIDE = 1,
+  SPACER_TAIL = 2,
+  SPACER_HEAD = 3,
+}
+
+/**
  * Pack a terminal mode number + ANSI flag into the u16 wire format used by
  * ghostty_terminal_mode_get/_set. Bits 0–14 hold the value (u15), bit 15
  * is set for ANSI modes (cleared for DEC private modes).

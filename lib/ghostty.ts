@@ -30,6 +30,7 @@ import {
   RowCellsData,
   RowData,
   CellData,
+  CellWide,
   TerminalData,
   type TerminalHandle,
   TerminalOption,
@@ -910,6 +911,10 @@ export class GhosttyTerminal {
     const wrapPtr = this.exports.ghostty_wasm_alloc_u8();
     const stylePtr = this.exports.ghostty_wasm_alloc_u8_array(STYLE_SIZE);
     new DataView(this.memory.buffer).setUint32(stylePtr, STYLE_SIZE, true);
+    // Per-cell RAW + WIDE scratch. Cells are 8 bytes (u64); the WIDE
+    // enum is a 4-byte int.
+    const cellRawPtr = this.exports.ghostty_wasm_alloc_u8_array(8);
+    const widePtr = this.exports.ghostty_wasm_alloc_u8_array(4);
     // Populate the row meta caches as a side effect — saves a redundant
     // iterator walk if the renderer also calls isRowDirty() / isRowWrapped()
     // on this snapshot.
@@ -1044,9 +1049,31 @@ export class GhosttyTerminal {
             cell.flags = f;
           }
 
-          // TODO: width from RAW + cell_get(WIDE), hyperlink_id from
-          // RAW + cell_get(HAS_HYPERLINK).
-          cell.width = 1;
+          // Read the raw cell value once, then use it to query per-cell
+          // properties not exposed at the row_cells level. Width matters
+          // for CJK / wide emoji — without it the renderer skips the
+          // spacer cells correctly only if the wide cell itself has
+          // width=2, otherwise glyphs overlap or the spacer cell paints
+          // an empty box.
+          this.exports.ghostty_render_state_row_cells_get(
+            this.rowCells,
+            RowCellsData.RAW,
+            cellRawPtr
+          );
+          const cellU64 = new DataView(this.memory.buffer).getBigUint64(
+            cellRawPtr,
+            true
+          );
+          this.exports.ghostty_cell_get(cellU64, CellData.WIDE, widePtr);
+          const wide = new DataView(this.memory.buffer).getUint32(widePtr, true);
+          cell.width =
+            wide === CellWide.WIDE
+              ? 2
+              : wide === CellWide.SPACER_TAIL || wide === CellWide.SPACER_HEAD
+                ? 0
+                : 1;
+
+          // TODO: hyperlink_id from RAW + cell_get(HAS_HYPERLINK).
           cell.hyperlink_id = 0;
 
           col++;
@@ -1060,6 +1087,8 @@ export class GhosttyTerminal {
       this.exports.ghostty_wasm_free_u8_array(rawPtr, 8);
       this.exports.ghostty_wasm_free_u8(wrapPtr);
       this.exports.ghostty_wasm_free_u8_array(stylePtr, STYLE_SIZE);
+      this.exports.ghostty_wasm_free_u8_array(cellRawPtr, 8);
+      this.exports.ghostty_wasm_free_u8_array(widePtr, 4);
     }
 
     this.rowDirtyCache = dirtyCache;
