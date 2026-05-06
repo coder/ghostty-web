@@ -1017,12 +1017,18 @@ export type TerminalHandle = number;
  */
 export interface GhosttyCell {
   codepoint: number; // u32 (Unicode codepoint - first codepoint of grapheme)
-  fg_r: number; // u8 (foreground red)
+  fg_r: number; // u8 (foreground red, valid only when fgIsDefault is false)
   fg_g: number; // u8 (foreground green)
   fg_b: number; // u8 (foreground blue)
-  bg_r: number; // u8 (background red)
+  bg_r: number; // u8 (background red, valid only when bgIsDefault is false)
   bg_g: number; // u8 (background green)
   bg_b: number; // u8 (background blue)
+  // Whether the cell has an explicit fg/bg color or should use the
+  // terminal's default. Mirrors the GhosttyStyleColor tag (NONE = default).
+  // The renderer must consult these instead of treating RGB(0,0,0) as
+  // "default" — explicit literal black is a valid color.
+  fgIsDefault: boolean;
+  bgIsDefault: boolean;
   flags: number; // u8 (style flags bitfield)
   width: number; // u8 (character width: 1=normal, 2=wide, etc.)
   hyperlink_id: number; // u16 (0 = no link, >0 = hyperlink ID in set)

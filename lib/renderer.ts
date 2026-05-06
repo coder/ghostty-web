@@ -726,10 +726,15 @@ export class CanvasRenderer {
       bg_b = cell.fg_b;
     }
 
-    // Only draw cell background if it's different from the default (black)
-    // This lets the theme background (drawn earlier) show through for default cells
-    const isDefaultBg = bg_r === 0 && bg_g === 0 && bg_b === 0;
-    if (!isDefaultBg) {
+    // Cells with the default bg let the line-level theme.background fill
+    // (drawn earlier in renderLine) show through. Cells with an explicit
+    // bg — including literal RGB(0,0,0) — get painted here. The cell's
+    // bgIsDefault flag carries the GhosttyStyleColor tag from upstream;
+    // we cannot infer it from the RGB triple because (0,0,0) is a valid
+    // explicit color (programs emit it for "true black" backgrounds, e.g.
+    // letterboxed image renderings).
+    const useThemeBg = (cell.flags & CellFlags.INVERSE) ? cell.fgIsDefault : cell.bgIsDefault;
+    if (!useThemeBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
       this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
     }
@@ -790,8 +795,11 @@ export class CanvasRenderer {
         fg_b = cell.bg_b;
       }
 
-      const fgIsDefault = fg_r === 0 && fg_g === 0 && fg_b === 0;
-      this.ctx.fillStyle = fgIsDefault ? this.theme.foreground : this.rgbToCSS(fg_r, fg_g, fg_b);
+      // Same reasoning as the bg path: only fall back to theme.foreground
+      // when the cell has the default fg (tag NONE), not when its explicit
+      // RGB happens to be (0,0,0).
+      const useThemeFg = (cell.flags & CellFlags.INVERSE) ? cell.bgIsDefault : cell.fgIsDefault;
+      this.ctx.fillStyle = useThemeFg ? this.theme.foreground : this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
     // Apply faint effect

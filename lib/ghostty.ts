@@ -1234,10 +1234,13 @@ export class GhosttyTerminal {
           }
 
           // Resolved fg/bg. Returns INVALID_VALUE (non-zero) when the cell
-          // has no explicit color; leave the pool default (0,0,0) which the
-          // renderer interprets as "use terminal default."
+          // has no explicit color; mark fg/bgIsDefault so the renderer
+          // applies the theme default rather than rendering literal black
+          // (the rgb triple stays zeroed but is meaningless when isDefault).
           cell.fg_r = cell.fg_g = cell.fg_b = 0;
           cell.bg_r = cell.bg_g = cell.bg_b = 0;
+          cell.fgIsDefault = true;
+          cell.bgIsDefault = true;
           if (
             this.exports.ghostty_render_state_row_cells_get(
               this.rowCells,
@@ -1249,6 +1252,7 @@ export class GhosttyTerminal {
             cell.fg_r = u8[0]!;
             cell.fg_g = u8[1]!;
             cell.fg_b = u8[2]!;
+            cell.fgIsDefault = false;
           }
           if (
             this.exports.ghostty_render_state_row_cells_get(
@@ -1261,6 +1265,7 @@ export class GhosttyTerminal {
             cell.bg_r = u8[0]!;
             cell.bg_g = u8[1]!;
             cell.bg_b = u8[2]!;
+            cell.bgIsDefault = false;
           }
 
           // Read the per-cell style and pack the booleans into the flags
@@ -1366,6 +1371,8 @@ export class GhosttyTerminal {
       cell.codepoint = 0;
       cell.fg_r = cell.fg_g = cell.fg_b = 0;
       cell.bg_r = cell.bg_g = cell.bg_b = 0;
+      cell.fgIsDefault = true;
+      cell.bgIsDefault = true;
       cell.flags = 0;
       cell.width = 1;
       cell.hyperlink_id = 0;
@@ -1631,6 +1638,9 @@ export class GhosttyTerminal {
     let r = 0;
     let g = 0;
     let b = 0;
+    // tag === 0 (NONE): no explicit color — the cell uses the terminal's
+    // default fg/bg. PALETTE / RGB are explicit; record the resolved RGB.
+    const isDefault = tag === 0;
     if (tag === 1 /* PALETTE */ && palette) {
       const idx = view.getUint8(colorPtr + 8);
       r = palette[idx * 3 + 0]!;
@@ -1645,10 +1655,12 @@ export class GhosttyTerminal {
       cell.fg_r = r;
       cell.fg_g = g;
       cell.fg_b = b;
+      cell.fgIsDefault = isDefault;
     } else {
       cell.bg_r = r;
       cell.bg_g = g;
       cell.bg_b = b;
+      cell.bgIsDefault = isDefault;
     }
   }
 
@@ -1712,6 +1724,8 @@ export class GhosttyTerminal {
       bg_r: 0,
       bg_g: 0,
       bg_b: 0,
+      fgIsDefault: true,
+      bgIsDefault: true,
       flags: 0,
       width: 1,
       hyperlink_id: 0,
@@ -1901,12 +1915,14 @@ export class GhosttyTerminal {
       for (let i = this.cellPool.length; i < total; i++) {
         this.cellPool.push({
           codepoint: 0,
-          fg_r: 204,
-          fg_g: 204,
-          fg_b: 204,
+          fg_r: 0,
+          fg_g: 0,
+          fg_b: 0,
           bg_r: 0,
           bg_g: 0,
           bg_b: 0,
+          fgIsDefault: true,
+          bgIsDefault: true,
           flags: 0,
           width: 1,
           hyperlink_id: 0,
