@@ -11,9 +11,10 @@
  */
 
 import type { ITheme } from './interfaces';
+import { KITTY_PLACEHOLDER, diacriticToInt } from './kitty_diacritics';
 import type { SelectionManager } from './selection-manager';
-import type { GhosttyCell, ILink } from './types';
-import { CellFlags } from './types';
+import type { GhosttyCell, ILink, KittyImagePixels, KittyPlacementInfo } from './types';
+import { CellFlags, KittyImageFormat } from './types';
 
 // Interface for objects that can be rendered
 export interface IRenderable {
@@ -30,6 +31,20 @@ export interface IRenderable {
    * For simple cells, returns the single character.
    */
   getGraphemeString?(row: number, col: number): string;
+
+  // Kitty graphics — optional. When implemented, the renderer composites
+  // images onto the canvas after text rendering. GhosttyTerminal provides
+  // these; other IRenderable implementations (e.g. test fakes) can omit.
+  getKittyGraphics?(): number | null;
+  iterPlacements?(graphics: number, onlyVisible?: boolean): Iterable<KittyPlacementInfo>;
+  getKittyImagePixels?(graphics: number, imageId: number): KittyImagePixels | null;
+  /**
+   * Returns the full codepoint sequence for the cell at (row, col) in
+   * the active screen — the base codepoint followed by any combining
+   * marks. Used to decode unicode-placeholder cells (U+10EEEE plus
+   * combining diacritics that encode row/column slice positions).
+   */
+  getGrapheme?(row: number, col: number): number[] | null;
 }
 
 export interface IScrollbackProvider {
@@ -91,6 +106,32 @@ export const DEFAULT_THEME: Required<ITheme> = {
 // CanvasRenderer Class
 // ============================================================================
 
+/**
+ * Staleness check for kittyImageCache: an entry is reusable iff every
+ * identity field matches the just-fetched KittyImagePixels. Width/height/
+ * format catch geometry/format changes (which can keep dataLen identical —
+ * e.g., 100×50 RGBA and 50×100 RGBA both serialize to 20000 bytes), and
+ * dataPtr (the WASM byteOffset) catches re-allocations from retransmits.
+ */
+function cachedMatchesPixels(
+  cached: {
+    width: number;
+    height: number;
+    format: KittyImageFormat;
+    dataPtr: number;
+    dataLen: number;
+  },
+  pixels: KittyImagePixels
+): boolean {
+  return (
+    cached.width === pixels.width &&
+    cached.height === pixels.height &&
+    cached.format === pixels.format &&
+    cached.dataPtr === pixels.data.byteOffset &&
+    cached.dataLen === pixels.data.length
+  );
+}
+
 export class CanvasRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -108,11 +149,98 @@ export class CanvasRenderer {
   private cursorBlinkInterval?: number;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
 
+  // Hook called whenever the renderer's own internal state (today: cursor
+  // blink toggle) changes such that the next frame would look different.
+  // Set by Terminal so it can wake its render scheduler. Without this, an
+  // event-driven Terminal that has gone idle would never repaint the
+  // blinking cursor.
+  private onRequestRender: (() => void) | null = null;
+
   // Viewport tracking (for scrolling)
   private lastViewportY: number = 0;
 
   // Current buffer being rendered (for grapheme lookups)
   private currentBuffer: IRenderable | null = null;
+
+  /**
+   * Decoded kitty graphics images, keyed by image id. Each entry caches
+   * a canvas painted from the WASM-side RGBA bytes so per-frame compositing
+   * is just a drawImage call.
+   *
+   * Staleness key combines width/height/format/dataPtr/dataLen — the
+   * kitty protocol allows reusing an id with new bytes, and dataLen alone
+   * is too weak (transposed dims or format change can keep byte count
+   * identical). dataPtr is the WASM byteOffset, which changes whenever
+   * ghostty frees + re-allocates the image bytes (i.e., on retransmit).
+   */
+  private kittyImageCache = new Map<
+    number,
+    {
+      canvas: HTMLCanvasElement;
+      width: number;
+      height: number;
+      format: KittyImageFormat;
+      dataPtr: number;
+      dataLen: number;
+    }
+  >();
+
+  /**
+   * Per-frame index of virtual placements keyed by image id. Populated
+   * once at the start of each render() pass (cheap — typically zero or
+   * a handful of entries). Looked up by U+10EEEE placeholder cells in
+   * renderPlaceholderCell to find the placement's grid dimensions.
+   */
+  private kittyVirtualPlacements = new Map<number, KittyPlacementInfo>();
+
+  /**
+   * Direct (non-virtual) placements that need compositing this frame.
+   * Built once per render() in precomputeKittyState so renderKittyImages
+   * doesn't re-walk the iterator. Empty when no kitty graphics are active.
+   */
+  private currentDirectPlacements: KittyPlacementInfo[] = [];
+
+  /**
+   * Last frame's direct-placement signatures, keyed by image id. Used to
+   * detect placement add/remove/move/redecode so we can mark the affected
+   * rows for repaint (clearing stale image pixels) and skip the composite
+   * pass entirely when nothing has changed. dataLen is the same staleness
+   * discriminator used by kittyImageCache.
+   */
+  private lastKittyDirectSigs = new Map<
+    number,
+    {
+      viewportCol: number;
+      viewportRow: number;
+      pixelWidth: number;
+      pixelHeight: number;
+      sourceX: number;
+      sourceY: number;
+      sourceWidth: number;
+      sourceHeight: number;
+      imgWidth: number;
+      imgHeight: number;
+      imgFormat: KittyImageFormat;
+      dataPtr: number;
+      dataLen: number;
+    }
+  >();
+
+  /**
+   * Rows whose image footprint changed since last frame (placement added,
+   * removed, moved, resized, or re-decoded under the same id). Added to
+   * rowsToRender so the underlying text repaints — which clears stale
+   * image pixels — before we composite the current placements on top.
+   */
+  private kittyDamagedRows = new Set<number>();
+
+  /**
+   * Cached IRenderable on the current render() call so renderCellText
+   * can call into it (e.g. getGrapheme) without us threading the buffer
+   * through every helper. Set at the top of render(), cleared at the end.
+   */
+  private currentRenderBuffer: IRenderable | null = null;
+  private currentKittyGraphics: number | null = null;
 
   // Selection manager (for rendering selection)
   private selectionManager?: SelectionManager;
@@ -273,11 +401,20 @@ export class CanvasRenderer {
   ): void {
     // Store buffer reference for grapheme lookups in renderCell
     this.currentBuffer = buffer;
+    this.currentRenderBuffer = buffer;
 
     // getCursor() calls update() internally to ensure fresh state.
     // Multiple update() calls are safe - dirty state persists until clearDirty().
     const cursor = buffer.getCursor();
     const dims = buffer.getDimensions();
+
+    // Pre-frame: build the virtual-placement index so unicode-placeholder
+    // cells can look up their target image's grid layout in O(1) during
+    // the per-cell text pass. Also collects direct placements + computes
+    // kittyDamagedRows (rows where a placement was added/removed/moved/
+    // re-decoded, so the text underneath needs repainting to clear stale
+    // image pixels).
+    this.precomputeKittyState(buffer, dims.rows);
     const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
 
     // Check if buffer needs full redraw (e.g., screen change between normal/alternate)
@@ -431,7 +568,11 @@ export class CanvasRenderer {
       const needsRender =
         viewportY > 0
           ? true
-          : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
+          : forceAll ||
+            buffer.isRowDirty(y) ||
+            selectionRows.has(y) ||
+            hyperlinkRows.has(y) ||
+            this.kittyDamagedRows.has(y);
 
       if (needsRender) {
         rowsToRender.add(y);
@@ -482,6 +623,22 @@ export class CanvasRenderer {
     // No separate overlay pass needed - this fixes z-order issues with complex glyphs
 
     // Link underlines are drawn during cell rendering (see renderCell)
+
+    // Composite kitty graphics images on top of the text. MVP z-order is
+    // "above text" — programs sending images typically clear the cell area
+    // first, so there's nothing meaningful underneath. A future commit can
+    // split into below/above-text passes via PlacementLayer if real apps
+    // need it.
+    //
+    // Skip when no rows were repainted: the previous frame's image pixels
+    // are still on the canvas and unchanged, and re-issuing drawImage with
+    // source-over compositing onto translucent images would accumulate
+    // alpha. Placement adds/removes/moves seed kittyDamagedRows in
+    // precomputeKittyState, which forces those rows into rowsToRender and
+    // flips anyLinesRendered to true.
+    if (this.currentDirectPlacements.length > 0 && anyLinesRendered) {
+      this.renderKittyImages();
+    }
 
     // Render cursor (only if we're at the bottom, not scrolled)
     if (viewportY === 0 && cursor.visible && this.cursorVisible) {
@@ -576,10 +733,15 @@ export class CanvasRenderer {
       bg_b = cell.fg_b;
     }
 
-    // Only draw cell background if it's different from the default (black)
-    // This lets the theme background (drawn earlier) show through for default cells
-    const isDefaultBg = bg_r === 0 && bg_g === 0 && bg_b === 0;
-    if (!isDefaultBg) {
+    // Cells with the default bg let the line-level theme.background fill
+    // (drawn earlier in renderLine) show through. Cells with an explicit
+    // bg — including literal RGB(0,0,0) — get painted here. The cell's
+    // bgIsDefault flag carries the GhosttyStyleColor tag from upstream;
+    // we cannot infer it from the RGB triple because (0,0,0) is a valid
+    // explicit color (programs emit it for "true black" backgrounds, e.g.
+    // letterboxed image renderings).
+    const useThemeBg = (cell.flags & CellFlags.INVERSE) ? cell.fgIsDefault : cell.bgIsDefault;
+    if (!useThemeBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
       this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
     }
@@ -593,6 +755,16 @@ export class CanvasRenderer {
     const cellX = x * this.metrics.width;
     const cellY = y * this.metrics.height;
     const cellWidth = this.metrics.width * cell.width;
+
+    // Kitty unicode placeholder: cells with codepoint U+10EEEE represent
+    // a slice of a virtually-placed image. Substitute the slice draw for
+    // text rendering. If it's not a valid placeholder (e.g., the image
+    // hasn't been transmitted yet), fall through and render as text —
+    // typically the system "missing glyph" box, which is the expected
+    // behavior for a stray U+10EEEE.
+    if (cell.codepoint === KITTY_PLACEHOLDER) {
+      if (this.renderPlaceholderCell(cell, x, y)) return;
+    }
 
     // Skip rendering if invisible
     if (cell.flags & CellFlags.INVISIBLE) {
@@ -614,19 +786,27 @@ export class CanvasRenderer {
     } else if (isSelected) {
       this.ctx.fillStyle = this.theme.selectionForeground;
     } else {
-      // Extract colors and handle inverse
+      // Extract colors and handle inverse. Mirrors the background path
+      // above: cells with no explicit color come back as (0,0,0) — treat
+      // that as a sentinel for "use theme default" rather than rendering
+      // literal black. Without this, default-fg text on a dark theme is
+      // invisible.
       let fg_r = cell.fg_r,
         fg_g = cell.fg_g,
         fg_b = cell.fg_b;
 
       if (cell.flags & CellFlags.INVERSE) {
-        // When inverted, foreground becomes background
+        // When inverted, foreground becomes background.
         fg_r = cell.bg_r;
         fg_g = cell.bg_g;
         fg_b = cell.bg_b;
       }
 
-      this.ctx.fillStyle = this.rgbToCSS(fg_r, fg_g, fg_b);
+      // Same reasoning as the bg path: only fall back to theme.foreground
+      // when the cell has the default fg (tag NONE), not when its explicit
+      // RGB happens to be (0,0,0).
+      const useThemeFg = (cell.flags & CellFlags.INVERSE) ? cell.bgIsDefault : cell.fgIsDefault;
+      this.ctx.fillStyle = useThemeFg ? this.theme.foreground : this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
     // Apply faint effect
@@ -647,7 +827,21 @@ export class CanvasRenderer {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
     }
-    this.ctx.fillText(char, textX, textY);
+
+    // Block elements (U+2580..U+259F) draw as fillRect using the same
+    // fillStyle. The browser's font rasterization of these glyphs leaves
+    // sub-pixel gaps that line up into a visible cell grid in half-block
+    // image renderings (ansimage, pixterm) at dpr=1; native terminals
+    // (Ghostty, kitty, alacritty) draw them programmatically for the same
+    // reason. Only takes the fast path for simple (non-grapheme) cells.
+    if (
+      cell.grapheme_len === 0 &&
+      this.renderBlockElement(cell.codepoint, cellX, cellY, cellWidth)
+    ) {
+      // handled by renderBlockElement
+    } else {
+      this.ctx.fillText(char, textX, textY);
+    }
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
@@ -714,6 +908,414 @@ export class CanvasRenderer {
   }
 
   /**
+   * Composite all visible kitty graphics placements onto the canvas.
+   * Cheap when no graphics are active (one method check, one terminal_get).
+   * Decode work is amortized across frames via kittyImageCache.
+   */
+  /**
+   * Walk the placement iterator once at frame start, partitioning the
+   * results: virtual placements go into kittyVirtualPlacements (keyed
+   * by image id) for placeholder-cell lookup; direct visible placements
+   * stay implicit and get re-iterated by renderKittyImages later.
+   *
+   * Also caches the storage handle for renderPlaceholderCell so the
+   * per-cell hot path doesn't have to re-resolve it.
+   */
+  private precomputeKittyState(buffer: IRenderable, dimsRows: number): void {
+    this.kittyVirtualPlacements.clear();
+    this.currentDirectPlacements = [];
+    this.kittyDamagedRows.clear();
+    this.currentKittyGraphics = null;
+
+    const newSigs: typeof this.lastKittyDirectSigs = new Map();
+    const cellH = this.metrics.height;
+    const markRows = (viewportRow: number, pixelHeight: number): void => {
+      const rowStart = Math.max(0, Math.floor(viewportRow));
+      const rowEnd = Math.min(dimsRows, Math.ceil(viewportRow + pixelHeight / cellH));
+      for (let r = rowStart; r < rowEnd; r++) this.kittyDamagedRows.add(r);
+    };
+
+    if (buffer.getKittyGraphics && buffer.iterPlacements) {
+      const graphics = buffer.getKittyGraphics();
+      if (graphics !== null) {
+        this.currentKittyGraphics = graphics;
+        // onlyVisible=false so virtual placements come through too. We
+        // partition: virtuals into kittyVirtualPlacements (placeholder-cell
+        // lookup), directs into currentDirectPlacements (composite pass).
+        for (const p of buffer.iterPlacements(graphics, false)) {
+          if (p.isVirtual) {
+            this.kittyVirtualPlacements.set(p.imageId, p);
+            continue;
+          }
+          this.currentDirectPlacements.push(p);
+          const pixels = buffer.getKittyImagePixels?.(graphics, p.imageId);
+          const sig = {
+            viewportCol: p.viewportCol,
+            viewportRow: p.viewportRow,
+            pixelWidth: p.pixelWidth,
+            pixelHeight: p.pixelHeight,
+            sourceX: p.sourceX,
+            sourceY: p.sourceY,
+            sourceWidth: p.sourceWidth,
+            sourceHeight: p.sourceHeight,
+            imgWidth: pixels?.width ?? 0,
+            imgHeight: pixels?.height ?? 0,
+            imgFormat: pixels?.format ?? (0 as KittyImageFormat),
+            dataPtr: pixels?.data.byteOffset ?? 0,
+            dataLen: pixels?.data.length ?? 0,
+          };
+          newSigs.set(p.imageId, sig);
+          const prev = this.lastKittyDirectSigs.get(p.imageId);
+          const changed =
+            !prev ||
+            prev.viewportCol !== sig.viewportCol ||
+            prev.viewportRow !== sig.viewportRow ||
+            prev.pixelWidth !== sig.pixelWidth ||
+            prev.pixelHeight !== sig.pixelHeight ||
+            prev.sourceX !== sig.sourceX ||
+            prev.sourceY !== sig.sourceY ||
+            prev.sourceWidth !== sig.sourceWidth ||
+            prev.sourceHeight !== sig.sourceHeight ||
+            prev.imgWidth !== sig.imgWidth ||
+            prev.imgHeight !== sig.imgHeight ||
+            prev.imgFormat !== sig.imgFormat ||
+            prev.dataPtr !== sig.dataPtr ||
+            prev.dataLen !== sig.dataLen;
+          if (changed) {
+            markRows(sig.viewportRow, sig.pixelHeight);
+            if (prev) markRows(prev.viewportRow, prev.pixelHeight);
+          }
+        }
+      }
+    }
+
+    // Removed placements (were drawn last frame, gone now): mark their
+    // rows so text repaint clears stale image pixels.
+    for (const [id, prev] of this.lastKittyDirectSigs) {
+      if (!newSigs.has(id)) markRows(prev.viewportRow, prev.pixelHeight);
+    }
+    this.lastKittyDirectSigs = newSigs;
+  }
+
+  /**
+   * Get (or decode + cache) the canvas-ready bitmap for a kitty image.
+   * Returns null if the image isn't stored or decode fails. Shared by
+   * renderKittyImages (direct placements) and renderPlaceholderCell
+   * (unicode-placeholder cells).
+   */
+  private getOrDecodeKittyImage(
+    buffer: IRenderable,
+    graphics: number,
+    imageId: number
+  ): HTMLCanvasElement | null {
+    const cached = this.kittyImageCache.get(imageId);
+    const pixels = buffer.getKittyImagePixels?.(graphics, imageId);
+    if (!pixels) return cached?.canvas ?? null;
+    if (cached && cachedMatchesPixels(cached, pixels)) return cached.canvas;
+    const canvas = this.decodeKittyImageToCanvas(pixels);
+    if (!canvas) return null;
+    this.kittyImageCache.set(imageId, {
+      canvas,
+      width: pixels.width,
+      height: pixels.height,
+      format: pixels.format,
+      dataPtr: pixels.data.byteOffset,
+      dataLen: pixels.data.length,
+    });
+    return canvas;
+  }
+
+  /**
+   * Render a Block Elements codepoint (U+2580..U+259F) as fillRect(s) in
+   * the current fillStyle. Returns true if the codepoint is a handled
+   * block element; false to fall through to fillText.
+   *
+   * Drawing block elements through the font produces ~1-device-px gaps
+   * at cell edges at integer dpr because the rasterized glyph doesn't
+   * exactly fill the cell box. In half-block image renderings (ansimage,
+   * pixterm) those gaps line up into a visible cell grid. Native
+   * terminals draw block elements programmatically for the same reason.
+   *
+   * The eighths blocks (U+2581..U+2587 lower; U+2589..U+258F left) and
+   * full block (U+2588) are stripes of n/8 of the cell. Shading blocks
+   * (U+2591..U+2593) modulate globalAlpha for 25/50/75% fill. Quadrant
+   * blocks (U+2596..U+259F) split the cell into a 2x2 grid and fill
+   * some subset.
+   */
+  private renderBlockElement(
+    codepoint: number,
+    cellX: number,
+    cellY: number,
+    cellWidth: number
+  ): boolean {
+    if (codepoint < 0x2580 || codepoint > 0x259f) return false;
+
+    const w = cellWidth;
+    const h = this.metrics.height;
+
+    // Upper half ▀
+    if (codepoint === 0x2580) {
+      this.ctx.fillRect(cellX, cellY, w, Math.round(h / 2));
+      return true;
+    }
+
+    // Lower n/8 blocks ▁▂▃▄▅▆▇ + full block █ (= 8/8)
+    if (codepoint >= 0x2581 && codepoint <= 0x2588) {
+      const eighths = codepoint - 0x2580;
+      const blockH = Math.round((h * eighths) / 8);
+      this.ctx.fillRect(cellX, cellY + h - blockH, w, blockH);
+      return true;
+    }
+
+    // Left n/8 blocks ▉▊▋▌▍▎▏ — eighths decreases as codepoint increases
+    if (codepoint >= 0x2589 && codepoint <= 0x258f) {
+      const eighths = 0x2590 - codepoint;
+      const blockW = Math.round((w * eighths) / 8);
+      this.ctx.fillRect(cellX, cellY, blockW, h);
+      return true;
+    }
+
+    // Right half ▐
+    if (codepoint === 0x2590) {
+      const left = Math.round(w / 2);
+      this.ctx.fillRect(cellX + left, cellY, w - left, h);
+      return true;
+    }
+
+    // Shading ░▒▓ — modulate globalAlpha against current fillStyle
+    if (codepoint >= 0x2591 && codepoint <= 0x2593) {
+      const alphaForShade = [0.25, 0.5, 0.75][codepoint - 0x2591];
+      const prev = this.ctx.globalAlpha;
+      this.ctx.globalAlpha = prev * alphaForShade;
+      this.ctx.fillRect(cellX, cellY, w, h);
+      this.ctx.globalAlpha = prev;
+      return true;
+    }
+
+    // Upper 1/8 ▔
+    if (codepoint === 0x2594) {
+      this.ctx.fillRect(cellX, cellY, w, Math.round(h / 8));
+      return true;
+    }
+
+    // Right 1/8 ▕
+    if (codepoint === 0x2595) {
+      const left = Math.round((w * 7) / 8);
+      this.ctx.fillRect(cellX + left, cellY, w - left, h);
+      return true;
+    }
+
+    // Quadrants ▖▗▘▙▚▛▜▝▞▟ at U+2596..U+259F. Bitmap of which corners
+    // (UL, UR, LL, LR) are filled per codepoint.
+    const QUAD_UL = 0b1000;
+    const QUAD_UR = 0b0100;
+    const QUAD_LL = 0b0010;
+    const QUAD_LR = 0b0001;
+    const quadMap: Record<number, number> = {
+      0x2596: QUAD_LL,
+      0x2597: QUAD_LR,
+      0x2598: QUAD_UL,
+      0x2599: QUAD_UL | QUAD_LL | QUAD_LR,
+      0x259a: QUAD_UL | QUAD_LR,
+      0x259b: QUAD_UL | QUAD_UR | QUAD_LL,
+      0x259c: QUAD_UL | QUAD_UR | QUAD_LR,
+      0x259d: QUAD_UR,
+      0x259e: QUAD_UR | QUAD_LL,
+      0x259f: QUAD_UR | QUAD_LL | QUAD_LR,
+    };
+    const quads = quadMap[codepoint];
+    if (quads === undefined) return false;
+    const halfW = Math.round(w / 2);
+    const halfH = Math.round(h / 2);
+    if (quads & QUAD_UL) this.ctx.fillRect(cellX, cellY, halfW, halfH);
+    if (quads & QUAD_UR) this.ctx.fillRect(cellX + halfW, cellY, w - halfW, halfH);
+    if (quads & QUAD_LL) this.ctx.fillRect(cellX, cellY + halfH, halfW, h - halfH);
+    if (quads & QUAD_LR)
+      this.ctx.fillRect(cellX + halfW, cellY + halfH, w - halfW, h - halfH);
+    return true;
+  }
+
+  /**
+   * Substitute a cell's text rendering with a slice of a kitty graphics
+   * image. Called from renderCellText when the cell's codepoint is
+   * U+10EEEE.
+   *
+   * Decodes the image_id from cell.fg_*  (low 24 bits; high byte from
+   * an optional third combining diacritic) and the row/col-of-image
+   * from the first two combining diacritics on the cell. Looks up the
+   * virtual placement (from precomputeKittyState) for grid dims, then
+   * draws the matching slice scaled to one terminal cell.
+   *
+   * Returns true if the cell was handled as a placeholder; false to
+   * fall through to normal text rendering (e.g., unknown image, no
+   * matching virtual placement, or malformed diacritics).
+   */
+  private renderPlaceholderCell(cell: GhosttyCell, x: number, y: number): boolean {
+    const buffer = this.currentRenderBuffer;
+    const graphics = this.currentKittyGraphics;
+    if (!buffer || graphics === null || !buffer.getGrapheme) return false;
+
+    // Image id from fg color (low 24 bits) + optional 3rd diacritic
+    // (high byte). The base codepoint at index 0 is U+10EEEE itself;
+    // [1]=row, [2]=col, [3]=image_id_msb (optional).
+    const codepoints = buffer.getGrapheme(y, x);
+    if (!codepoints || codepoints.length < 3) return false;
+    const rowD = diacriticToInt(codepoints[1]!);
+    const colD = diacriticToInt(codepoints[2]!);
+    if (rowD < 0 || colD < 0) return false;
+    const fgRgb = (cell.fg_r << 16) | (cell.fg_g << 8) | cell.fg_b;
+    let imageId = fgRgb;
+    if (codepoints.length >= 4) {
+      const msb = diacriticToInt(codepoints[3]!);
+      if (msb >= 0) imageId = (msb << 24) | fgRgb;
+    }
+
+    const placement = this.kittyVirtualPlacements.get(imageId);
+    if (!placement) return false;
+
+    const pixels = buffer.getKittyImagePixels?.(graphics, imageId);
+    if (!pixels) return false;
+    const canvas = this.getOrDecodeKittyImage(buffer, graphics, imageId);
+    if (!canvas) return false;
+
+    // Slice geometry: image is conceptually scaled to fit
+    // gridCols × gridRows cells; this cell shows one of those cells.
+    const srcW = pixels.width / placement.gridCols;
+    const srcH = pixels.height / placement.gridRows;
+    const srcX = colD * srcW;
+    const srcY = rowD * srcH;
+    const destX = x * this.metrics.width;
+    const destY = y * this.metrics.height;
+
+    // Source-rect coords are fractional whenever pixels.{width,height} doesn't
+    // divide evenly by placement.{gridCols,gridRows}. With smoothing on, each
+    // slice is sampled with bilinear interpolation clamped to its own source
+    // rect, producing visible seams between adjacent cells (the classic
+    // tile-edge artifact). Disable smoothing for the slice draw.
+    const prevSmoothing = this.ctx.imageSmoothingEnabled;
+    this.ctx.imageSmoothingEnabled = false;
+    this.ctx.drawImage(
+      canvas,
+      srcX,
+      srcY,
+      srcW,
+      srcH,
+      destX,
+      destY,
+      this.metrics.width,
+      this.metrics.height
+    );
+    this.ctx.imageSmoothingEnabled = prevSmoothing;
+    return true;
+  }
+
+  private renderKittyImages(): void {
+    const buffer = this.currentRenderBuffer;
+    const graphics = this.currentKittyGraphics;
+    if (!buffer || graphics === null || !buffer.getKittyImagePixels) return;
+
+    for (const p of this.currentDirectPlacements) {
+      let cached = this.kittyImageCache.get(p.imageId);
+      const pixels = buffer.getKittyImagePixels(graphics, p.imageId);
+      if (!pixels) continue;
+
+      // Cache miss or stale (image was re-transmitted under the same id).
+      // See kittyImageCache docstring for staleness-key rationale.
+      if (!cached || !cachedMatchesPixels(cached, pixels)) {
+        const canvas = this.decodeKittyImageToCanvas(pixels);
+        if (!canvas) continue;
+        cached = {
+          canvas,
+          width: pixels.width,
+          height: pixels.height,
+          format: pixels.format,
+          dataPtr: pixels.data.byteOffset,
+          dataLen: pixels.data.length,
+        };
+        this.kittyImageCache.set(p.imageId, cached);
+      }
+
+      // Composite. Source/dest rects come straight from the C ABI's
+      // PlacementRenderInfo; viewport_col/row may be negative when a
+      // placement has scrolled partway off the top — drawImage handles
+      // that correctly (clips to the canvas).
+      this.ctx.drawImage(
+        cached.canvas,
+        p.sourceX,
+        p.sourceY,
+        p.sourceWidth,
+        p.sourceHeight,
+        p.viewportCol * this.metrics.width,
+        p.viewportRow * this.metrics.height,
+        p.pixelWidth,
+        p.pixelHeight
+      );
+    }
+  }
+
+  /**
+   * Decode a kitty graphics image into a canvas suitable for drawImage.
+   * Expands non-RGBA formats into RGBA via putImageData; PNG payloads
+   * (which require a JS-side decoder set up via ghostty_sys_set) are
+   * not supported in this MVP and return null.
+   */
+  private decodeKittyImageToCanvas(pixels: KittyImagePixels): HTMLCanvasElement | null {
+    const { width, height, format, data } = pixels;
+    if (width === 0 || height === 0) return null;
+
+    // Allocate a fresh ArrayBuffer (not a WASM-memory view) so that
+    //   (a) the bytes survive the next vt_write that might detach the
+    //       WASM memory buffer, and
+    //   (b) ImageData accepts the buffer (it rejects ArrayBufferLike
+    //       which would include SharedArrayBuffer).
+    const rgba = new Uint8ClampedArray(new ArrayBuffer(width * height * 4));
+    switch (format) {
+      case KittyImageFormat.RGBA:
+        rgba.set(data);
+        break;
+      case KittyImageFormat.RGB:
+        for (let i = 0, o = 0; i < data.length; i += 3, o += 4) {
+          rgba[o] = data[i]!;
+          rgba[o + 1] = data[i + 1]!;
+          rgba[o + 2] = data[i + 2]!;
+          rgba[o + 3] = 255;
+        }
+        break;
+      case KittyImageFormat.GRAY:
+        for (let i = 0, o = 0; i < data.length; i++, o += 4) {
+          const v = data[i]!;
+          rgba[o] = v;
+          rgba[o + 1] = v;
+          rgba[o + 2] = v;
+          rgba[o + 3] = 255;
+        }
+        break;
+      case KittyImageFormat.GRAY_ALPHA:
+        for (let i = 0, o = 0; i < data.length; i += 2, o += 4) {
+          const v = data[i]!;
+          rgba[o] = v;
+          rgba[o + 1] = v;
+          rgba[o + 2] = v;
+          rgba[o + 3] = data[i + 1]!;
+        }
+        break;
+      default:
+        // PNG and unknown formats — skip silently. The terminal would have
+        // dropped a PNG payload at parse time anyway unless a decoder was
+        // installed via ghostty_sys_set(DECODE_PNG, fn).
+        return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+    return canvas;
+  }
+
+  /**
    * Render cursor
    */
   private renderCursor(x: number, y: number): void {
@@ -763,11 +1365,23 @@ export class CanvasRenderer {
   // Cursor Blinking
   // ==========================================================================
 
+  /**
+   * Set a callback the renderer invokes when its internal state changes
+   * outside the normal render-driven path (today: cursor-blink toggles).
+   * Lets an event-driven Terminal wake its render scheduler instead of
+   * polling every frame to catch the blink flip.
+   */
+  public setOnRequestRender(fn: (() => void) | null): void {
+    this.onRequestRender = fn;
+  }
+
   private startCursorBlink(): void {
     // xterm.js uses ~530ms blink interval
     this.cursorBlinkInterval = window.setInterval(() => {
       this.cursorVisible = !this.cursorVisible;
-      // Note: Render loop should redraw cursor line automatically
+      // Wake the render scheduler so the cursor cell is actually
+      // repainted with the new visibility state.
+      this.onRequestRender?.();
     }, 530);
   }
 
@@ -949,7 +1563,9 @@ export class CanvasRenderer {
    * Set the currently hovered hyperlink ID for rendering underlines
    */
   public setHoveredHyperlinkId(hyperlinkId: number): void {
+    if (this.hoveredHyperlinkId === hyperlinkId) return;
     this.hoveredHyperlinkId = hyperlinkId;
+    this.onRequestRender?.();
   }
 
   /**
@@ -964,7 +1580,12 @@ export class CanvasRenderer {
       endY: number;
     } | null
   ): void {
+    // Coarse change check — link-detection is rate-limited upstream and
+    // these setters are only called on hover transitions, so identity
+    // comparison is enough to dedupe back-to-back clears.
+    if (this.hoveredLinkRange === range) return;
     this.hoveredLinkRange = range;
+    this.onRequestRender?.();
   }
 
   /**
