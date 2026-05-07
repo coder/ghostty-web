@@ -827,7 +827,21 @@ export class CanvasRenderer {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
     }
-    this.ctx.fillText(char, textX, textY);
+
+    // Block elements (U+2580..U+259F) draw as fillRect using the same
+    // fillStyle. The browser's font rasterization of these glyphs leaves
+    // sub-pixel gaps that line up into a visible cell grid in half-block
+    // image renderings (ansimage, pixterm) at dpr=1; native terminals
+    // (Ghostty, kitty, alacritty) draw them programmatically for the same
+    // reason. Only takes the fast path for simple (non-grapheme) cells.
+    if (
+      cell.grapheme_len === 0 &&
+      this.renderBlockElement(cell.codepoint, cellX, cellY, cellWidth)
+    ) {
+      // handled by renderBlockElement
+    } else {
+      this.ctx.fillText(char, textX, textY);
+    }
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
@@ -1009,6 +1023,116 @@ export class CanvasRenderer {
       dataLen: pixels.data.length,
     });
     return canvas;
+  }
+
+  /**
+   * Render a Block Elements codepoint (U+2580..U+259F) as fillRect(s) in
+   * the current fillStyle. Returns true if the codepoint is a handled
+   * block element; false to fall through to fillText.
+   *
+   * Drawing block elements through the font produces ~1-device-px gaps
+   * at cell edges at integer dpr because the rasterized glyph doesn't
+   * exactly fill the cell box. In half-block image renderings (ansimage,
+   * pixterm) those gaps line up into a visible cell grid. Native
+   * terminals draw block elements programmatically for the same reason.
+   *
+   * The eighths blocks (U+2581..U+2587 lower; U+2589..U+258F left) and
+   * full block (U+2588) are stripes of n/8 of the cell. Shading blocks
+   * (U+2591..U+2593) modulate globalAlpha for 25/50/75% fill. Quadrant
+   * blocks (U+2596..U+259F) split the cell into a 2x2 grid and fill
+   * some subset.
+   */
+  private renderBlockElement(
+    codepoint: number,
+    cellX: number,
+    cellY: number,
+    cellWidth: number
+  ): boolean {
+    if (codepoint < 0x2580 || codepoint > 0x259f) return false;
+
+    const w = cellWidth;
+    const h = this.metrics.height;
+
+    // Upper half ▀
+    if (codepoint === 0x2580) {
+      this.ctx.fillRect(cellX, cellY, w, Math.round(h / 2));
+      return true;
+    }
+
+    // Lower n/8 blocks ▁▂▃▄▅▆▇ + full block █ (= 8/8)
+    if (codepoint >= 0x2581 && codepoint <= 0x2588) {
+      const eighths = codepoint - 0x2580;
+      const blockH = Math.round((h * eighths) / 8);
+      this.ctx.fillRect(cellX, cellY + h - blockH, w, blockH);
+      return true;
+    }
+
+    // Left n/8 blocks ▉▊▋▌▍▎▏ — eighths decreases as codepoint increases
+    if (codepoint >= 0x2589 && codepoint <= 0x258f) {
+      const eighths = 0x2590 - codepoint;
+      const blockW = Math.round((w * eighths) / 8);
+      this.ctx.fillRect(cellX, cellY, blockW, h);
+      return true;
+    }
+
+    // Right half ▐
+    if (codepoint === 0x2590) {
+      const left = Math.round(w / 2);
+      this.ctx.fillRect(cellX + left, cellY, w - left, h);
+      return true;
+    }
+
+    // Shading ░▒▓ — modulate globalAlpha against current fillStyle
+    if (codepoint >= 0x2591 && codepoint <= 0x2593) {
+      const alphaForShade = [0.25, 0.5, 0.75][codepoint - 0x2591];
+      const prev = this.ctx.globalAlpha;
+      this.ctx.globalAlpha = prev * alphaForShade;
+      this.ctx.fillRect(cellX, cellY, w, h);
+      this.ctx.globalAlpha = prev;
+      return true;
+    }
+
+    // Upper 1/8 ▔
+    if (codepoint === 0x2594) {
+      this.ctx.fillRect(cellX, cellY, w, Math.round(h / 8));
+      return true;
+    }
+
+    // Right 1/8 ▕
+    if (codepoint === 0x2595) {
+      const left = Math.round((w * 7) / 8);
+      this.ctx.fillRect(cellX + left, cellY, w - left, h);
+      return true;
+    }
+
+    // Quadrants ▖▗▘▙▚▛▜▝▞▟ at U+2596..U+259F. Bitmap of which corners
+    // (UL, UR, LL, LR) are filled per codepoint.
+    const QUAD_UL = 0b1000;
+    const QUAD_UR = 0b0100;
+    const QUAD_LL = 0b0010;
+    const QUAD_LR = 0b0001;
+    const quadMap: Record<number, number> = {
+      0x2596: QUAD_LL,
+      0x2597: QUAD_LR,
+      0x2598: QUAD_UL,
+      0x2599: QUAD_UL | QUAD_LL | QUAD_LR,
+      0x259a: QUAD_UL | QUAD_LR,
+      0x259b: QUAD_UL | QUAD_UR | QUAD_LL,
+      0x259c: QUAD_UL | QUAD_UR | QUAD_LR,
+      0x259d: QUAD_UR,
+      0x259e: QUAD_UR | QUAD_LL,
+      0x259f: QUAD_UR | QUAD_LL | QUAD_LR,
+    };
+    const quads = quadMap[codepoint];
+    if (quads === undefined) return false;
+    const halfW = Math.round(w / 2);
+    const halfH = Math.round(h / 2);
+    if (quads & QUAD_UL) this.ctx.fillRect(cellX, cellY, halfW, halfH);
+    if (quads & QUAD_UR) this.ctx.fillRect(cellX + halfW, cellY, w - halfW, halfH);
+    if (quads & QUAD_LL) this.ctx.fillRect(cellX, cellY + halfH, halfW, h - halfH);
+    if (quads & QUAD_LR)
+      this.ctx.fillRect(cellX + halfW, cellY + halfH, w - halfW, h - halfH);
+    return true;
   }
 
   /**
