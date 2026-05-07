@@ -502,6 +502,8 @@ export class Terminal implements ITerminalCore {
       // Forward selection change events
       this.selectionManager.onSelectionChange(() => {
         this.selectionChangeEmitter.fire();
+        // Selection rows need to repaint with the highlight overlay.
+        this.requestRender();
       });
 
       // Initialize link detection system
@@ -530,8 +532,16 @@ export class Terminal implements ITerminalCore {
       // Render initial blank screen (force full redraw)
       this.renderer.render(this.wasmTerm, true, this.viewportY, this, this.scrollbarOpacity);
 
-      // Start render loop
-      this.startRenderLoop();
+      // Wire the renderer back to the render scheduler so internal
+      // state changes (cursor blink) wake the loop on demand.
+      this.renderer.setOnRequestRender(() => this.requestRender());
+
+      // Run one synchronous render+cursor-poll to mirror the prior
+      // loop's first iteration. Some downstream callers
+      // (notably refreshRowMetaCache for isRowWrapped) walk the WASM
+      // row iterator immediately after open() and rely on the second
+      // update() / clearDirty pair to settle WASM state.
+      this.renderTick();
 
       // Focus input (auto-focus so user can start typing immediately)
       this.focus();
@@ -600,7 +610,9 @@ export class Terminal implements ITerminalCore {
       requestAnimationFrame(callback);
     }
 
-    // Render will happen on next animation frame
+    // Wake the render scheduler — the write almost certainly mutated
+    // visible state. Idempotent if a render is already pending.
+    this.requestRender();
   }
 
   /**
@@ -711,9 +723,10 @@ export class Terminal implements ITerminalCore {
       console.error('Terminal resize failed:', e);
     }
 
-    // Flush any writes that were queued during resize, then restart render loop
+    // Flush any writes that were queued during resize, then schedule a
+    // render to pick up the new dimensions / flushed writes.
     this.flushWriteQueue();
-    this.startRenderLoop();
+    this.requestRender();
   }
 
   /**
@@ -939,6 +952,8 @@ export class Terminal implements ITerminalCore {
       if (scrollbackLength > 0) {
         this.showScrollbar();
       }
+
+      this.requestRender();
     }
   }
 
@@ -959,6 +974,7 @@ export class Terminal implements ITerminalCore {
       this.viewportY = scrollbackLength;
       this.scrollEmitter.fire(this.viewportY);
       this.showScrollbar();
+      this.requestRender();
     }
   }
 
@@ -973,6 +989,7 @@ export class Terminal implements ITerminalCore {
       if (this.getScrollbackLength() > 0) {
         this.showScrollbar();
       }
+      this.requestRender();
     }
   }
 
@@ -992,6 +1009,8 @@ export class Terminal implements ITerminalCore {
       if (scrollbackLength > 0) {
         this.showScrollbar();
       }
+
+      this.requestRender();
     }
   }
 
@@ -1018,6 +1037,7 @@ export class Terminal implements ITerminalCore {
       if (scrollbackLength > 0) {
         this.showScrollbar();
       }
+      this.requestRender();
       return;
     }
 
@@ -1066,6 +1086,8 @@ export class Terminal implements ITerminalCore {
       this.scrollAnimationFrame = undefined;
       this.scrollAnimationStartTime = undefined;
       this.scrollAnimationStartY = undefined;
+      // Final-position render
+      this.requestRender();
       return;
     }
 
@@ -1085,6 +1107,11 @@ export class Terminal implements ITerminalCore {
     if (scrollbackLength > 0) {
       this.showScrollbar();
     }
+
+    // Each tick mutates viewportY, so the main render path needs to
+    // catch up. The animateScroll rAF below only advances the scroll
+    // state; rendering is the renderTick's job.
+    this.requestRender();
 
     // Continue animation
     this.scrollAnimationFrame = requestAnimationFrame(this.animateScroll);
@@ -1185,36 +1212,57 @@ export class Terminal implements ITerminalCore {
   }
 
   /**
-   * Start the render loop
+   * Schedule a single render on the next animation frame. No-op if one
+   * is already pending or the terminal is closed/disposed.
+   *
+   * Replaces the previous perpetual rAF chain, which kept a CPU core
+   * hot at ~60Hz even on a static screen because every frame paid for a
+   * render() entry/exit and a getCursor() round-trip into WASM. With
+   * this design, the terminal goes idle (zero JS work, zero WASM calls)
+   * once the last event-driven render is done, until the next event
+   * wakes it via requestRender().
+   *
+   * Wake points are added on every event source that mutates renderable
+   * state: writes from the PTY, scrolls, resizes, mouse motion (link
+   * hover), selection changes, the cursor-blink interval (via the
+   * renderer's onRequestRender callback), and each smooth-scroll tick.
+   *
+   * Alternative design we considered: leave the rAF chain in place but
+   * have it short-circuit when no work is pending and self-cancel after
+   * N idle frames, with the same wake points re-arming it. End-state
+   * CPU is identical; the difference is purely code shape (a perpetual
+   * loop with self-cancel logic vs. ad-hoc rAF scheduling). We picked
+   * this shape for simplicity.
    */
-  private startRenderLoop(): void {
-    if (this.animationFrameId) return; // already running
-    const loop = () => {
-      if (!this.isDisposed && this.isOpen) {
-        // Render using WASM's native dirty tracking
-        // The render() method:
-        // 1. Calls update() once to sync state and check dirty flags
-        // 2. Only redraws dirty rows when forceAll=false
-        // 3. Always calls clearDirty() at the end
-        this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
-
-        // Check for cursor movement (Phase 2: onCursorMove event)
-        // Note: getCursor() reads from already-updated render state (from render() above)
-        const cursor = this.wasmTerm!.getCursor();
-        if (cursor.y !== this.lastCursorY) {
-          this.lastCursorY = cursor.y;
-          this.cursorMoveEmitter.fire();
-        }
-
-        // Note: onRender event is intentionally not fired in the render loop
-        // to avoid performance issues. For now, consumers can use requestAnimationFrame
-        // if they need frame-by-frame updates.
-
-        this.animationFrameId = requestAnimationFrame(loop);
-      }
-    };
-    loop();
+  private requestRender(): void {
+    if (this.animationFrameId !== undefined) return;
+    if (this.isDisposed || !this.isOpen) return;
+    this.animationFrameId = requestAnimationFrame(this.renderTick);
   }
+
+  private renderTick = (): void => {
+    this.animationFrameId = undefined;
+    if (this.isDisposed || !this.isOpen) return;
+
+    // Render using WASM's native dirty tracking
+    // The render() method:
+    // 1. Calls update() once to sync state and check dirty flags
+    // 2. Only redraws dirty rows when forceAll=false
+    // 3. Always calls clearDirty() at the end
+    this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
+
+    // Check for cursor movement (Phase 2: onCursorMove event)
+    // Note: getCursor() reads from already-updated render state (from render() above)
+    const cursor = this.wasmTerm!.getCursor();
+    if (cursor.y !== this.lastCursorY) {
+      this.lastCursorY = cursor.y;
+      this.cursorMoveEmitter.fire();
+    }
+
+    // Note: onRender event is intentionally not fired here to avoid
+    // performance issues. Consumers can use requestAnimationFrame if
+    // they need frame-by-frame updates.
+  };
 
   /**
    * Get a line from native WASM scrollback buffer
