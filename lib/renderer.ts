@@ -100,6 +100,14 @@ export class CanvasRenderer {
   private cursorBlink: boolean;
   private theme: Required<ITheme>;
   private devicePixelRatio: number;
+  // matchMedia query that fires when the page's effective DPR moves
+  // off the value we're currently rendering at (browser zoom, dragging
+  // between monitors with different scales, OS scale change). Each
+  // MediaQueryList is pinned to one DPR value, so we tear it down and
+  // re-create it on every change. Held so dispose() can remove the
+  // listener.
+  private dprMediaQuery?: MediaQueryList;
+  private dprChangeHandler?: () => void;
   private metrics: FontMetrics;
   private palette: string[];
 
@@ -153,6 +161,11 @@ export class CanvasRenderer {
     this.cursorBlink = options.cursorBlink ?? false;
     this.theme = { ...DEFAULT_THEME, ...options.theme };
     this.devicePixelRatio = options.devicePixelRatio ?? window.devicePixelRatio ?? 1;
+    // Skip live DPR tracking when the caller pinned a value — they're
+    // explicitly opting out of browser-driven changes.
+    if (options.devicePixelRatio === undefined) {
+      this.observeDevicePixelRatio();
+    }
 
     // Build color palette (16 ANSI colors)
     this.palette = [
@@ -997,5 +1010,77 @@ export class CanvasRenderer {
    */
   public dispose(): void {
     this.stopCursorBlink();
+    this.unobserveDevicePixelRatio();
+  }
+
+  // ==========================================================================
+  // Device Pixel Ratio Tracking
+  // ==========================================================================
+
+  /**
+   * Current effective device pixel ratio. Exposed primarily for tests; the
+   * renderer manages this internally and rerenders on change.
+   */
+  public getDevicePixelRatio(): number {
+    return this.devicePixelRatio;
+  }
+
+  /**
+   * Listen for browser-driven DPR changes (zoom, monitor moves, OS scale
+   * change) and update `this.devicePixelRatio` so the next render() picks up
+   * the new value via its canvas-size mismatch check.
+   *
+   * MediaQueryList instances are pinned to the DPR value baked into the
+   * query string, so when the listener fires we have to tear down and
+   * re-create the query at the new ratio.
+   */
+  private observeDevicePixelRatio(): void {
+    // Skip in environments without matchMedia (SSR / minimal test harnesses).
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return;
+    }
+
+    const handler = (): void => {
+      const newDpr = window.devicePixelRatio || 1;
+      // The render loop's needsResize check (in render()) compares the
+      // canvas backing-store size against `cols * width * DPR`, so just
+      // updating the field is enough — the next frame detects the
+      // mismatch and forces a full resize+redraw.
+      this.devicePixelRatio = newDpr;
+      // Re-pin the listener to the new ratio.
+      this.unobserveDevicePixelRatio();
+      this.observeDevicePixelRatio();
+    };
+
+    const mql = window.matchMedia(`(resolution: ${this.devicePixelRatio}dppx)`);
+    // Browsers since 2018 expose addEventListener on MediaQueryList; the
+    // older addListener API is the fallback. Guard for both so we don't
+    // throw in older Safari or stripped-down test stubs.
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', handler);
+    } else if (typeof (mql as unknown as { addListener?: unknown }).addListener === 'function') {
+      (mql as unknown as { addListener: (cb: () => void) => void }).addListener(handler);
+    } else {
+      return;
+    }
+
+    this.dprMediaQuery = mql;
+    this.dprChangeHandler = handler;
+  }
+
+  private unobserveDevicePixelRatio(): void {
+    const mql = this.dprMediaQuery;
+    const handler = this.dprChangeHandler;
+    if (mql && handler) {
+      if (typeof mql.removeEventListener === 'function') {
+        mql.removeEventListener('change', handler);
+      } else if (
+        typeof (mql as unknown as { removeListener?: unknown }).removeListener === 'function'
+      ) {
+        (mql as unknown as { removeListener: (cb: () => void) => void }).removeListener(handler);
+      }
+    }
+    this.dprMediaQuery = undefined;
+    this.dprChangeHandler = undefined;
   }
 }
