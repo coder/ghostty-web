@@ -1,0 +1,37 @@
+{
+  "name": "ghostty-web",
+
+  // Pinned by content digest, not just tag — verify with:
+  //   docker pull nixpkgs/nix:latest
+  //   docker inspect nixpkgs/nix:latest --format '{{index .RepoDigests 0}}'
+  "image": "nixpkgs/nix@sha256:79397901292ed23c3502177552e4d261c2d711720185e2b3a5beb715f35f595b",
+
+  "postCreateCommand": [
+    "sh", "-c",
+    // 1. Enable flakes globally in the container
+    "mkdir -p /etc/nix && echo 'experimental-features = nix-command flakes' > /etc/nix/nix.conf && "
+    // 2. Pull in the Ghostty source (submodule). All objects are verified
+    //    against the commit hash recorded in .gitmodules / git index.
+    + "git submodule update --init --recursive && "
+    // 3. Pre-populate the Nix store so `nix develop` is instant afterwards.
+    //    All downloads are hash-verified against flake.lock.
+    + "nix develop --command echo 'Nix store pre-populated — run nix develop to enter the shell'"
+  ],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ziglang.vscode-zig",
+        "biomejs.biome"
+      ]
+    }
+  },
+
+  // Mount SSH agent so git operations inside the container work
+  "mounts": [
+    "source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "/ssh-agent"
+  }
+}
