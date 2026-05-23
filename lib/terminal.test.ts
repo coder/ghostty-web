@@ -3043,8 +3043,10 @@ describe('Synchronous open()', () => {
     const term = await createIsolatedTerminal();
     term.open(container);
 
-    // The terminal should have taken focus
-    expect(document.activeElement).toBe(container);
+    // With IME routing (PR #11) focus lands on the hidden textarea inside the
+    // container rather than on the container itself — either is correct.
+    const active = document.activeElement;
+    expect(active === container || container.contains(active)).toBe(true);
 
     term.dispose();
   });
