@@ -35,6 +35,25 @@ xterm.js is everywhere—VS Code, Hyper, countless web terminals. But it has fun
 
 xterm.js reimplements terminal emulation in JavaScript. Every escape sequence, every edge case, every Unicode quirk—all hand-coded. Ghostty's emulator is the same battle-tested code that runs the native Ghostty app.
 
+### Keyboard encoding
+
+Keyboard input is encoded by Ghostty's key encoder. Byte sequences largely match xterm.js's defaults — Home/End honor DECCKM, Shift+nav and Shift+F-keys preserve the Shift modifier in the emitted CSI sequence, non-BMP characters pass through, Arrow keys honor cursor-application mode. Two deliberate differences:
+
+- **Shift+Enter is distinguishable from Enter** (emitted as `\x1b[27;2;13~` rather than bare `\r`, following fixterms), so modern line editors and REPLs can treat Shift+Enter as a newline-without-submit.
+- **Kitty keyboard protocol and xterm modifyOtherKeys state 2 are supported** when an app enables them. xterm.js implements only the traditional escape sequences.
+
+If you need byte-for-byte xterm.js behavior for a specific key (e.g. Shift+Enter mapped to `\r` for tools that don't understand the fixterms sequence), intercept it in `attachCustomKeyEventHandler` and emit the bytes you want via `term.input(bytes, true)`:
+
+```ts
+term.attachCustomKeyEventHandler((e) => {
+  if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    term.input('\r', true); // fires onData with '\r'
+    return true; // suppress the default encoder path
+  }
+  return false;
+});
+```
+
 ## Installation
 
 ```bash
