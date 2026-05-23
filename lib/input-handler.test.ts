@@ -587,6 +587,42 @@ describe('InputHandler', () => {
       expect(dataReceived[0]).toBe('\t');
     });
 
+    // https://github.com/coder/ghostty-web/issues/109
+    test('Shift+Tab produces backtab sequence (CSI Z)', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Tab', 'Tab', { shift: true }));
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe('\x1b[Z');
+    });
+
+    // https://github.com/coder/ghostty-web/issues/109
+    test('Alt+letter uses physical key (event.code) not transformed macOS character', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      // On macOS, Alt+T produces '†' in event.key; we should encode Alt+T (ESC t) instead
+      simulateKey(container, createKeyEvent('KeyT', '†', { alt: true }));
+
+      expect(dataReceived.length).toBe(1);
+      // Alt+T should produce ESC + t, NOT the raw macOS Unicode character
+      expect(dataReceived[0]).toBe('\x1bt');
+    });
+
     test('encodes Escape', () => {
       const handler = new InputHandler(
         ghostty,

@@ -244,6 +244,8 @@ export class InputHandler {
     mouseConfig?: MouseTrackingConfig
   ) {
     this.encoder = ghostty.createKeyEncoder();
+    // Enable Alt → ESC+letter by default (xterm metaSendsEscape / DEC mode 1036).
+    this.encoder.setOption(KeyEncoderOption.ALT_ESC_PREFIX, true);
     this.container = container;
     this.inputElement = inputElement;
     this.onDataCallback = onData;
@@ -452,11 +454,25 @@ export class InputHandler {
     // Case is preserved intentionally: the encoder uses the utf8 byte to
     // pick the C0 sequence for Ctrl+letter, and needs the actual shifted
     // character for the text-output path.
+    //
+    // macOS transforms Alt+letter to a Unicode char (e.g. Alt+T → '†').
+    // When that happens event.key is non-ASCII, so we fall back to
+    // deriving the utf8 from event.code (KeyT → 't') so the encoder can
+    // produce the correct ESC+letter sequence. See issue #109.
     let utf8: string | undefined;
     if (event.key.length > 0 && event.key !== 'Dead' && event.key !== 'Unidentified') {
       const cp = event.key.codePointAt(0);
       const scalarLen = cp !== undefined && cp > 0xffff ? 2 : 1;
-      if (event.key.length === scalarLen) utf8 = event.key;
+      if (event.key.length === scalarLen) {
+        if (event.altKey && cp !== undefined && cp > 127) {
+          // macOS Alt-transformed character — derive from physical key code
+          if (event.code.startsWith('Key') && event.code.length === 4) {
+            utf8 = event.code[3].toLowerCase();
+          }
+        } else {
+          utf8 = event.key;
+        }
+      }
     }
 
     // Sync encoder options with terminal mode state before every encode.
