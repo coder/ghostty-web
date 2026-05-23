@@ -6,3 +6,9 @@ dist/
 
 # WASM build output (built locally and in CI)
 ghostty-vt.wasm
+
+# Local-only agent workflows, commands, task notes and worktrees
+.agents/
+.claude/
+.worktrees/
+_tasks/
