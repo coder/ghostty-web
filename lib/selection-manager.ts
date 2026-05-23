@@ -183,7 +183,15 @@ export class SelectionManager {
           if (char.trim()) {
             lastNonEmpty = lineText.length;
           }
-        } else {
+        } else if (!cell || cell.width !== 0) {
+          // Only add a space for truly empty cells, NOT for wide-character
+          // continuation cells. Wide characters (CJK, fullwidth Latin, etc.)
+          // occupy 2 terminal cells:
+          //   - First cell:  codepoint set, width=2
+          //   - Second cell: codepoint=0, width=0 (continuation marker)
+          // The first branch above handles the leading cell. We must skip
+          // the trailing continuation cell here, otherwise the copied text
+          // gets a stray space between every wide character.
           lineText += ' ';
         }
       }
