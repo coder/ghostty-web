@@ -6,3 +6,5 @@ coverage/
 .vite/
 bun.lock
 ghostty/
+tests/e2e/report/
+tests/e2e/results/

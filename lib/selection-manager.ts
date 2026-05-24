@@ -183,7 +183,15 @@ export class SelectionManager {
           if (char.trim()) {
             lastNonEmpty = lineText.length;
           }
-        } else {
+        } else if (!cell || cell.width !== 0) {
+          // Only add a space for truly empty cells, NOT for wide-character
+          // continuation cells. Wide characters (CJK, fullwidth Latin, etc.)
+          // occupy 2 terminal cells:
+          //   - First cell:  codepoint set, width=2
+          //   - Second cell: codepoint=0, width=0 (continuation marker)
+          // The first branch above handles the leading cell. We must skip
+          // the trailing continuation cell here, otherwise the copied text
+          // gets a stray space between every wide character.
           lineText += ' ';
         }
       }
@@ -584,11 +592,15 @@ export class SelectionManager {
         }
 
         if (this.hasSelection()) {
-          const text = this.getSelection();
-          if (text) {
-            this.copyToClipboard(text);
-            this.selectionChangedEmitter.fire();
+          try {
+            const text = this.getSelection();
+            if (text) {
+              this.copyToClipboard(text);
+            }
+          } catch {
+            // getSelection() can fail if WASM render state isn't ready
           }
+          this.selectionChangedEmitter.fire();
         }
       }
     };
@@ -609,11 +621,15 @@ export class SelectionManager {
           this.selectionEnd = { col: word.endCol, absoluteRow };
           this.requestRender();
 
-          const text = this.getSelection();
-          if (text) {
-            this.copyToClipboard(text);
-            this.selectionChangedEmitter.fire();
+          try {
+            const text = this.getSelection();
+            if (text) {
+              this.copyToClipboard(text);
+            }
+          } catch {
+            // getSelection() can fail if WASM render state isn't ready
           }
+          this.selectionChangedEmitter.fire();
         }
       } else if (e.detail >= 3) {
         // Triple-click (or more) - select line content (like native Ghostty)
@@ -650,11 +666,15 @@ export class SelectionManager {
           this.selectionEnd = { col: endCol, absoluteRow };
           this.requestRender();
 
-          const text = this.getSelection();
-          if (text) {
-            this.copyToClipboard(text);
-            this.selectionChangedEmitter.fire();
+          try {
+            const text = this.getSelection();
+            if (text) {
+              this.copyToClipboard(text);
+            }
+          } catch {
+            // getSelection() can fail if WASM render state isn't ready
           }
+          this.selectionChangedEmitter.fire();
         }
       }
     });
@@ -910,11 +930,16 @@ export class SelectionManager {
     const absoluteRow = this.viewportRowToAbsolute(row);
     const scrollbackLength = this.wasmTerm.getScrollbackLength();
     let line: GhosttyCell[] | null;
-    if (absoluteRow < scrollbackLength) {
-      line = this.wasmTerm.getScrollbackLine(absoluteRow);
-    } else {
-      const screenRow = absoluteRow - scrollbackLength;
-      line = this.wasmTerm.getLine(screenRow);
+    try {
+      if (absoluteRow < scrollbackLength) {
+        line = this.wasmTerm.getScrollbackLine(absoluteRow);
+      } else {
+        const screenRow = absoluteRow - scrollbackLength;
+        line = this.wasmTerm.getLine(screenRow);
+      }
+    } catch {
+      // WASM render state can be unavailable outside of render context
+      return null;
     }
     if (!line) return null;
 

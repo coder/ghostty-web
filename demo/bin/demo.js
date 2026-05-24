@@ -13,8 +13,13 @@ import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Node-pty for cross-platform PTY support
-import pty from '@lydell/node-pty';
+// Node-pty for cross-platform PTY support. The 1.2.0-beta.x line adds a
+// `pixelSize` argument to resize(), which sets ws_xpixel / ws_ypixel in
+// the slave PTY's winsize struct so kitty kittens (icat etc.) can detect
+// graphics support via TIOCGWINSZ instead of falling back to terminal
+// queries. Lydell's fork is based on 1.1.0-beta14 (pre-pixelSize), so we
+// use upstream's beta directly.
+import pty from 'node-pty';
 // WebSocket server
 import { WebSocketServer } from 'ws';
 
@@ -23,6 +28,10 @@ const __dirname = path.dirname(__filename);
 
 const DEV_MODE = process.argv.includes('--dev');
 const HTTP_PORT = process.env.PORT || (DEV_MODE ? 8000 : 8080);
+// Bind to loopback by default so the PTY is not exposed to the LAN. Users
+// who explicitly want remote access can set HOST=0.0.0.0 (or any address);
+// the Origin allowlist still rejects malicious cross-origin WS upgrades.
+const LISTEN_HOST = process.env.HOST || '127.0.0.1';
 
 // ============================================================================
 // Locate ghostty-web assets
@@ -243,12 +252,32 @@ const HTML_TEMPLATE = `<!doctype html>
       const wsUrl = protocol + '//' + window.location.host + '/ws?cols=' + term.cols + '&rows=' + term.rows;
       let ws;
 
+      // Read total canvas pixel dims (CSS pixels). The server stuffs these
+      // into ws_xpixel / ws_ypixel via node-pty's resize(cols, rows, pixelSize)
+      // so kittens like icat see non-zero TIOCGWINSZ pixel fields.
+      function getPixelSize() {
+        const canvas = container.querySelector('canvas');
+        return canvas
+          ? { xpixel: canvas.clientWidth, ypixel: canvas.clientHeight }
+          : { xpixel: 0, ypixel: 0 };
+      }
+
       function connect() {
         setStatus('connecting', 'Connecting...');
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
           setStatus('connected', 'Connected');
+          // Push initial pixel dims so TIOCGWINSZ-gated tools see them
+          // before the first resize event.
+          const px = getPixelSize();
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols: term.cols,
+            rows: term.rows,
+            xpixel: px.xpixel,
+            ypixel: px.ypixel,
+          }));
         };
 
         ws.onmessage = (event) => {
@@ -278,7 +307,14 @@ const HTML_TEMPLATE = `<!doctype html>
       // Handle resize - notify PTY when terminal dimensions change
       term.onResize(({ cols, rows }) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+          const px = getPixelSize();
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols,
+            rows,
+            xpixel: px.xpixel,
+            ypixel: px.ypixel,
+          }));
         }
       });
 
@@ -348,9 +384,17 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  // Serve dist files
+  // Serve dist files. path.join with attacker-controlled input would allow
+  // `/dist/../../etc/passwd` to escape distPath, so we resolve the joined
+  // path and require it to stay inside distPath.
   if (pathname.startsWith('/dist/')) {
-    const filePath = path.join(distPath, pathname.slice(6));
+    const filePath = path.resolve(distPath, pathname.slice(6));
+    const distRoot = path.resolve(distPath) + path.sep;
+    if (!filePath.startsWith(distRoot) && filePath !== path.resolve(distPath)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
     serveFile(filePath, res);
     return;
   }
@@ -416,13 +460,47 @@ function createPtySession(cols, rows) {
 // WebSocket server attached to HTTP server (same port)
 const wss = new WebSocketServer({ noServer: true });
 
+// Allowlist of WebSocket Origins. Without this, ANY web page the user
+// visits while the demo is running can open a WebSocket to /ws and send
+// arbitrary commands to their shell (RCE via cross-origin WS). Browsers
+// always send an Origin header on WS upgrades; missing/empty Origin is
+// rejected too (curl-style direct clients are not a demo use case).
+function isOriginAllowed(origin, expectedHost, expectedPort) {
+  if (!origin) return false;
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const allowedHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+  // If the user explicitly opted in to remote access (HOST=0.0.0.0), accept
+  // the host they actually browsed from — but still only on the exact port.
+  if (expectedHost === '0.0.0.0' || expectedHost === '::') {
+    allowedHosts.add(parsed.hostname);
+  }
+  if (!allowedHosts.has(parsed.hostname)) return false;
+  // Default port handling: http → 80, https → 443, otherwise URL exposes it
+  const parsedPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+  return parsedPort === String(expectedPort);
+}
+
 // Handle HTTP upgrade for WebSocket connections
 httpServer.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (url.pathname === '/ws') {
-    // In production, consider validating req.headers.origin to prevent CSRF
-    // For development/demo purposes, we allow all origins
+    const origin = req.headers.origin;
+    if (!isOriginAllowed(origin, LISTEN_HOST, HTTP_PORT)) {
+      console.warn(
+        `[demo] Rejected WebSocket upgrade from origin ${JSON.stringify(origin)} ` +
+          `(expected localhost:${HTTP_PORT}). See README about HOST=0.0.0.0.`
+      );
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -463,7 +541,18 @@ wss.on('connection', (ws, req) => {
       try {
         const msg = JSON.parse(message);
         if (msg.type === 'resize') {
-          ptyProcess.resize(msg.cols, msg.rows);
+          // node-pty 1.2.0+ accepts a third pixelSize arg that sets
+          // ws_xpixel / ws_ypixel in the PTY winsize struct. Without it,
+          // kitty kittens (icat, etc.) read zeros via TIOCGWINSZ and
+          // refuse to render images.
+          if (msg.xpixel > 0 && msg.ypixel > 0) {
+            ptyProcess.resize(msg.cols, msg.rows, {
+              width: msg.xpixel,
+              height: msg.ypixel,
+            });
+          } else {
+            ptyProcess.resize(msg.cols, msg.rows);
+          }
           return;
         }
       } catch (e) {
@@ -545,6 +634,7 @@ if (DEV_MODE) {
   const vite = await createServer({
     root: repoRoot,
     server: {
+      host: LISTEN_HOST,
       port: HTTP_PORT,
       strictPort: true,
     },
@@ -562,6 +652,16 @@ if (DEV_MODE) {
       // ONLY handle /ws - everything else passes through unchanged to Vite
       if (pathname === '/ws') {
         if (!socket.destroyed && !socket.readableEnded) {
+          const origin = req.headers.origin;
+          if (!isOriginAllowed(origin, LISTEN_HOST, HTTP_PORT)) {
+            console.warn(
+              `[demo] Rejected WebSocket upgrade from origin ${JSON.stringify(origin)} ` +
+                `(expected localhost:${HTTP_PORT}). See README about HOST=0.0.0.0.`
+            );
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+            socket.destroy();
+            return;
+          }
           wss.handleUpgrade(req, socket, head, (ws) => {
             wss.emit('connection', ws, req);
           });
@@ -579,8 +679,10 @@ if (DEV_MODE) {
 
   printBanner(`http://localhost:${HTTP_PORT}/demo/`);
 } else {
-  // Production mode: static file server
-  httpServer.listen(HTTP_PORT, () => {
+  // Production mode: static file server. Bind explicitly to LISTEN_HOST so
+  // the PTY is not exposed to the LAN unless the operator opted in via
+  // HOST=0.0.0.0.
+  httpServer.listen(HTTP_PORT, LISTEN_HOST, () => {
     printBanner(`http://localhost:${HTTP_PORT}`);
   });
 }

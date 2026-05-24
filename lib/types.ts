@@ -408,77 +408,186 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_key_event_set_utf8(event: number, ptr: number, len: number): void;
 
   // Terminal lifecycle
-  ghostty_terminal_new(cols: number, rows: number): TerminalHandle;
-  ghostty_terminal_new_with_config(cols: number, rows: number, configPtr: number): TerminalHandle;
+  ghostty_terminal_new(allocatorPtr: number, terminalPtrPtr: number, optionsPtr: number): number; // GhosttyResult (0 = success)
   ghostty_terminal_free(terminal: TerminalHandle): void;
-  ghostty_terminal_resize(terminal: TerminalHandle, cols: number, rows: number): void;
-  ghostty_terminal_write(terminal: TerminalHandle, dataPtr: number, dataLen: number): void;
+  ghostty_terminal_resize(
+    terminal: TerminalHandle,
+    cols: number,
+    rows: number,
+    cellWidthPx: number,
+    cellHeightPx: number
+  ): number;
+  ghostty_terminal_vt_write(terminal: TerminalHandle, dataPtr: number, dataLen: number): void;
 
-  // RenderState API - high-performance rendering (ONE call gets ALL data)
-  ghostty_render_state_update(terminal: TerminalHandle): number; // 0=none, 1=partial, 2=full
-  ghostty_render_state_get_cols(terminal: TerminalHandle): number;
-  ghostty_render_state_get_rows(terminal: TerminalHandle): number;
-  ghostty_render_state_get_cursor_x(terminal: TerminalHandle): number;
-  ghostty_render_state_get_cursor_y(terminal: TerminalHandle): number;
-  ghostty_render_state_get_cursor_visible(terminal: TerminalHandle): boolean;
-  ghostty_render_state_get_bg_color(terminal: TerminalHandle): number; // 0xRRGGBB
-  ghostty_render_state_get_fg_color(terminal: TerminalHandle): number; // 0xRRGGBB
-  ghostty_render_state_is_row_dirty(terminal: TerminalHandle, row: number): boolean;
-  ghostty_render_state_mark_clean(terminal: TerminalHandle): void;
-  ghostty_render_state_get_viewport(
-    terminal: TerminalHandle,
+  // RenderState API — render state is a separate object created from a terminal.
+  // Read fields via the generic _get(state, key, *out) interface keyed by
+  // GhosttyRenderStateData; see RenderStateData enum.
+  ghostty_render_state_new(allocatorPtr: number, statePtrPtr: number): number;
+  ghostty_render_state_free(state: number): void;
+  ghostty_render_state_update(state: number, terminal: TerminalHandle): number;
+  ghostty_render_state_get(state: number, key: number, outPtr: number): number;
+  ghostty_render_state_get_multi(
+    state: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_render_state_set(state: number, option: number, valuePtr: number): number;
+  ghostty_render_state_colors_get(state: number, outColorsPtr: number): number;
+  // Row iterator: pre-allocated once, repopulated from the render state via
+  // ghostty_render_state_get(state, ROW_ITERATOR, &iter).
+  ghostty_render_state_row_iterator_new(allocatorPtr: number, outIterPtrPtr: number): number;
+  ghostty_render_state_row_iterator_free(iter: number): void;
+  ghostty_render_state_row_iterator_next(iter: number): boolean;
+  ghostty_render_state_row_get(iter: number, key: number, outPtr: number): number;
+  ghostty_render_state_row_set(iter: number, option: number, valuePtr: number): number;
+  // Row cells iterator: per-row, populated from a row via
+  // ghostty_render_state_row_get(iter, ROW_DATA_CELLS, &cells).
+  ghostty_render_state_row_cells_new(allocatorPtr: number, outCellsPtrPtr: number): number;
+  ghostty_render_state_row_cells_free(cells: number): void;
+  ghostty_render_state_row_cells_next(cells: number): boolean;
+  ghostty_render_state_row_cells_select(cells: number, col: number): number;
+  ghostty_render_state_row_cells_get(cells: number, key: number, outPtr: number): number;
+  ghostty_render_state_row_cells_get_multi(
+    cells: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  // Per-cell direct access. GhosttyCell is a u64 — passed as bigint in JS.
+  ghostty_cell_get(cell: bigint, key: number, outPtr: number): number;
+  // Per-row direct access. GhosttyRow is a u64 — passed as bigint in JS.
+  ghostty_row_get(row: bigint, key: number, outPtr: number): number;
+  // Grid references: read cells / rows / graphemes / hyperlinks at a
+  // specific GhosttyPoint. Useful for off-viewport (scrollback / history)
+  // access where the render-state row iterator doesn't reach.
+  // Note: refs are invalidated by ANY terminal mutation — read and copy out
+  // before the next vt_write.
+  ghostty_terminal_grid_ref(terminal: TerminalHandle, pointPtr: number, outRefPtr: number): number;
+  ghostty_grid_ref_cell(refPtr: number, outCellPtr: number): number;
+  ghostty_grid_ref_row(refPtr: number, outRowPtr: number): number;
+  ghostty_grid_ref_graphemes(
+    refPtr: number,
     bufPtr: number,
-    bufLen: number
-  ): number; // Returns total cells written or -1 on error
-  ghostty_render_state_get_grapheme(
-    terminal: TerminalHandle,
-    row: number,
-    col: number,
+    bufLen: number,
+    outLenPtr: number
+  ): number;
+  ghostty_grid_ref_hyperlink_uri(
+    refPtr: number,
     bufPtr: number,
-    bufLen: number
-  ): number; // Returns count of codepoints or -1 on error
+    bufLen: number,
+    outLenPtr: number
+  ): number;
+  ghostty_grid_ref_style(refPtr: number, outStylePtr: number): number;
 
-  // Terminal modes
-  ghostty_terminal_is_alternate_screen(terminal: TerminalHandle): boolean;
-  ghostty_terminal_has_mouse_tracking(terminal: TerminalHandle): number;
-  ghostty_terminal_get_mode(terminal: TerminalHandle, mode: number, isAnsi: boolean): number;
+  // Kitty graphics — placement iteration + image lookup. The graphics
+  // handle comes from ghostty_terminal_get(terminal, KITTY_GRAPHICS, *out)
+  // and is borrowed: invalidated by ANY mutating terminal call.
+  ghostty_kitty_graphics_get(graphics: number, key: number, outPtr: number): number;
+  ghostty_kitty_graphics_image(graphics: number, imageId: number): number; // returns image handle (0 if missing)
+  ghostty_kitty_graphics_image_get(image: number, key: number, outPtr: number): number;
+  ghostty_kitty_graphics_image_get_multi(
+    image: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_iterator_new(
+    allocatorPtr: number,
+    outIterPtrPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_iterator_free(iter: number): void;
+  ghostty_kitty_graphics_placement_iterator_set(
+    iter: number,
+    option: number,
+    valuePtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_next(iter: number): boolean;
+  ghostty_kitty_graphics_placement_get(iter: number, key: number, outPtr: number): number;
+  ghostty_kitty_graphics_placement_get_multi(
+    iter: number,
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_rect(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outSelectionPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_pixel_size(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outWidthPtr: number,
+    outHeightPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_grid_size(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outColsPtr: number,
+    outRowsPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_viewport_pos(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outColPtr: number,
+    outRowPtr: number
+  ): number;
+  ghostty_kitty_graphics_placement_source_rect(
+    iter: number,
+    image: number,
+    outX: number,
+    outY: number,
+    outW: number,
+    outH: number
+  ): number;
+  // The all-in-one render path: fills a 44-byte PlacementRenderInfo
+  // sized struct in a single call. Use this in the hot render loop
+  // instead of stringing together pixel_size + grid_size + viewport_pos
+  // + source_rect.
+  ghostty_kitty_graphics_placement_render_info(
+    iter: number,
+    image: number,
+    terminal: TerminalHandle,
+    outInfoPtr: number
+  ): number;
 
-  // Scrollback API
-  ghostty_terminal_get_scrollback_length(terminal: TerminalHandle): number;
-  ghostty_terminal_get_scrollback_line(
+  // Generic terminal property API. Mirrors render_state_get/set: a single
+  // entry point keyed by GhosttyTerminalData (see TerminalData enum).
+  ghostty_terminal_get(terminal: TerminalHandle, key: number, outPtr: number): number;
+  ghostty_terminal_get_multi(
     terminal: TerminalHandle,
-    offset: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns cells written or -1 on error
-  ghostty_terminal_get_scrollback_grapheme(
-    terminal: TerminalHandle,
-    offset: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns codepoint count or -1 on error
-  ghostty_terminal_is_row_wrapped(terminal: TerminalHandle, row: number): number;
-
-  // Hyperlink API
-  ghostty_terminal_get_hyperlink_uri(
-    terminal: TerminalHandle,
-    row: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
-  ghostty_terminal_get_scrollback_hyperlink_uri(
-    terminal: TerminalHandle,
-    offset: number,
-    col: number,
-    bufPtr: number,
-    bufLen: number
-  ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
-
-  // Response API (for DSR and other terminal queries)
-  ghostty_terminal_has_response(terminal: TerminalHandle): boolean;
-  ghostty_terminal_read_response(terminal: TerminalHandle, bufPtr: number, bufLen: number): number; // Returns bytes written, 0 if no response, -1 on error
+    count: number,
+    keysPtr: number,
+    valuesPtr: number,
+    outWrittenPtr: number
+  ): number;
+  ghostty_terminal_set(terminal: TerminalHandle, option: number, valuePtr: number): number;
+  // System-wide options (process-global / per-WASM-instance). Used to
+  // install the PNG decoder callback for kitty graphics PNG payloads.
+  ghostty_sys_set(option: number, valuePtr: number): number;
+  // Allocate / free memory through the library's allocator. Used by
+  // callbacks (e.g. the PNG decoder) that need to hand WASM-allocated
+  // buffers back to the library.
+  ghostty_alloc(allocatorPtr: number, len: number): number;
+  ghostty_free(allocatorPtr: number, ptr: number, len: number): void;
+  // Mode queries: mode is a packed u16 (low 15 bits = mode value, bit 15 = ANSI flag).
+  ghostty_terminal_mode_get(terminal: TerminalHandle, mode: number, outBoolPtr: number): number;
+  ghostty_terminal_mode_set(terminal: TerminalHandle, mode: number, value: boolean): number;
+  // grid_ref / point_from_grid_ref: row/cell-level access. Not yet wired
+  // up on the TS side (used to implement isRowWrapped / getHyperlinkUri /
+  // scrollback iteration).
+  // Response handling moved to a callback model: install via
+  // ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_WRITE_PTY, callback). Old
+  // has_response / read_response polling API is gone.
 }
 
 // ============================================================================
@@ -486,12 +595,364 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
 // ============================================================================
 
 /**
- * Dirty state from RenderState
+ * Dirty state from RenderState. Mirrors GhosttyRenderStateDirty.
  */
 export enum DirtyState {
   NONE = 0,
   PARTIAL = 1,
   FULL = 2,
+}
+
+/**
+ * Keys for ghostty_render_state_get(). Mirrors GhosttyRenderStateData.
+ */
+export enum RenderStateData {
+  COLS = 1,
+  ROWS = 2,
+  DIRTY = 3,
+  ROW_ITERATOR = 4,
+  COLOR_BACKGROUND = 5,
+  COLOR_FOREGROUND = 6,
+  COLOR_CURSOR = 7,
+  COLOR_CURSOR_HAS_VALUE = 8,
+  COLOR_PALETTE = 9,
+  CURSOR_VISUAL_STYLE = 10,
+  CURSOR_VISIBLE = 11,
+  CURSOR_BLINKING = 12,
+  CURSOR_PASSWORD_INPUT = 13,
+  CURSOR_VIEWPORT_HAS_VALUE = 14,
+  CURSOR_VIEWPORT_X = 15,
+  CURSOR_VIEWPORT_Y = 16,
+  CURSOR_VIEWPORT_WIDE_TAIL = 17,
+}
+
+/**
+ * Options for ghostty_render_state_set(). Mirrors GhosttyRenderStateOption.
+ */
+export enum RenderStateOption {
+  DIRTY = 0,
+}
+
+/**
+ * Visual cursor style. Mirrors GhosttyRenderStateCursorVisualStyle.
+ */
+export enum CursorVisualStyle {
+  BAR = 0,
+  BLOCK = 1,
+  UNDERLINE = 2,
+  BLOCK_HOLLOW = 3,
+}
+
+/**
+ * Keys for ghostty_terminal_get(). Mirrors GhosttyTerminalData.
+ * Only entries actually used by the TS layer are listed here; the upstream
+ * enum has more (TITLE, PWD, SCROLLBAR, KITTY_KEYBOARD_FLAGS, palettes, ...).
+ */
+export enum TerminalData {
+  COLS = 1,
+  ROWS = 2,
+  CURSOR_X = 3,
+  CURSOR_Y = 4,
+  CURSOR_PENDING_WRAP = 5,
+  ACTIVE_SCREEN = 6,
+  CURSOR_VISIBLE = 7,
+  KITTY_KEYBOARD_FLAGS = 8,
+  SCROLLBAR = 9,
+  CURSOR_STYLE = 10,
+  MOUSE_TRACKING = 11,
+  TITLE = 12,
+  PWD = 13,
+  TOTAL_ROWS = 14,
+  SCROLLBACK_ROWS = 15,
+  WIDTH_PX = 16,
+  HEIGHT_PX = 17,
+  COLOR_FOREGROUND = 18,
+  COLOR_BACKGROUND = 19,
+  COLOR_CURSOR = 20,
+  COLOR_PALETTE = 21,
+  COLOR_FOREGROUND_DEFAULT = 22,
+  COLOR_BACKGROUND_DEFAULT = 23,
+  COLOR_CURSOR_DEFAULT = 24,
+  COLOR_PALETTE_DEFAULT = 25,
+  KITTY_IMAGE_STORAGE_LIMIT = 26,
+  KITTY_GRAPHICS = 30,
+}
+
+/**
+ * Options for ghostty_terminal_set(). Mirrors GhosttyTerminalOption.
+ * Only the entries the TS layer touches are listed; the upstream enum has
+ * more (callbacks for BELL/TITLE_CHANGED/etc., kitty-image limits, ...).
+ */
+export enum TerminalOption {
+  USERDATA = 0,
+  WRITE_PTY = 1,
+  BELL = 2,
+  ENQUIRY = 3,
+  XTVERSION = 4,
+  TITLE_CHANGED = 5,
+  SIZE = 6,
+  COLOR_FOREGROUND = 11,
+  COLOR_BACKGROUND = 12,
+  COLOR_CURSOR = 13,
+  COLOR_PALETTE = 14,
+  KITTY_IMAGE_STORAGE_LIMIT = 15,
+}
+
+/**
+ * Options for ghostty_sys_set(). Mirrors GhosttySysOption.
+ * Process-global / per-WASM-instance settings.
+ */
+export enum SysOption {
+  USERDATA = 0,
+  DECODE_PNG = 1,
+  LOG = 2,
+}
+
+/**
+ * Keys for ghostty_kitty_graphics_get(). Mirrors GhosttyKittyGraphicsData.
+ */
+export enum KittyGraphicsData {
+  PLACEMENT_ITERATOR = 1,
+}
+
+/**
+ * Keys for ghostty_kitty_graphics_placement_get(). Mirrors
+ * GhosttyKittyGraphicsPlacementData. All values are u32 except Z (i32).
+ */
+export enum KittyGraphicsPlacementData {
+  IMAGE_ID = 1,
+  PLACEMENT_ID = 2,
+  IS_VIRTUAL = 3,
+  X_OFFSET = 4,
+  Y_OFFSET = 5,
+  SOURCE_X = 6,
+  SOURCE_Y = 7,
+  SOURCE_WIDTH = 8,
+  SOURCE_HEIGHT = 9,
+  COLUMNS = 10,
+  ROWS = 11,
+  Z = 12,
+}
+
+/**
+ * Keys for ghostty_kitty_graphics_image_get(). Mirrors GhosttyKittyGraphicsImageData.
+ */
+export enum KittyGraphicsImageData {
+  ID = 1,
+  NUMBER = 2,
+  WIDTH = 3,
+  HEIGHT = 4,
+  FORMAT = 5,
+  COMPRESSION = 6,
+  DATA_PTR = 7,
+  DATA_LEN = 8,
+}
+
+/**
+ * Z-layer filter for the placement iterator. Mirrors GhosttyKittyPlacementLayer.
+ */
+export enum KittyGraphicsPlacementLayer {
+  ALL = 0,
+  BELOW_BG = 1,
+  BELOW_TEXT = 2,
+  ABOVE_TEXT = 3,
+}
+
+/**
+ * Settable options on the placement iterator. Mirrors
+ * GhosttyKittyGraphicsPlacementIteratorOption.
+ */
+export enum KittyGraphicsPlacementIteratorOption {
+  LAYER = 0,
+}
+
+/**
+ * Pixel format of a Kitty graphics image. Mirrors GhosttyKittyImageFormat.
+ *   RGB:        24-bit, 3 bytes/px
+ *   RGBA:       32-bit, 4 bytes/px (the canvas-friendly path)
+ *   PNG:        compressed; needs a JS-side decoder hooked up via
+ *               ghostty_sys_set(DECODE_PNG, fn)
+ *   GRAY_ALPHA: 16-bit, 2 bytes/px
+ *   GRAY:       8-bit, 1 byte/px
+ */
+export enum KittyImageFormat {
+  RGB = 0,
+  RGBA = 1,
+  PNG = 2,
+  GRAY_ALPHA = 3,
+  GRAY = 4,
+}
+
+/**
+ * Compression of a Kitty graphics image. Mirrors GhosttyKittyImageCompression.
+ */
+export enum KittyImageCompression {
+  NONE = 0,
+  ZLIB_DEFLATE = 1,
+}
+
+/**
+ * Parsed GhosttyKittyGraphicsPlacementRenderInfo — everything the renderer
+ * needs about a single placement to composite it on the canvas.
+ *
+ * Wire layout on wasm32 (48 bytes, extern struct, 4-byte aligned):
+ *   size:               u32 @ 0   (sized-struct discriminator; we just write 48)
+ *   pixel_width:        u32 @ 4
+ *   pixel_height:       u32 @ 8
+ *   grid_cols:          u32 @ 12
+ *   grid_rows:          u32 @ 16
+ *   viewport_col:       i32 @ 20
+ *   viewport_row:       i32 @ 24
+ *   viewport_visible:   bool @ 28 (1 byte + 3 bytes padding to next u32)
+ *   source_x:           u32 @ 32
+ *   source_y:           u32 @ 36
+ *   source_width:       u32 @ 40
+ *   source_height:      u32 @ 44
+ */
+export interface KittyPlacementInfo {
+  imageId: number;
+  /** Destination size on the canvas, in pixels. */
+  pixelWidth: number;
+  pixelHeight: number;
+  /** Destination size on the grid, in cells. */
+  gridCols: number;
+  gridRows: number;
+  /** Top-left in viewport-relative cells. Negative when scrolled partway off the top. */
+  viewportCol: number;
+  viewportRow: number;
+  /** Whether any part of the placement intersects the visible viewport. */
+  viewportVisible: boolean;
+  /** Source rect within the image, in pixels (already clamped to image bounds). */
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  /**
+   * Virtual placements have no fixed viewport position; their image is
+   * drawn into U+10EEEE placeholder cells written to the grid by the
+   * application. The renderer picks them up by image_id rather than
+   * iterating through them for direct compositing.
+   */
+  isVirtual: boolean;
+}
+
+/** Size in bytes of GhosttyKittyGraphicsPlacementRenderInfo on wasm32. */
+export const KITTY_PLACEMENT_RENDER_INFO_SIZE = 48;
+
+/**
+ * Image bytes + metadata returned by GhosttyTerminal.getKittyImageRgba.
+ * `data` is a *view* into WASM memory and is invalidated by the next
+ * mutating terminal call — copy out before vt_write if you need to retain.
+ */
+export interface KittyImagePixels {
+  width: number;
+  height: number;
+  format: KittyImageFormat;
+  /** Borrowed view into WASM memory; copy before vt_write to retain. */
+  data: Uint8Array;
+}
+
+/**
+ * Active screen identifier. Mirrors GhosttyTerminalScreen.
+ * Returned as the value for TerminalData.ACTIVE_SCREEN.
+ */
+export enum TerminalScreen {
+  PRIMARY = 0,
+  ALTERNATE = 1,
+}
+
+/**
+ * Keys for ghostty_render_state_row_get(). Mirrors GhosttyRenderStateRowData.
+ */
+export enum RenderStateRowData {
+  DIRTY = 1,
+  RAW = 2,
+  CELLS = 3,
+}
+
+/**
+ * Options for ghostty_render_state_row_set(). Mirrors GhosttyRenderStateRowOption.
+ */
+export enum RenderStateRowOption {
+  DIRTY = 0,
+}
+
+/**
+ * Keys for ghostty_render_state_row_cells_get(). Mirrors
+ * GhosttyRenderStateRowCellsData.
+ */
+export enum RowCellsData {
+  RAW = 1,
+  STYLE = 2,
+  GRAPHEMES_LEN = 3,
+  GRAPHEMES_BUF = 4,
+  BG_COLOR = 5,
+  FG_COLOR = 6,
+}
+
+/**
+ * Keys for ghostty_row_get(). Mirrors GhosttyRowData. Used with the raw
+ * GhosttyRow value obtained via _render_state_row_get(iter, RAW, &row).
+ */
+export enum RowData {
+  WRAP = 1,
+  WRAP_CONTINUATION = 2,
+  GRAPHEME = 3,
+  STYLED = 4,
+  HYPERLINK = 5,
+}
+
+/**
+ * Tag values for GhosttyPoint. Mirrors GhosttyPointTag. The tag selects
+ * which coordinate space y is interpreted in.
+ */
+export enum PointTag {
+  ACTIVE = 0,
+  VIEWPORT = 1,
+  SCREEN = 2,
+  HISTORY = 3,
+}
+
+/**
+ * Keys for ghostty_cell_get(). Mirrors GhosttyCellData. Used with the
+ * raw GhosttyCell value obtained via grid_ref_cell or row_cells_get(RAW).
+ */
+export enum CellData {
+  CODEPOINT = 1,
+  CONTENT_TAG = 2,
+  WIDE = 3,
+  HAS_TEXT = 4,
+  HAS_STYLING = 5,
+  STYLE_ID = 6,
+  HAS_HYPERLINK = 7,
+  PROTECTED = 8,
+  SEMANTIC_CONTENT = 9,
+  COLOR_PALETTE = 10,
+  COLOR_RGB = 11,
+}
+
+/**
+ * Cell width classification. Mirrors GhosttyCellWide.
+ *   NARROW: single-column cell (most ASCII, BMP)
+ *   WIDE: leading half of a double-width cell (CJK, most emoji)
+ *   SPACER_TAIL: trailing half of a wide cell — placeholder, no glyph
+ *   SPACER_HEAD: leading placeholder when a wide cell would have crossed
+ *     the right margin and got pushed to the next row
+ */
+export enum CellWide {
+  NARROW = 0,
+  WIDE = 1,
+  SPACER_TAIL = 2,
+  SPACER_HEAD = 3,
+}
+
+/**
+ * Pack a terminal mode number + ANSI flag into the u16 wire format used by
+ * ghostty_terminal_mode_get/_set. Bits 0–14 hold the value (u15), bit 15
+ * is set for ANSI modes (cleared for DEC private modes).
+ */
+export function packMode(mode: number, isAnsi: boolean): number {
+  return (mode & 0x7fff) | (isAnsi ? 0x8000 : 0);
 }
 
 /**
@@ -532,6 +993,7 @@ export const COLORS_STRUCT_SIZE = 12;
  * All color values use 0xRRGGBB format. A value of 0 means "use default".
  */
 export interface GhosttyTerminalConfig {
+  /** Scrollback buffer size in bytes. Passed to Terminal.max_scrollback. */
   scrollbackLimit?: number;
   fgColor?: number;
   bgColor?: number;
@@ -556,12 +1018,18 @@ export type TerminalHandle = number;
  */
 export interface GhosttyCell {
   codepoint: number; // u32 (Unicode codepoint - first codepoint of grapheme)
-  fg_r: number; // u8 (foreground red)
+  fg_r: number; // u8 (foreground red, valid only when fgIsDefault is false)
   fg_g: number; // u8 (foreground green)
   fg_b: number; // u8 (foreground blue)
-  bg_r: number; // u8 (background red)
+  bg_r: number; // u8 (background red, valid only when bgIsDefault is false)
   bg_g: number; // u8 (background green)
   bg_b: number; // u8 (background blue)
+  // Whether the cell has an explicit fg/bg color or should use the
+  // terminal's default. Mirrors the GhosttyStyleColor tag (NONE = default).
+  // The renderer must consult these instead of treating RGB(0,0,0) as
+  // "default" — explicit literal black is a valid color.
+  fgIsDefault: boolean;
+  bgIsDefault: boolean;
   flags: number; // u8 (style flags bitfield)
   width: number; // u8 (character width: 1=normal, 2=wide, etc.)
   hyperlink_id: number; // u16 (0 = no link, >0 = hyperlink ID in set)
@@ -604,7 +1072,7 @@ export interface Cursor {
  * Terminal configuration (passed to ghostty_terminal_new_with_config)
  */
 export interface TerminalConfig {
-  scrollback_limit: number; // Number of scrollback lines (default: 10,000)
+  scrollback_limit: number; // Scrollback buffer size in bytes (default: 10,000)
   fg_color: RGB; // Default foreground color
   bg_color: RGB; // Default background color
 }

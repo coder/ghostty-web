@@ -138,6 +138,20 @@
       let ws;
       let fitAddon;
 
+      // Read total canvas pixel dimensions (CSS pixels). Used so the
+      // server can stuff ws_xpixel / ws_ypixel into the PTY winsize via
+      // node-pty's resize(cols, rows, pixelSize) — kitty kittens (icat
+      // etc.) read those fields from their stdin and bail "doesn't
+      // support reporting screen sizes in pixels" if they're zero.
+      // Module-scope so both initTerminal and connectWebSocket can call it.
+      function getPixelSize() {
+        const container = document.getElementById('terminal-container');
+        const canvas = container?.querySelector('canvas');
+        return canvas
+          ? { xpixel: canvas.clientWidth, ypixel: canvas.clientHeight }
+          : { xpixel: 0, ypixel: 0 };
+      }
+
       async function initTerminal() {
         // Initialize WASM
         await init();
@@ -168,8 +182,16 @@
         // Handle terminal resize
         term.onResize((size) => {
           if (ws && ws.readyState === WebSocket.OPEN) {
-            // Send resize as control sequence (server expects this format)
-            ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
+            const px = getPixelSize();
+            ws.send(
+              JSON.stringify({
+                type: 'resize',
+                cols: size.cols,
+                rows: size.rows,
+                xpixel: px.xpixel,
+                ypixel: px.ypixel,
+              })
+            );
           }
         });
 
@@ -186,6 +208,11 @@
           console.log('Scroll position:', ydisp);
         });
 
+        // Expose globals for Playwright E2E tests
+        window.__ghosttyTerm = term;
+        window.__ghosttyFitAddon = fitAddon;
+        window.__ghosttyReady = true;
+
         // Connect to PTY server - terminal is ready immediately after open()
         console.log('[Demo] Terminal ready, connecting with size:', term.cols, 'x', term.rows);
         connectWebSocket();
@@ -200,6 +227,19 @@
         ws.onopen = () => {
           console.log('WebSocket connected');
           updateConnectionStatus(true);
+          // Push initial pixel dims into the PTY winsize so tools that
+          // gate on TIOCGWINSZ (e.g. kitten icat) can detect graphics
+          // support without falling back to terminal queries.
+          const px = getPixelSize();
+          ws.send(
+            JSON.stringify({
+              type: 'resize',
+              cols: term.cols,
+              rows: term.rows,
+              xpixel: px.xpixel,
+              ypixel: px.ypixel,
+            })
+          );
         };
 
         ws.onmessage = (event) => {

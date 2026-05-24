@@ -587,6 +587,42 @@ describe('InputHandler', () => {
       expect(dataReceived[0]).toBe('\t');
     });
 
+    // https://github.com/coder/ghostty-web/issues/109
+    test('Shift+Tab produces backtab sequence (CSI Z)', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Tab', 'Tab', { shift: true }));
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe('\x1b[Z');
+    });
+
+    // https://github.com/coder/ghostty-web/issues/109
+    test('Alt+letter uses physical key (event.code) not transformed macOS character', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      // On macOS, Alt+T produces '†' in event.key; we should encode Alt+T (ESC t) instead
+      simulateKey(container, createKeyEvent('KeyT', '†', { alt: true }));
+
+      expect(dataReceived.length).toBe(1);
+      // Alt+T should produce ESC + t, NOT the raw macOS Unicode character
+      expect(dataReceived[0]).toBe('\x1bt');
+    });
+
     test('encodes Escape', () => {
       const handler = new InputHandler(
         ghostty,
@@ -741,6 +777,38 @@ describe('InputHandler', () => {
       expect(dataReceived[1]).toBe('\x1bOB');
       expect(dataReceived[2]).toBe('\x1bOD');
       expect(dataReceived[3]).toBe('\x1bOC');
+    });
+
+    // The per-keystroke encoder-option sync caches the last value and
+    // short-circuits when unchanged. This test makes sure mode *changes*
+    // do propagate — if the cache fails to invalidate, the second
+    // keystroke would emit the wrong sequence.
+    test('picks up DECCKM changes mid-session', () => {
+      let cursorApp = false;
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1 && cursorApp
+      );
+
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1b[A');
+      dataReceived.length = 0;
+
+      cursorApp = true;
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1bOA');
+      dataReceived.length = 0;
+
+      cursorApp = false;
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1b[A');
     });
   });
 
@@ -1160,7 +1228,7 @@ describe('InputHandler', () => {
       expect(dataReceived.length).toBe(0);
     });
 
-    test('allows Ctrl+V to trigger paste', () => {
+    test('Ctrl+V forwards \\x16 to the PTY and still allows the paste event', () => {
       const handler = new InputHandler(
         ghostty,
         container as any,
@@ -1170,13 +1238,17 @@ describe('InputHandler', () => {
         }
       );
 
-      // Ctrl+V should NOT call onData callback (lets paste event handle it)
+      // Ctrl+V emits \x16 (SYN) via the Ghostty key encoder so native PTY
+      // consumers (e.g. opencode image paste via osascript) receive the
+      // signal. The browser-side paste event still fires immediately
+      // after so handlePaste handles text-content paste as before.
       simulateKey(container, createKeyEvent('KeyV', 'v', { ctrl: true }));
 
-      expect(dataReceived.length).toBe(0);
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe('\x16');
     });
 
-    test('allows Cmd+V to trigger paste', () => {
+    test('Cmd+V on macOS does not emit a byte (Super modifier has no terminal sequence) — paste event still fires', () => {
       const handler = new InputHandler(
         ghostty,
         container as any,
@@ -1186,10 +1258,55 @@ describe('InputHandler', () => {
         }
       );
 
-      // Cmd+V should NOT call onData callback (lets paste event handle it)
+      // The Ghostty encoder returns empty bytes for Super+V (no standard
+      // terminal sequence exists for Cmd modifier). The handler still
+      // returns early so the browser's paste event fires for text content.
       simulateKey(container, createKeyEvent('KeyV', 'v', { meta: true }));
 
       expect(dataReceived.length).toBe(0);
+    });
+  });
+
+  // Regression tests for the encoder-bypass removal. Two representative
+  // cases cover the two distinct code paths the old fast paths poisoned:
+  //
+  //   1. Shift+Enter — modifiers reach the encoder (the original bug class
+  //      that caught Shift+Home, Shift+F1, etc.; one test is enough).
+  //   2. Surrogate-pair emoji — multi-code-unit utf8 passes through
+  //      (covers both non-ASCII and non-BMP in one shot).
+  describe('Regression: encoder bypass removal', () => {
+    test('Shift+Enter differs from plain Enter', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Enter', 'Enter'));
+      expect(dataReceived[0]).toBe('\r');
+
+      dataReceived.length = 0;
+      simulateKey(container, createKeyEvent('Enter', 'Enter', { shift: true }));
+      expect(dataReceived.length).toBe(1);
+      // Ghostty emits the modifyOtherKeys sequence for Shift+Enter by default.
+      expect(dataReceived[0]).toBe('\x1b[27;2;13~');
+    });
+
+    test('surrogate-pair emoji is emitted as UTF-8', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('KeyA', '😀'));
+      expect(dataReceived).toEqual(['😀']);
     });
   });
 });

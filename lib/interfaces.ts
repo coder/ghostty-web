@@ -19,8 +19,25 @@ export interface ITerminalOptions {
   convertEol?: boolean; // Convert \n to \r\n (default: false)
   disableStdin?: boolean; // Disable keyboard input (default: false)
 
+  // Focus options
+  focusOnOpen?: boolean; // Auto-focus terminal on open (default: true)
+
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
+  /**
+   * When true, the viewport stays locked on the same scrollback content as
+   * new output arrives — instead of auto-scrolling to the bottom. Mirrors
+   * the behaviour of modern terminals (kitty, alacritty). Default: false
+   * (preserves the xterm.js-style auto-scroll behaviour for back-compat).
+   */
+  preserveScrollOnWrite?: boolean;
+
+  // Emit terminal-generated responses through onData (default: true)
+  //
+  // Some host applications answer terminal queries at the PTY boundary instead
+  // of in the renderer. Disable this to keep parser-generated replies, such as
+  // DSR responses, out of the same stream as user keyboard input.
+  emitTerminalResponses?: boolean;
 
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()

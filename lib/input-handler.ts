@@ -13,8 +13,7 @@
  * - Captures all keyboard input (preventDefault on everything)
  */
 
-import type { Ghostty } from './ghostty';
-import type { KeyEncoder } from './ghostty';
+import type { Ghostty, KeyEncoder } from './ghostty';
 import type { IKeyEvent } from './interfaces';
 import { Key, KeyAction, KeyEncoderOption, Mods } from './types';
 
@@ -195,6 +194,8 @@ export class InputHandler {
   private mousemoveListener: ((e: MouseEvent) => void) | null = null;
   private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
+  private compositionJustEnded = false; // Block keydown briefly after composition ends
+  private pendingKeyAfterComposition: string | null = null; // Key to output after composition
   private isDisposed = false;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
   private lastKeyDownData: string | null = null;
@@ -207,6 +208,15 @@ export class InputHandler {
   private lastBeforeInputData: string | null = null;
   private lastBeforeInputTime = 0;
   private static readonly BEFORE_INPUT_IGNORE_MS = 100;
+  // Cache of encoder option values last pushed to the WASM encoder, so
+  // keystroke handling can skip the setOption WASM round-trip when nothing
+  // changed. `undefined` means "never synced"; any first query on a new
+  // handler will emit one setOption per option regardless of mode state.
+  private syncedEncoderOptions = new Map<KeyEncoderOption, boolean | number>();
+  // Reused across keystrokes to avoid the TextDecoder allocation per call.
+  // Once #8 merges and we migrate to encoder.encodeToString, this field
+  // goes away.
+  private decoder = new TextDecoder();
 
   /**
    * Create a new InputHandler
@@ -234,6 +244,8 @@ export class InputHandler {
     mouseConfig?: MouseTrackingConfig
   ) {
     this.encoder = ghostty.createKeyEncoder();
+    // Enable Alt → ESC+letter by default (xterm metaSendsEscape / DEC mode 1036).
+    this.encoder.setOption(KeyEncoderOption.ALT_ESC_PREFIX, true);
     this.container = container;
     this.inputElement = inputElement;
     this.onDataCallback = onData;
@@ -288,14 +300,19 @@ export class InputHandler {
       this.inputElement.addEventListener('beforeinput', this.beforeInputListener);
     }
 
+    // Attach composition events to inputElement (textarea) if available.
+    // IME composition events fire on the focused element, and when using a hidden
+    // textarea for input (as ghostty-web does), the textarea receives focus,
+    // not the container. This fixes Korean/Chinese/Japanese IME input.
+    const compositionTarget = this.inputElement || this.container;
     this.compositionStartListener = this.handleCompositionStart.bind(this);
-    this.container.addEventListener('compositionstart', this.compositionStartListener);
+    compositionTarget.addEventListener('compositionstart', this.compositionStartListener);
 
     this.compositionUpdateListener = this.handleCompositionUpdate.bind(this);
-    this.container.addEventListener('compositionupdate', this.compositionUpdateListener);
+    compositionTarget.addEventListener('compositionupdate', this.compositionUpdateListener);
 
     this.compositionEndListener = this.handleCompositionEnd.bind(this);
-    this.container.addEventListener('compositionend', this.compositionEndListener);
+    compositionTarget.addEventListener('compositionend', this.compositionEndListener);
 
     // Mouse event listeners (for terminal mouse tracking)
     this.mousedownListener = this.handleMouseDown.bind(this);
@@ -321,6 +338,17 @@ export class InputHandler {
   }
 
   /**
+   * Push an encoder option value to WASM only if it differs from the last
+   * value we pushed. Terminal modes rarely change between keystrokes, so
+   * this saves two WASM round-trips per keystroke in the steady state.
+   */
+  private syncEncoderOption(option: KeyEncoderOption, value: boolean | number): void {
+    if (this.syncedEncoderOptions.get(option) === value) return;
+    this.encoder.setOption(option, value);
+    this.syncedEncoderOptions.set(option, value);
+  }
+
+  /**
    * Extract modifier flags from KeyboardEvent
    * @param event - KeyboardEvent
    * @returns Mods flags
@@ -341,22 +369,6 @@ export class InputHandler {
   }
 
   /**
-   * Check if this is a printable character with no special modifiers
-   * @param event - KeyboardEvent
-   * @returns true if printable character
-   */
-  private isPrintableCharacter(event: KeyboardEvent): boolean {
-    // If Ctrl, Alt, or Meta (Cmd on Mac) is pressed, it's not a simple printable character
-    // Exception: AltGr (Ctrl+Alt on some keyboards) can produce printable characters
-    if (event.ctrlKey && !event.altKey) return false;
-    if (event.altKey && !event.ctrlKey) return false;
-    if (event.metaKey) return false; // Cmd key on Mac
-
-    // If key produces a single printable character
-    return event.key.length === 1;
-  }
-
-  /**
    * Handle keydown event
    * @param event - KeyboardEvent
    */
@@ -365,7 +377,23 @@ export class InputHandler {
 
     // Ignore keydown events during composition
     // Note: Some browsers send keyCode 229 for all keys during composition
-    if (this.isComposing || event.isComposing || event.keyCode === 229) {
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
+
+    // If we're still in composition (our flag) but browser says composition ended,
+    // this is the key that ended the composition (space, period, etc.).
+    // Queue it to be processed after compositionend to maintain correct order.
+    if (this.isComposing) {
+      // Store the key to be processed after composition ends
+      this.pendingKeyAfterComposition = event.key;
+      event.preventDefault();
+      return;
+    }
+
+    // Block the key that triggered composition end if we just processed a pending key
+    if (this.compositionJustEnded) {
+      this.compositionJustEnded = false;
       return;
     }
 
@@ -384,9 +412,18 @@ export class InputHandler {
       }
     }
 
-    // Allow Ctrl+V and Cmd+V to trigger paste event (don't preventDefault)
+    // Ctrl+V / Cmd+V: emit \x16 to the PTY so apps that read it natively
+    // (e.g. opencode image paste via osascript) receive the signal, then let
+    // the browser paste event fire so handlePaste covers text content.
     if ((event.ctrlKey || event.metaKey) && event.code === 'KeyV') {
-      // Let the browser's native paste event fire
+      const encoded = this.encoder.encode({
+        key: Key.V,
+        mods: event.ctrlKey ? Mods.CTRL : Mods.SUPER,
+        action: KeyAction.PRESS,
+      });
+      if (encoded.length > 0) {
+        this.onDataCallback(new TextDecoder().decode(encoded));
+      }
       return;
     }
 
@@ -402,156 +439,87 @@ export class InputHandler {
       return;
     }
 
-    // For printable characters without modifiers, send the character directly
-    // This handles: a-z, A-Z (with shift), 0-9, punctuation, etc.
-    if (this.isPrintableCharacter(event)) {
-      event.preventDefault();
-      this.onDataCallback(event.key);
-      this.recordKeyDownData(event.key);
-      return;
-    }
-
-    // Map the physical key code
+    // Map the physical key code. Events with no corresponding Ghostty Key
+    // (media keys, etc.) are dropped silently.
     const key = this.mapKeyCode(event.code);
-    if (key === null) {
-      // Unknown key - ignore it
-      return;
-    }
+    if (key === null) return;
 
-    // Extract modifiers
     const mods = this.extractModifiers(event);
 
-    // Handle simple special keys that produce standard sequences
-    if (mods === Mods.NONE || mods === Mods.SHIFT) {
-      let simpleOutput: string | null = null;
-
-      switch (key) {
-        case Key.ENTER:
-          simpleOutput = '\r'; // Carriage return
-          break;
-        case Key.TAB:
-          if (mods === Mods.SHIFT) {
-            simpleOutput = '\x1b[Z'; // Backtab
-          } else {
-            simpleOutput = '\t'; // Tab
+    // Pass event.key as utf8 when it is a single Unicode scalar (a printable
+    // character, including non-ASCII and surrogate-pair emoji). Named keys
+    // like "Enter", "ArrowUp", "F1", "Dead" are longer strings and produce
+    // undefined here, so the encoder relies on the logical key alone.
+    //
+    // Case is preserved intentionally: the encoder uses the utf8 byte to
+    // pick the C0 sequence for Ctrl+letter, and needs the actual shifted
+    // character for the text-output path.
+    //
+    // macOS transforms Alt+letter to a Unicode char (e.g. Alt+T → '†').
+    // When that happens event.key is non-ASCII, so we fall back to
+    // deriving the utf8 from event.code (KeyT → 't') so the encoder can
+    // produce the correct ESC+letter sequence. See issue #109.
+    let utf8: string | undefined;
+    if (event.key.length > 0 && event.key !== 'Dead' && event.key !== 'Unidentified') {
+      const cp = event.key.codePointAt(0);
+      const scalarLen = cp !== undefined && cp > 0xffff ? 2 : 1;
+      if (event.key.length === scalarLen) {
+        if (event.altKey && cp !== undefined && cp > 127) {
+          // macOS Alt-transformed character — derive from physical key code
+          if (event.code.startsWith('Key') && event.code.length === 4) {
+            utf8 = event.code[3].toLowerCase();
           }
-          break;
-        case Key.BACKSPACE:
-          simpleOutput = '\x7F'; // DEL (most terminals use 0x7F for backspace)
-          break;
-        case Key.ESCAPE:
-          simpleOutput = '\x1B'; // ESC
-          break;
-        // Arrow keys are handled by the encoder (respects application cursor mode)
-        // Navigation keys
-        case Key.HOME:
-          simpleOutput = '\x1B[H';
-          break;
-        case Key.END:
-          simpleOutput = '\x1B[F';
-          break;
-        case Key.INSERT:
-          simpleOutput = '\x1B[2~';
-          break;
-        case Key.DELETE:
-          simpleOutput = '\x1B[3~';
-          break;
-        case Key.PAGE_UP:
-          simpleOutput = '\x1B[5~';
-          break;
-        case Key.PAGE_DOWN:
-          simpleOutput = '\x1B[6~';
-          break;
-        // Function keys
-        case Key.F1:
-          simpleOutput = '\x1BOP';
-          break;
-        case Key.F2:
-          simpleOutput = '\x1BOQ';
-          break;
-        case Key.F3:
-          simpleOutput = '\x1BOR';
-          break;
-        case Key.F4:
-          simpleOutput = '\x1BOS';
-          break;
-        case Key.F5:
-          simpleOutput = '\x1B[15~';
-          break;
-        case Key.F6:
-          simpleOutput = '\x1B[17~';
-          break;
-        case Key.F7:
-          simpleOutput = '\x1B[18~';
-          break;
-        case Key.F8:
-          simpleOutput = '\x1B[19~';
-          break;
-        case Key.F9:
-          simpleOutput = '\x1B[20~';
-          break;
-        case Key.F10:
-          simpleOutput = '\x1B[21~';
-          break;
-        case Key.F11:
-          simpleOutput = '\x1B[23~';
-          break;
-        case Key.F12:
-          simpleOutput = '\x1B[24~';
-          break;
-      }
-
-      if (simpleOutput !== null) {
-        event.preventDefault();
-        this.onDataCallback(simpleOutput);
-        this.recordKeyDownData(simpleOutput);
-        return;
+        } else {
+          utf8 = event.key;
+        }
       }
     }
 
-    // Determine action (we only care about PRESS for now, not RELEASE or REPEAT)
-    const action = KeyAction.PRESS;
+    // Sync encoder options with terminal mode state before every encode.
+    // DEC mode 1 (DECCKM) → cursor-key application mode.
+    // DEC mode 66 (DECNKM) → keypad application mode.
+    // syncEncoderOption skips the WASM round-trip when the value hasn't
+    // changed since last keystroke, which is the common case.
+    if (this.getModeCallback) {
+      this.syncEncoderOption(KeyEncoderOption.CURSOR_KEY_APPLICATION, this.getModeCallback(1));
+      this.syncEncoderOption(KeyEncoderOption.KEYPAD_KEY_APPLICATION, this.getModeCallback(66));
+    }
 
-    // For non-printable keys or keys with modifiers, encode using Ghostty
+    // mapKeyCode succeeded → we own this key. Prevent browser default
+    // (search shortcuts, F11 fullscreen, Ctrl+W close tab, etc.) before
+    // attempting to encode, so a failed or empty encode drops the
+    // keystroke silently rather than letting it trigger a browser action.
+    //
+    // This is a deliberate divergence from native Ghostty, which returns
+    // `.ignored` from keyCallback when the encoder produces no output and
+    // lets the apprt decide whether to propagate the key (Surface.zig
+    // around line 2670). In a native context that lets OS-level shortcuts
+    // and apprt keybinds run; in a browser context "ignored" would mean
+    // the browser fires its own default action with no intermediate layer
+    // to filter, which is rarely what users typing into a terminal want.
+    // Empty-encode mapped keys are also rare in our path: mapKeyCode
+    // already filters unmapped keys, and most mapped keys produce non-
+    // empty encodings in default mode.
+    event.preventDefault();
+    event.stopPropagation();
+
+    let data: string;
     try {
-      // Sync encoder options with terminal mode state
-      // Mode 1 (DECCKM) controls whether arrow keys send CSI or SS3 sequences
-      if (this.getModeCallback) {
-        const appCursorMode = this.getModeCallback(1);
-        this.encoder.setOption(KeyEncoderOption.CURSOR_KEY_APPLICATION, appCursorMode);
-      }
-
-      // For letter/number keys, even with modifiers, pass the base character
-      // This helps the encoder produce correct control sequences (e.g., Ctrl+A = 0x01)
-      // For special keys (Enter, Arrow keys, etc.), don't pass utf8
-      const utf8 =
-        event.key.length === 1 && event.key.charCodeAt(0) < 128
-          ? event.key.toLowerCase() // Use lowercase for consistency
-          : undefined;
-
       const encoded = this.encoder.encode({
-        action,
+        action: KeyAction.PRESS,
         key,
         mods,
         utf8,
       });
-
-      // Convert Uint8Array to string
-      const decoder = new TextDecoder();
-      const data = decoder.decode(encoded);
-
-      // Prevent default browser behavior
-      event.preventDefault();
-      event.stopPropagation();
-
-      // Emit the data
-      if (data.length > 0) {
-        this.onDataCallback(data);
-        this.recordKeyDownData(data);
-      }
+      data = encoded.length === 0 ? '' : this.decoder.decode(encoded);
     } catch (error) {
-      // Encoding failed - log but don't crash
       console.warn('Failed to encode key:', event.code, error);
+      return;
+    }
+
+    if (data.length > 0) {
+      this.onDataCallback(data);
+      this.recordKeyDownData(data);
     }
   }
 
@@ -562,23 +530,22 @@ export class InputHandler {
   private handlePaste(event: ClipboardEvent): void {
     if (this.isDisposed) return;
 
-    // Prevent default paste behavior
-    event.preventDefault();
-    event.stopPropagation();
-
     // Get clipboard data
     const clipboardData = event.clipboardData;
     if (!clipboardData) {
-      console.warn('No clipboard data available');
       return;
     }
 
-    // Get text from clipboard
+    // Get text from clipboard — if there's no text (e.g. image-only paste),
+    // let the event continue bubbling so addons like ImagePasteAddon can handle it.
     const text = clipboardData.getData('text/plain');
     if (!text) {
-      console.warn('No text in clipboard');
       return;
     }
+
+    // We have text to handle — claim the event
+    event.preventDefault();
+    event.stopPropagation();
 
     if (this.shouldIgnorePasteEvent(text, 'paste')) {
       return;
@@ -689,6 +656,8 @@ export class InputHandler {
     if (data && data.length > 0) {
       if (this.shouldIgnoreCompositionEnd(data)) {
         this.cleanupCompositionTextNodes();
+        // Still process pending key even if composition data is ignored
+        this.processPendingKeyAfterComposition();
         return;
       }
       this.onDataCallback(data);
@@ -696,6 +665,22 @@ export class InputHandler {
     }
 
     this.cleanupCompositionTextNodes();
+
+    // Process the key that ended composition (space, period, etc.)
+    // This ensures correct order: composed text first, then the terminating key
+    this.processPendingKeyAfterComposition();
+  }
+
+  /**
+   * Process the pending key that was queued during composition
+   */
+  private processPendingKeyAfterComposition(): void {
+    if (this.pendingKeyAfterComposition) {
+      const key = this.pendingKeyAfterComposition;
+      this.pendingKeyAfterComposition = null;
+      // Output the key that ended composition
+      this.onDataCallback(key);
+    }
   }
 
   /**
@@ -894,6 +879,29 @@ export class InputHandler {
     if (this.isDisposed) return;
     if (!this.mouseConfig?.hasMouseTracking()) return;
 
+    this.sendWheelMouseEvent(event);
+
+    // Prevent default scrolling when mouse tracking is active
+    event.preventDefault();
+  }
+
+  /**
+   * Send a wheel event as a mouse tracking sequence.
+   * Public so that Terminal can forward wheel events when mouse tracking is
+   * active (the Terminal-level capture handler stops propagation to prevent
+   * browser scrolling, so this method allows explicit forwarding).
+   */
+  handleWheelEvent(event: WheelEvent): void {
+    if (this.isDisposed) return;
+
+    this.sendWheelMouseEvent(event);
+  }
+
+  /**
+   * Encode and send a wheel event as a mouse tracking escape sequence.
+   * Button 64 = scroll up, button 65 = scroll down, with cell coordinates.
+   */
+  private sendWheelMouseEvent(event: WheelEvent): void {
     const cell = this.pixelToCell(event);
     if (!cell) return;
 
@@ -901,9 +909,6 @@ export class InputHandler {
     const button = event.deltaY < 0 ? 64 : 65;
 
     this.sendMouseEvent(button, cell.col, cell.row, false, event);
-
-    // Prevent default scrolling when mouse tracking is active
-    event.preventDefault();
   }
 
   /**
@@ -1059,18 +1064,20 @@ export class InputHandler {
       this.beforeInputListener = null;
     }
 
+    // Remove composition listeners from the same element they were attached to
+    const compositionTarget = this.inputElement || this.container;
     if (this.compositionStartListener) {
-      this.container.removeEventListener('compositionstart', this.compositionStartListener);
+      compositionTarget.removeEventListener('compositionstart', this.compositionStartListener);
       this.compositionStartListener = null;
     }
 
     if (this.compositionUpdateListener) {
-      this.container.removeEventListener('compositionupdate', this.compositionUpdateListener);
+      compositionTarget.removeEventListener('compositionupdate', this.compositionUpdateListener);
       this.compositionUpdateListener = null;
     }
 
     if (this.compositionEndListener) {
-      this.container.removeEventListener('compositionend', this.compositionEndListener);
+      compositionTarget.removeEventListener('compositionend', this.compositionEndListener);
       this.compositionEndListener = null;
     }
 

@@ -38,6 +38,16 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", "coverage", "*.wasm", ".git", ".vite", "bun.lock"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      "coverage",
+      "*.wasm",
+      ".git",
+      ".vite",
+      "bun.lock",
+      "tests/e2e/report",
+      "tests/e2e/results"
+    ]
   }
 }

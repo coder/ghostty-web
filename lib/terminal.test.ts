@@ -172,6 +172,34 @@ describe('Terminal', () => {
       disposable.dispose();
     });
 
+    test('emits terminal query responses through onData by default', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      const receivedData: string[] = [];
+      term.onData((data) => receivedData.push(data));
+
+      term.write('\x1b[5n');
+
+      expect(receivedData).toContain('\x1b[0n');
+
+      term.dispose();
+    });
+
+    test('can keep terminal query responses out of onData', async () => {
+      const term = await createIsolatedTerminal({ emitTerminalResponses: false });
+      term.open(container!);
+
+      const receivedData: string[] = [];
+      term.onData((data) => receivedData.push(data));
+
+      term.write('\x1b[5n');
+
+      expect(receivedData).toEqual([]);
+
+      term.dispose();
+    });
+
     test('onResize fires when terminal is resized', async () => {
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container!);
@@ -276,9 +304,13 @@ describe('Terminal', () => {
       term.dispose();
     });
 
-    test('resize() throws if not open', async () => {
+    test('resize() works before open (headless-compatible)', async () => {
       const term = await createIsolatedTerminal();
-      expect(() => term.resize(100, 30)).toThrow('must be opened');
+      // Resize should work before open() - the WASM terminal exists
+      term.resize(100, 30);
+      expect(term.cols).toBe(100);
+      expect(term.rows).toBe(30);
+      term.dispose();
     });
   });
 
@@ -1613,14 +1645,20 @@ describe('Terminal Modes', () => {
     term.dispose();
   });
 
-  test('getMode() throws when terminal not open', async () => {
+  test('getMode() works before open (headless-compatible)', async () => {
     const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    expect(() => term.getMode(25)).toThrow();
+    // Mode queries should work before open() - WASM terminal exists
+    const visible = term.getMode(25); // cursor visible mode
+    expect(typeof visible).toBe('boolean');
+    term.dispose();
   });
 
-  test('hasBracketedPaste() throws when terminal not open', async () => {
+  test('hasBracketedPaste() works before open (headless-compatible)', async () => {
     const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    expect(() => term.hasBracketedPaste()).toThrow();
+    // Mode queries should work before open() - WASM terminal exists
+    const hasBP = term.hasBracketedPaste();
+    expect(hasBP).toBe(false); // Default is off
+    term.dispose();
   });
 
   test('alternate screen mode via getMode()', async () => {
@@ -2988,5 +3026,715 @@ describe('Synchronous open()', () => {
     expect(term.rows).toBe(40);
 
     term.dispose();
+  });
+
+  test('focusOnOpen: false prevents auto-focus on open', async () => {
+    if (!container) return;
+
+    // Focus a different element first
+    const other = document.createElement('input');
+    document.body.appendChild(other);
+    other.focus();
+    expect(document.activeElement).toBe(other);
+
+    const term = await createIsolatedTerminal({ focusOnOpen: false });
+    term.open(container);
+
+    // The terminal should NOT have stolen focus
+    expect(document.activeElement).toBe(other);
+
+    other.remove();
+    term.dispose();
+  });
+
+  test('focusOnOpen defaults to true', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // With IME routing (PR #11) focus lands on the hidden textarea inside the
+    // container rather than on the container itself — either is correct.
+    const active = document.activeElement;
+    expect(active === container || container.contains(active)).toBe(true);
+
+    term.dispose();
+  });
+});
+
+describe('preserveScrollOnWrite option', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('default (false): writes auto-scroll viewport to bottom (legacy behaviour)', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 5, scrollback: 50000 });
+    term.open(container);
+
+    // Fill scrollback so viewportY can move off zero
+    for (let i = 0; i < 200; i++) term.write(`line ${i}\r\n`);
+
+    // Simulate user scrolling up
+    const before = term.wasmTerm!.getScrollbackLength();
+    term.scrollLines(-10);
+    expect(term.viewportY).toBeGreaterThan(0);
+
+    // New output arrives — legacy behaviour snaps the viewport back to bottom
+    term.write('new output\r\n');
+    expect(term.viewportY).toBe(0);
+    expect(term.wasmTerm!.getScrollbackLength()).toBeGreaterThanOrEqual(before);
+
+    term.dispose();
+  });
+
+  test('preserveScrollOnWrite=true: viewport stays locked on the same content', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      cols: 80,
+      rows: 5,
+      scrollback: 50000,
+      preserveScrollOnWrite: true,
+    });
+    term.open(container);
+
+    for (let i = 0; i < 200; i++) term.write(`line ${i}\r\n`);
+
+    term.scrollLines(-10);
+    const savedViewportY = term.viewportY;
+    const savedScrollback = term.wasmTerm!.getScrollbackLength();
+    expect(savedViewportY).toBeGreaterThan(0);
+
+    term.write('extra line\r\n');
+    const newScrollback = term.wasmTerm!.getScrollbackLength();
+    const delta = newScrollback - savedScrollback;
+
+    // viewportY should have shifted by the scrollback delta (or clamped) — NOT snapped to 0
+    expect(term.viewportY).not.toBe(0);
+    expect(term.viewportY).toBe(Math.max(0, Math.min(savedViewportY + delta, newScrollback)));
+
+    term.dispose();
+  });
+
+  describe('WASM memory safety', () => {
+    let container: HTMLElement | null = null;
+
+    beforeEach(() => {
+      if (typeof document !== 'undefined') {
+        container = document.createElement('div');
+        document.body.appendChild(container);
+      }
+    });
+
+    afterEach(() => {
+      if (container && container.parentNode) {
+        container.parentNode.removeChild(container);
+        container = null;
+      }
+    });
+
+    test('new terminal should not contain stale data from freed terminal', async () => {
+      if (!container) return;
+
+      // Create first terminal and write content
+      const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term1.open(container);
+      term1.write('Hello stale data');
+
+      // Access the Ghostty instance to create a second raw terminal
+      const ghostty = (term1 as any).ghostty;
+      const wasmTerm1 = term1.wasmTerm!;
+
+      // Free the first WASM terminal and create a new one through the same instance
+      wasmTerm1.free();
+      const wasmTerm2 = ghostty.createTerminal(80, 24);
+
+      // New terminal should have clean grid
+      const line = wasmTerm2.getLine(0);
+      expect(line).not.toBeNull();
+      for (const cell of line!) {
+        expect(cell.codepoint).toBe(0);
+      }
+      expect(wasmTerm2.getScrollbackLength()).toBe(0);
+      wasmTerm2.free();
+
+      term1.dispose();
+    });
+
+    // https://github.com/coder/ghostty-web/issues/141
+    test('freeing terminal after writing multi-codepoint grapheme clusters should not corrupt WASM memory', async () => {
+      if (!container) return;
+
+      const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term1.open(container);
+      const ghostty = (term1 as any).ghostty;
+      const wasmTerm1 = term1.wasmTerm!;
+
+      // Write multi-codepoint grapheme clusters (flag emoji, skin tone, ZWJ sequence)
+      wasmTerm1.write('\u{1F1FA}\u{1F1F8}'); // 🇺🇸 regional indicator pair
+      wasmTerm1.write('\u{1F44B}\u{1F3FD}'); // 👋🏽 wave + skin tone modifier
+      wasmTerm1.write('\u{1F468}\u200D\u{1F469}\u200D\u{1F467}'); // 👨‍👩‍👧 ZWJ family
+
+      // Free the terminal that processed grapheme clusters
+      wasmTerm1.free();
+
+      // Creating and writing to a new terminal on the same instance should not crash
+      const wasmTerm2 = ghostty.createTerminal(80, 24);
+      expect(() => wasmTerm2.write('Hello')).not.toThrow();
+
+      // Verify the write actually worked
+      const line = wasmTerm2.getLine(0);
+      expect(line).not.toBeNull();
+      expect(line![0].codepoint).toBe('H'.codePointAt(0)!);
+
+      wasmTerm2.free();
+      term1.dispose();
+    });
+  });
+});
+
+describe('ESC k title sequence (issue #153)', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('ESC k <text> ESC \\ does not leak the title payload onto the grid', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+
+    // GNU screen / tmux title-set: ESC k /tmp ESC \ then ESC k ls ESC \
+    // then the actual visible content. Before the strip pass landed,
+    // /tmp leaked onto row 0 and "ls" merged with the next line.
+    term.write('\x1bk/tmp\x1b\\\x1bkls\x1b\\demo.txt\r\n');
+
+    const line0 = term.wasmTerm!.getLine(0);
+    const text0 = line0
+      .map((c) => (c.codepoint ? String.fromCodePoint(c.codepoint) : ''))
+      .join('')
+      .trimEnd();
+    expect(text0).toBe('demo.txt');
+    expect(text0).not.toContain('/tmp');
+    expect(text0).not.toContain('ls');
+
+    term.dispose();
+  });
+
+  test('ESC k variant terminated by BEL is also stripped', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+
+    term.write('\x1bktitle\x07after\r\n');
+
+    const line0 = term.wasmTerm!.getLine(0);
+    const text0 = line0
+      .map((c) => (c.codepoint ? String.fromCodePoint(c.codepoint) : ''))
+      .join('')
+      .trimEnd();
+    expect(text0).toBe('after');
+
+    term.dispose();
+  });
+
+  test('OSC 0 title-set continues to be consumed by the WASM parser', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+
+    // OSC 0 ; <title> BEL — handled by WASM. The strip pass should not
+    // touch this sequence.
+    term.write('\x1b]0;mywindow\x07visible\r\n');
+
+    const line0 = term.wasmTerm!.getLine(0);
+    const text0 = line0
+      .map((c) => (c.codepoint ? String.fromCodePoint(c.codepoint) : ''))
+      .join('')
+      .trimEnd();
+    expect(text0).toBe('visible');
+
+    term.dispose();
+  });
+
+  test('Uint8Array input is stripped equivalently to string input', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+
+    const bytes = new TextEncoder().encode('\x1bktitle\x1b\\done\r\n');
+    term.write(bytes);
+
+    const line0 = term.wasmTerm!.getLine(0);
+    const text0 = line0
+      .map((c) => (c.codepoint ? String.fromCodePoint(c.codepoint) : ''))
+      .join('')
+      .trimEnd();
+    expect(text0).toBe('done');
+
+    term.dispose();
+  });
+});
+
+// ============================================================================
+// Dynamic Theme Changes
+// ============================================================================
+
+describe('Dynamic Theme Changes', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(async () => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('full theme change updates renderer', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#000000', foreground: '#ffffff' },
+    });
+    term.open(container);
+
+    // Change to a completely different theme
+    term.options.theme = {
+      background: '#ff0000',
+      foreground: '#00ff00',
+      cursor: '#0000ff',
+      red: '#aa0000',
+    };
+
+    // @ts-ignore - accessing private for test
+    const renderer = term.renderer;
+    // @ts-ignore - accessing private for test
+    expect(renderer.theme.background).toBe('#ff0000');
+    // @ts-ignore - accessing private for test
+    expect(renderer.theme.foreground).toBe('#00ff00');
+    // @ts-ignore - accessing private for test
+    expect(renderer.theme.cursor).toBe('#0000ff');
+
+    term.dispose();
+  });
+
+  test('full theme change updates WASM terminal colors', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    term.options.theme = {
+      background: '#112233',
+      foreground: '#aabbcc',
+    };
+
+    // Force render state update to pick up new colors
+    term.wasmTerm!.update();
+    const colors = term.wasmTerm!.getColors();
+
+    // Verify WASM terminal has the new colors
+    expect(colors.background.r).toBe(0x11);
+    expect(colors.background.g).toBe(0x22);
+    expect(colors.background.b).toBe(0x33);
+    expect(colors.foreground.r).toBe(0xaa);
+    expect(colors.foreground.g).toBe(0xbb);
+    expect(colors.foreground.b).toBe(0xcc);
+
+    term.dispose();
+  });
+
+  test('partial theme update preserves previous customizations', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // First: change background only
+    term.options.theme = { background: '#111111' };
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#111111');
+
+    // Second: change foreground only — background should be preserved
+    term.options.theme = { foreground: '#222222' };
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#111111');
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.foreground).toBe('#222222');
+
+    term.dispose();
+  });
+
+  test('successive partial updates accumulate correctly', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    term.options.theme = { background: '#aaaaaa' };
+    term.options.theme = { foreground: '#bbbbbb' };
+    term.options.theme = { cursor: '#cccccc' };
+
+    // @ts-ignore - accessing private for test
+    const theme = term.renderer.theme;
+    expect(theme.background).toBe('#aaaaaa');
+    expect(theme.foreground).toBe('#bbbbbb');
+    expect(theme.cursor).toBe('#cccccc');
+
+    term.dispose();
+  });
+
+  test('theme reset to empty object restores defaults', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#ff0000', foreground: '#00ff00' },
+    });
+    term.open(container);
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#ff0000');
+
+    // Reset to empty — should restore defaults
+    term.options.theme = {};
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#1e1e1e');
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.foreground).toBe('#d4d4d4');
+
+    term.dispose();
+  });
+
+  test('theme reset to null restores defaults', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#ff0000' },
+    });
+    term.open(container);
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#ff0000');
+
+    // Reset to null
+    term.options.theme = null as any;
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#1e1e1e');
+
+    term.dispose();
+  });
+
+  test('theme change before open() is applied correctly', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { background: '#111111' },
+    });
+
+    // Change theme before open
+    term.options.theme = { background: '#222222' };
+
+    // Open — should use the latest theme
+    term.open(container);
+
+    // The buildWasmConfig reads from options.theme which is now #222222
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('#222222');
+
+    term.dispose();
+  });
+
+  test('ANSI palette color cells re-resolve after theme change', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { red: '#cd3131' },
+    });
+    term.open(container);
+
+    // Write text with ANSI red (color index 1)
+    term.write('\x1b[31mRed text\x1b[0m');
+
+    // Change theme — new red
+    term.options.theme = { red: '#ff0000' };
+
+    // Force render state update and read cells
+    term.wasmTerm!.update();
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+
+    // First cell ('R') should now have the new red color
+    const cell = line![0];
+    expect(cell.fg_r).toBe(0xff);
+    expect(cell.fg_g).toBe(0x00);
+    expect(cell.fg_b).toBe(0x00);
+
+    term.dispose();
+  });
+
+  test('explicit RGB color cells remain unchanged after theme change', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // Write text with explicit RGB color
+    term.write('\x1b[38;2;100;200;50mRGB text\x1b[0m');
+
+    // Change theme
+    term.options.theme = {
+      foreground: '#ffffff',
+      background: '#000000',
+      red: '#ff0000',
+    };
+
+    // Force render state update and read cells
+    term.wasmTerm!.update();
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+
+    // First cell ('R') should still have the explicit RGB color
+    const cell = line![0];
+    expect(cell.fg_r).toBe(100);
+    expect(cell.fg_g).toBe(200);
+    expect(cell.fg_b).toBe(50);
+
+    term.dispose();
+  });
+
+  test('theme change triggers full redraw', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // Clear any existing dirty state
+    term.wasmTerm!.clearDirty();
+    expect(term.wasmTerm!.needsFullRedraw()).toBe(false);
+
+    // Change theme
+    term.options.theme = { background: '#ff0000' };
+
+    // Should need a full redraw
+    expect(term.wasmTerm!.needsFullRedraw()).toBe(true);
+
+    // After clearing, no longer dirty
+    term.wasmTerm!.clearDirty();
+    expect(term.wasmTerm!.needsFullRedraw()).toBe(false);
+
+    term.dispose();
+  });
+
+  test('invalid color values do not crash', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal();
+    term.open(container);
+
+    // Should not throw
+    term.options.theme = {
+      background: 'not-a-color',
+      foreground: 'rgb(999,0,0)',
+      red: '',
+    };
+
+    // @ts-ignore - accessing private for test
+    expect(term.renderer.theme.background).toBe('not-a-color');
+
+    term.dispose();
+  });
+
+  test('default fg/bg cells update after theme change', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({
+      theme: { foreground: '#aaaaaa', background: '#111111' },
+    });
+    term.open(container);
+
+    // Write text with default colors (no SGR)
+    term.write('Hello');
+
+    // Change theme
+    term.options.theme = { foreground: '#ffffff', background: '#000000' };
+
+    // Force render state update and read cells
+    term.wasmTerm!.update();
+    const line = term.wasmTerm!.getLine(0);
+    expect(line).not.toBeNull();
+
+    // First cell ('H') should have new default foreground
+    const cell = line![0];
+    expect(cell.fg_r).toBe(0xff);
+    expect(cell.fg_g).toBe(0xff);
+    expect(cell.fg_b).toBe(0xff);
+
+    term.dispose();
+  });
+});
+
+describe('echo latency optimization (issue #161)', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(() => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('write() after a user-input fire renders synchronously instead of waiting for rAF', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+
+    let renderCount = 0;
+    const renderer = (term as any).renderer;
+    const originalRender = renderer.render.bind(renderer);
+    renderer.render = (...args: unknown[]) => {
+      renderCount++;
+      return originalRender(...args);
+    };
+    // Drain any opening renders before counting.
+    await new Promise((r) => setTimeout(r, 16));
+    renderCount = 0;
+
+    // Simulate the user typing — input(data, /* wasUserInput */ true) sets
+    // awaitingEcho before firing dataEmitter.
+    term.input('x', true);
+
+    // The actual echo bytes arrive next:
+    term.write('x');
+
+    // The synchronous render should have run during writeInternal.
+    expect(renderCount).toBeGreaterThanOrEqual(1);
+
+    // And the flag should be cleared so a subsequent write without user
+    // input doesn't trigger another synchronous render.
+    renderCount = 0;
+    term.write('more output');
+    expect(renderCount).toBe(0);
+
+    renderer.render = originalRender;
+    term.dispose();
+  });
+});
+
+// =====================================================================
+// WRITE_PTY callback routing
+//
+// The new C ABI delivers terminal-generated bytes (DSR replies, in-band
+// size reports, XTVERSION, ...) via a callback installed with
+// ghostty_terminal_set(WRITE_PTY, fn). The TS wrapper buffers them into
+// a per-instance pendingResponses queue drained by readResponse().
+//
+// These tests cover the routing — single instance, and two parallel
+// Ghostty.load() instances. The latter is a regression caught in code
+// review: handle IDs and table indices are only unique within their
+// parent WASM module, so a process-wide registry corrupts the routing
+// once you have two live instances.
+// =====================================================================
+describe('Write PTY response routing', () => {
+  test('DSR 6 (cursor position) round-trips through readResponse', async () => {
+    const { Ghostty } = await import('./ghostty');
+    const g = await Ghostty.load();
+    const t = g.createTerminal(80, 24);
+
+    expect(t.hasResponse()).toBe(false);
+    t.write('\x1b[6n'); // DSR 6 → cursor position report
+    expect(t.hasResponse()).toBe(true);
+    expect(t.readResponse()).toBe('\x1b[1;1R');
+    expect(t.hasResponse()).toBe(false);
+    expect(t.readResponse()).toBe(null);
+
+    t.free();
+  });
+
+  test('XTWINOPS size queries (CSI 14/16/18 t) round-trip after setCellPixelSize', async () => {
+    const { Ghostty } = await import('./ghostty');
+    const g = await Ghostty.load();
+    const t = g.createTerminal(80, 24);
+
+    // Without pixel dims set, the SIZE callback returns false and the
+    // terminal silently drops the query.
+    t.write('\x1b[14t');
+    expect(t.readResponse()).toBe(null);
+
+    t.setCellPixelSize(8, 16);
+    t.write('\x1b[14t'); // text area in pixels — \e[4;<height>;<width>t
+    expect(t.readResponse()).toBe('\x1b[4;384;640t');
+    t.write('\x1b[16t'); // cell in pixels — \e[6;<height>;<width>t
+    expect(t.readResponse()).toBe('\x1b[6;16;8t');
+    t.write('\x1b[18t'); // rows / cols — \e[8;<rows>;<cols>t
+    expect(t.readResponse()).toBe('\x1b[8;24;80t');
+
+    t.free();
+  });
+
+  test('two parallel Ghostty.load() instances each route to themselves', async () => {
+    const { Ghostty } = await import('./ghostty');
+    // Each load() owns its own __indirect_function_table; the registry
+    // is keyed off that table so the trampoline slots and routing maps
+    // don't collide.
+    const a = await Ghostty.load();
+    const b = await Ghostty.load();
+    const ta = a.createTerminal(80, 24);
+    const tb = b.createTerminal(80, 24);
+
+    ta.write('\x1b[6n');
+    tb.write('\x1b[6n');
+    expect(ta.readResponse()).toBe('\x1b[1;1R');
+    expect(tb.readResponse()).toBe('\x1b[1;1R');
+
+    ta.free();
+    tb.free();
   });
 });

@@ -6,3 +6,20 @@ dist/
 
 # WASM build output (built locally and in CI)
 ghostty-vt.wasm
+
+# Local-only agent workflows, commands, task notes and worktrees
+.agents/
+.claude/
+.worktrees/
+_tasks/
+
+# Local dev container config (not part of the project)
+.devcontainer/
+
+# npm pack artifacts
+*.tgz
+
+# Playwright generated output (reports, traces, screenshots, videos)
+tests/e2e/report/
+tests/e2e/results/
+test-results/

@@ -189,6 +189,29 @@ describe('SelectionManager', () => {
       term.dispose();
     });
 
+    test('getSelection does not insert spaces between wide (CJK) characters', async () => {
+      if (!container) return;
+
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term.open(container);
+
+      // Three Korean wide characters — each occupies 2 terminal cells:
+      // leading cell {codepoint: ..., width: 2} + continuation cell
+      // {codepoint: 0, width: 0}. The fix ensures we skip continuation
+      // cells instead of treating them as empty cells (which would
+      // produce "안 녕 하" with stray spaces between glyphs).
+      term.write('안녕하\r\n');
+
+      const scrollbackLen = term.wasmTerm!.getScrollbackLength();
+      // Select the 6 cells covering all three wide chars
+      setSelectionAbsolute(term, 0, scrollbackLen, 5, scrollbackLen);
+
+      const selMgr = (term as any).selectionManager;
+      expect(selMgr.getSelection()).toBe('안녕하');
+
+      term.dispose();
+    });
+
     test('getSelection extracts multi-line text', async () => {
       if (!container) return;
 

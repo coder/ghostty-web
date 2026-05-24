@@ -5,3 +5,5 @@
 # Preload Happy DOM before running tests to provide browser-like globals
 # (window, document, HTMLElement, etc.)
 preload = "./happydom.ts"
+# Exclude Playwright E2E tests (those run via `bun run test:e2e`)
+exclude = ["tests/e2e/**"]
