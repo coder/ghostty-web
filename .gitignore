@@ -12,3 +12,6 @@ ghostty-vt.wasm
 .claude/
 .worktrees/
 _tasks/
+
+# Local dev container config (not part of the project)
+.devcontainer/

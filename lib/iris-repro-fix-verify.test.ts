@@ -10,8 +10,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { createIsolatedTerminal } from './test-helpers';
 import type { Terminal } from './terminal';
+import { createIsolatedTerminal } from './test-helpers';
 
 const ESC = '\x1b';
 
@@ -39,7 +39,9 @@ function generateTestOutput(): Uint8Array {
     lines.push(line);
   }
   lines.push(`${ESC}[1m── ATTRIBUTES ──${ESC}[0m`);
-  lines.push(`  ${ESC}[1mBold${ESC}[0m ${ESC}[3mItalic${ESC}[0m ${ESC}[4mUnderline${ESC}[0m ${ESC}[7mReverse${ESC}[0m`);
+  lines.push(
+    `  ${ESC}[1mBold${ESC}[0m ${ESC}[3mItalic${ESC}[0m ${ESC}[4mUnderline${ESC}[0m ${ESC}[7mReverse${ESC}[0m`
+  );
   lines.push(`${ESC}[1m── UNICODE ──${ESC}[0m`);
   lines.push('  ┌──────────┬──────────┐');
   lines.push('  │  Cell A   │  Cell B   │');
@@ -147,10 +149,14 @@ describe('Scrollback bytes fix verification', () => {
         term.wasmTerm!.update();
         sbLengths.push(term.wasmTerm!.getScrollbackLength());
         const text = getViewportText(term);
-        if (!baseline) { baseline = text; }
-        else {
+        if (!baseline) {
+          baseline = text;
+        } else {
           for (let i = 0; i < Math.max(text.length, baseline.length); i++) {
-            if ((text[i] || '') !== (baseline[i] || '')) { vpCorrupt = true; break; }
+            if ((text[i] || '') !== (baseline[i] || '')) {
+              vpCorrupt = true;
+              break;
+            }
           }
         }
       }
@@ -160,7 +166,9 @@ describe('Scrollback bytes fix verification', () => {
         if (sbLengths[i] < sbLengths[i - 1]) sbDrops++;
       }
 
-      console.log(`cols=${cols}: viewport=${vpCorrupt ? 'CORRUPT' : 'OK'} scrollback_drops=${sbDrops} sbLens=[${sbLengths.join(',')}]`);
+      console.log(
+        `cols=${cols}: viewport=${vpCorrupt ? 'CORRUPT' : 'OK'} scrollback_drops=${sbDrops} sbLens=[${sbLengths.join(',')}]`
+      );
       term.dispose();
     }
   });

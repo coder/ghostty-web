@@ -20,8 +20,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { createIsolatedTerminal } from './test-helpers';
 import type { Terminal } from './terminal';
+import { createIsolatedTerminal } from './test-helpers';
 
 const ESC = '\x1b';
 
@@ -71,8 +71,12 @@ function generateOutput(): Uint8Array {
 
   // Text attributes
   lines.push(`${ESC}[1m── 3. TEXT ATTRIBUTES ──${ESC}[0m`);
-  lines.push(`  ${ESC}[1mBold${ESC}[0m  ${ESC}[3mItalic${ESC}[0m  ${ESC}[4mUnderline${ESC}[0m  ${ESC}[7mReverse${ESC}[0m  ${ESC}[9mStrike${ESC}[0m`);
-  lines.push(`  ${ESC}[1;3mBold+Italic${ESC}[0m  ${ESC}[1;4mBold+Under${ESC}[0m  ${ESC}[3;4mItalic+Under${ESC}[0m`);
+  lines.push(
+    `  ${ESC}[1mBold${ESC}[0m  ${ESC}[3mItalic${ESC}[0m  ${ESC}[4mUnderline${ESC}[0m  ${ESC}[7mReverse${ESC}[0m  ${ESC}[9mStrike${ESC}[0m`
+  );
+  lines.push(
+    `  ${ESC}[1;3mBold+Italic${ESC}[0m  ${ESC}[1;4mBold+Under${ESC}[0m  ${ESC}[3;4mItalic+Under${ESC}[0m`
+  );
   lines.push('');
 
   // Unicode box drawing
@@ -86,7 +90,9 @@ function generateOutput(): Uint8Array {
 
   // Dense colored grids — this is the bulk, producing enough byte volume
   for (let section = 0; section < 8; section++) {
-    lines.push(`${ESC}[1m── ${section + 5}. COLOR GRID ${String.fromCharCode(65 + section)} ──${ESC}[0m`);
+    lines.push(
+      `${ESC}[1m── ${section + 5}. COLOR GRID ${String.fromCharCode(65 + section)} ──${ESC}[0m`
+    );
     for (let row = 0; row < 8; row++) {
       let line = '  ';
       for (let i = 0; i < 70; i++) {
@@ -258,7 +264,10 @@ describe('Viewport row-merge bug', () => {
       term.wasmTerm!.update();
       const text = getViewportText(term);
 
-      if (!baseline) { baseline = text; continue; }
+      if (!baseline) {
+        baseline = text;
+        continue;
+      }
       if (countDiffs(text, baseline) > 0) corruptCount++;
     }
 
@@ -283,7 +292,9 @@ describe('Viewport row-merge bug', () => {
     term.open(container);
 
     // Theme bg for dark terminal: (10, 10, 10) — the default #0a0a0a
-    const bgR = 10, bgG = 10, bgB = 10;
+    const bgR = 10,
+      bgG = 10,
+      bgB = 10;
     const resetReplacement = new TextEncoder().encode(`\x1b[0;48;2;${bgR};${bgG};${bgB}m`);
     const resetSeq = new TextEncoder().encode('\x1b[0m');
 
@@ -292,7 +303,7 @@ describe('Viewport row-merge bug', () => {
       // Find all occurrences of ESC[0m (bytes: 1B 5B 30 6D)
       const positions: number[] = [];
       for (let i = 0; i < src.length - 3; i++) {
-        if (src[i] === 0x1B && src[i+1] === 0x5B && src[i+2] === 0x30 && src[i+3] === 0x6D) {
+        if (src[i] === 0x1b && src[i + 1] === 0x5b && src[i + 2] === 0x30 && src[i + 3] === 0x6d) {
           positions.push(i);
         }
       }
@@ -300,7 +311,8 @@ describe('Viewport row-merge bug', () => {
 
       const extra = resetReplacement.length - resetSeq.length;
       const out = new Uint8Array(src.length + positions.length * extra);
-      let si = 0, di = 0;
+      let si = 0,
+        di = 0;
       for (const pos of positions) {
         const chunk = src.subarray(si, pos);
         out.set(chunk, di);
@@ -326,11 +338,16 @@ describe('Viewport row-merge bug', () => {
       term.wasmTerm!.update();
       const text = getViewportText(term);
 
-      if (!baseline) { baseline = text; continue; }
+      if (!baseline) {
+        baseline = text;
+        continue;
+      }
       if (countDiffs(text, baseline) > 0) corruptReps.push(rep);
     }
 
-    console.log(`With workaround: corrupt at [${corruptReps.join(', ')}] (${corruptReps.length}/30)`);
+    console.log(
+      `With workaround: corrupt at [${corruptReps.join(', ')}] (${corruptReps.length}/30)`
+    );
     expect(corruptReps.length).toBe(0);
 
     term.dispose();
@@ -351,7 +368,10 @@ describe('Viewport row-merge bug', () => {
       term.write(data);
       term.wasmTerm!.update();
       const text = getViewportText(term);
-      if (!baseline) { baseline = text; continue; }
+      if (!baseline) {
+        baseline = text;
+        continue;
+      }
       if (countDiffs(text, baseline) > 0) break; // stop at first corruption
     }
 
@@ -361,7 +381,10 @@ describe('Viewport row-merge bug', () => {
     for (let row = 0; row < term.rows; row++) {
       const line = term.wasmTerm?.getLine(row);
       if (!line) continue;
-      const lineText = line.map(c => String.fromCodePoint(c.codepoint || 32)).join('').trimEnd();
+      const lineText = line
+        .map((c) => String.fromCodePoint(c.codepoint || 32))
+        .join('')
+        .trimEnd();
       if (vpText[row] !== lineText) mismatches++;
     }
 

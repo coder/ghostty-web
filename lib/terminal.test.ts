@@ -3118,82 +3118,82 @@ describe('preserveScrollOnWrite option', () => {
     expect(term.viewportY).toBe(Math.max(0, Math.min(savedViewportY + delta, newScrollback)));
 
     term.dispose();
-});
-
-describe('WASM memory safety', () => {
-  let container: HTMLElement | null = null;
-
-  beforeEach(() => {
-    if (typeof document !== 'undefined') {
-      container = document.createElement('div');
-      document.body.appendChild(container);
-    }
   });
 
-  afterEach(() => {
-    if (container && container.parentNode) {
-      container.parentNode.removeChild(container);
-      container = null;
-    }
-  });
+  describe('WASM memory safety', () => {
+    let container: HTMLElement | null = null;
 
-  test('new terminal should not contain stale data from freed terminal', async () => {
-    if (!container) return;
+    beforeEach(() => {
+      if (typeof document !== 'undefined') {
+        container = document.createElement('div');
+        document.body.appendChild(container);
+      }
+    });
 
-    // Create first terminal and write content
-    const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    term1.open(container);
-    term1.write('Hello stale data');
+    afterEach(() => {
+      if (container && container.parentNode) {
+        container.parentNode.removeChild(container);
+        container = null;
+      }
+    });
 
-    // Access the Ghostty instance to create a second raw terminal
-    const ghostty = (term1 as any).ghostty;
-    const wasmTerm1 = term1.wasmTerm!;
+    test('new terminal should not contain stale data from freed terminal', async () => {
+      if (!container) return;
 
-    // Free the first WASM terminal and create a new one through the same instance
-    wasmTerm1.free();
-    const wasmTerm2 = ghostty.createTerminal(80, 24);
+      // Create first terminal and write content
+      const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term1.open(container);
+      term1.write('Hello stale data');
 
-    // New terminal should have clean grid
-    const line = wasmTerm2.getLine(0);
-    expect(line).not.toBeNull();
-    for (const cell of line!) {
-      expect(cell.codepoint).toBe(0);
-    }
-    expect(wasmTerm2.getScrollbackLength()).toBe(0);
-    wasmTerm2.free();
+      // Access the Ghostty instance to create a second raw terminal
+      const ghostty = (term1 as any).ghostty;
+      const wasmTerm1 = term1.wasmTerm!;
 
-    term1.dispose();
-  });
+      // Free the first WASM terminal and create a new one through the same instance
+      wasmTerm1.free();
+      const wasmTerm2 = ghostty.createTerminal(80, 24);
 
-  // https://github.com/coder/ghostty-web/issues/141
-  test('freeing terminal after writing multi-codepoint grapheme clusters should not corrupt WASM memory', async () => {
-    if (!container) return;
+      // New terminal should have clean grid
+      const line = wasmTerm2.getLine(0);
+      expect(line).not.toBeNull();
+      for (const cell of line!) {
+        expect(cell.codepoint).toBe(0);
+      }
+      expect(wasmTerm2.getScrollbackLength()).toBe(0);
+      wasmTerm2.free();
 
-    const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    term1.open(container);
-    const ghostty = (term1 as any).ghostty;
-    const wasmTerm1 = term1.wasmTerm!;
+      term1.dispose();
+    });
 
-    // Write multi-codepoint grapheme clusters (flag emoji, skin tone, ZWJ sequence)
-    wasmTerm1.write('\u{1F1FA}\u{1F1F8}'); // 🇺🇸 regional indicator pair
-    wasmTerm1.write('\u{1F44B}\u{1F3FD}'); // 👋🏽 wave + skin tone modifier
-    wasmTerm1.write('\u{1F468}\u200D\u{1F469}\u200D\u{1F467}'); // 👨‍👩‍👧 ZWJ family
+    // https://github.com/coder/ghostty-web/issues/141
+    test('freeing terminal after writing multi-codepoint grapheme clusters should not corrupt WASM memory', async () => {
+      if (!container) return;
 
-    // Free the terminal that processed grapheme clusters
-    wasmTerm1.free();
+      const term1 = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      term1.open(container);
+      const ghostty = (term1 as any).ghostty;
+      const wasmTerm1 = term1.wasmTerm!;
 
-    // Creating and writing to a new terminal on the same instance should not crash
-    const wasmTerm2 = ghostty.createTerminal(80, 24);
-    expect(() => wasmTerm2.write('Hello')).not.toThrow();
+      // Write multi-codepoint grapheme clusters (flag emoji, skin tone, ZWJ sequence)
+      wasmTerm1.write('\u{1F1FA}\u{1F1F8}'); // 🇺🇸 regional indicator pair
+      wasmTerm1.write('\u{1F44B}\u{1F3FD}'); // 👋🏽 wave + skin tone modifier
+      wasmTerm1.write('\u{1F468}\u200D\u{1F469}\u200D\u{1F467}'); // 👨‍👩‍👧 ZWJ family
 
-    // Verify the write actually worked
-    const line = wasmTerm2.getLine(0);
-    expect(line).not.toBeNull();
-    expect(line![0].codepoint).toBe('H'.codePointAt(0)!);
+      // Free the terminal that processed grapheme clusters
+      wasmTerm1.free();
 
-    wasmTerm2.free();
-    term1.dispose();
-});
+      // Creating and writing to a new terminal on the same instance should not crash
+      const wasmTerm2 = ghostty.createTerminal(80, 24);
+      expect(() => wasmTerm2.write('Hello')).not.toThrow();
+
+      // Verify the write actually worked
+      const line = wasmTerm2.getLine(0);
+      expect(line).not.toBeNull();
+      expect(line![0].codepoint).toBe('H'.codePointAt(0)!);
+
+      wasmTerm2.free();
+      term1.dispose();
+    });
   });
 });
 

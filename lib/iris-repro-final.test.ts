@@ -20,8 +20,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { createIsolatedTerminal } from './test-helpers';
 import type { Terminal } from './terminal';
+import { createIsolatedTerminal } from './test-helpers';
 
 const ESC = '\x1b';
 
@@ -62,7 +62,9 @@ function generateTestOutput(): Uint8Array {
 
   // Section 3: Text attributes
   lines.push(`${ESC}[1m── ATTRIBUTES ──${ESC}[0m`);
-  lines.push(`  ${ESC}[1mBold${ESC}[0m ${ESC}[3mItalic${ESC}[0m ${ESC}[4mUnderline${ESC}[0m ${ESC}[7mReverse${ESC}[0m`);
+  lines.push(
+    `  ${ESC}[1mBold${ESC}[0m ${ESC}[3mItalic${ESC}[0m ${ESC}[4mUnderline${ESC}[0m ${ESC}[7mReverse${ESC}[0m`
+  );
 
   // Section 4: Unicode box drawing
   lines.push(`${ESC}[1m── UNICODE ──${ESC}[0m`);
@@ -138,7 +140,9 @@ describe('WASM ring buffer corruption — self-contained reproduction', () => {
     for (let i = 1; i < sbLengths.length; i++) {
       if (sbLengths[i] < sbLengths[i - 1]) {
         drops++;
-        console.log(`Drop at rep ${i}: ${sbLengths[i-1]} → ${sbLengths[i]} (delta ${sbLengths[i] - sbLengths[i-1]})`);
+        console.log(
+          `Drop at rep ${i}: ${sbLengths[i - 1]} → ${sbLengths[i]} (delta ${sbLengths[i] - sbLengths[i - 1]})`
+        );
       }
     }
 
@@ -204,7 +208,10 @@ describe('WASM ring buffer corruption — self-contained reproduction', () => {
     for (let row = 0; row < term.rows; row++) {
       const line = term.wasmTerm?.getLine(row);
       if (!line) continue;
-      const lnText = line.map(c => String.fromCodePoint(c.codepoint || 32)).join('').trimEnd();
+      const lnText = line
+        .map((c) => String.fromCodePoint(c.codepoint || 32))
+        .join('')
+        .trimEnd();
       if (vpText[row] === lnText) matches++;
     }
 
@@ -234,10 +241,14 @@ describe('WASM ring buffer corruption — self-contained reproduction', () => {
         term.wasmTerm!.update();
         sbLengths.push(term.wasmTerm!.getScrollbackLength());
         const text = getViewportText(term);
-        if (!baseline) { baseline = text; }
-        else {
+        if (!baseline) {
+          baseline = text;
+        } else {
           for (let i = 0; i < Math.max(text.length, baseline.length); i++) {
-            if ((text[i] || '') !== (baseline[i] || '')) { vpCorrupt = true; break; }
+            if ((text[i] || '') !== (baseline[i] || '')) {
+              vpCorrupt = true;
+              break;
+            }
           }
         }
       }

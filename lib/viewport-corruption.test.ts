@@ -9,8 +9,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { createIsolatedTerminal } from './test-helpers';
 import type { Terminal } from './terminal';
+import { createIsolatedTerminal } from './test-helpers';
 
 /**
  * Generate escape-heavy terminal output matching the bug report description.
@@ -62,7 +62,12 @@ function generateEscapeHeavyOutput(runNumber: number): string {
     ['Red', (i: number) => i * 2, () => 0, () => 0],
     ['Green', () => 0, (i: number) => i * 2, () => 0],
     ['Blue', () => 0, () => 0, (i: number) => i * 2],
-    ['Rainbow', (i: number) => Math.sin(i * 0.05) * 127 + 128, (i: number) => Math.sin(i * 0.05 + 2) * 127 + 128, (i: number) => Math.sin(i * 0.05 + 4) * 127 + 128],
+    [
+      'Rainbow',
+      (i: number) => Math.sin(i * 0.05) * 127 + 128,
+      (i: number) => Math.sin(i * 0.05 + 2) * 127 + 128,
+      (i: number) => Math.sin(i * 0.05 + 4) * 127 + 128,
+    ],
   ] as [string, (i: number) => number, (i: number) => number, (i: number) => number][]) {
     let grad = `  ${label}: `;
     for (let i = 0; i < 64; i++) {
@@ -76,8 +81,12 @@ function generateEscapeHeavyOutput(runNumber: number): string {
 
   // Section 5: More attributes with colors
   lines.push(`${ESC}[1m── 5. COMBINED STYLES ──${ESC}[0m`);
-  lines.push(`  ${ESC}[1;31mBold Red${ESC}[0m  ${ESC}[3;32mItalic Green${ESC}[0m  ${ESC}[4;34mUnderline Blue${ESC}[0m  ${ESC}[1;3;35mBold Italic Magenta${ESC}[0m`);
-  lines.push(`  ${ESC}[38;2;255;165;0m24-bit Orange${ESC}[0m  ${ESC}[38;5;201mPalette Pink${ESC}[0m  ${ESC}[7;36mReverse Cyan${ESC}[0m`);
+  lines.push(
+    `  ${ESC}[1;31mBold Red${ESC}[0m  ${ESC}[3;32mItalic Green${ESC}[0m  ${ESC}[4;34mUnderline Blue${ESC}[0m  ${ESC}[1;3;35mBold Italic Magenta${ESC}[0m`
+  );
+  lines.push(
+    `  ${ESC}[38;2;255;165;0m24-bit Orange${ESC}[0m  ${ESC}[38;5;201mPalette Pink${ESC}[0m  ${ESC}[7;36mReverse Cyan${ESC}[0m`
+  );
 
   // Section 6: Unicode box drawing
   lines.push(`${ESC}[1m── 6. UNICODE & BOX DRAWING ──${ESC}[0m`);
@@ -92,7 +101,9 @@ function generateEscapeHeavyOutput(runNumber: number): string {
 
   // Section 7: OSC 8 hyperlinks
   lines.push(`${ESC}[1m── 7. OSC 8 HYPERLINKS ──${ESC}[0m`);
-  lines.push(`  Click: ${ESC}]8;;https://example.com${ESC}\\Example Link${ESC}]8;;${ESC}\\  (OSC 8)`);
+  lines.push(
+    `  Click: ${ESC}]8;;https://example.com${ESC}\\Example Link${ESC}]8;;${ESC}\\  (OSC 8)`
+  );
 
   // Section 8: Rainbow banner
   lines.push(`${ESC}[1m── 8. RAINBOW BANNER ──${ESC}[0m`);
@@ -246,7 +257,7 @@ describe('Viewport Corruption', () => {
           if (uniqueMarkers.size > 1) {
             throw new Error(
               `Run ${run}, row ${row}: found ${uniqueMarkers.size} different markers in one row: ${[...uniqueMarkers].join(', ')}\n` +
-              `Row content: "${text}"`
+                `Row content: "${text}"`
             );
           }
         }
@@ -272,8 +283,8 @@ describe('Viewport Corruption', () => {
           const text = getViewportRowText(term, row);
           const match = text.match(/R(\d{2})L(\d{2})/);
           if (match) {
-            const markerRun = parseInt(match[1], 10);
-            const markerLine = parseInt(match[2], 10);
+            const markerRun = Number.parseInt(match[1], 10);
+            const markerLine = Number.parseInt(match[2], 10);
             // The marker should reference a valid run/line
             expect(markerRun).toBeGreaterThanOrEqual(1);
             expect(markerRun).toBeLessThanOrEqual(run);
@@ -315,7 +326,7 @@ describe('Viewport Corruption', () => {
           if (uniqueMarkers.size > 1) {
             throw new Error(
               `Run ${run}, row ${row}: row merge detected with ${uniqueMarkers.size} markers: ${[...uniqueMarkers].join(', ')}\n` +
-              `Row content: "${text}"`
+                `Row content: "${text}"`
             );
           }
         }
