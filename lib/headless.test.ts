@@ -218,6 +218,53 @@ describe('Headless Terminal', () => {
       disposable.dispose();
       term.dispose();
     });
+
+    test('onPromptStart fires on OSC 133 A (BEL terminator)', () => {
+      const term = new Terminal({ ghostty } as any);
+      let fired = false;
+      const d = term.onPromptStart(() => { fired = true; });
+      term.write('\x1b]133;A\x07');
+      expect(fired).toBe(true);
+      d.dispose(); term.dispose();
+    });
+
+    test('onCommandStart fires on OSC 133 C', () => {
+      const term = new Terminal({ ghostty } as any);
+      let fired = false;
+      const d = term.onCommandStart(() => { fired = true; });
+      term.write('\x1b]133;C\x07');
+      expect(fired).toBe(true);
+      d.dispose(); term.dispose();
+    });
+
+    test('onCommandEnd fires on OSC 133 D with exit code', () => {
+      const term = new Terminal({ ghostty } as any);
+      let result: { exitCode: number | undefined } | null = null;
+      const d = term.onCommandEnd((e) => { result = e; });
+      term.write('\x1b]133;D;0\x07');
+      expect(result).not.toBeNull();
+      expect(result!.exitCode).toBe(0);
+      d.dispose(); term.dispose();
+    });
+
+    test('onCommandEnd fires on OSC 133 D without exit code', () => {
+      const term = new Terminal({ ghostty } as any);
+      let result: { exitCode: number | undefined } | null = null;
+      const d = term.onCommandEnd((e) => { result = e; });
+      term.write('\x1b]133;D\x07');
+      expect(result).not.toBeNull();
+      expect(result!.exitCode).toBeUndefined();
+      d.dispose(); term.dispose();
+    });
+
+    test('onCommandEnd reports non-zero exit code', () => {
+      const term = new Terminal({ ghostty } as any);
+      let exitCode: number | undefined;
+      const d = term.onCommandEnd((e) => { exitCode = e.exitCode; });
+      term.write('\x1b]133;D;1\x07');
+      expect(exitCode).toBe(1);
+      d.dispose(); term.dispose();
+    });
   });
 
   describe('Scrolling', () => {

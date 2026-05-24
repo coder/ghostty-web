@@ -36,6 +36,11 @@ export class TerminalCore implements IDisposable {
   protected writeParsedEmitter = new EventEmitter<void>();
   protected binaryEmitter = new EventEmitter<string>();
 
+  // Shell integration (OSC 133) emitters
+  protected promptStartEmitter = new EventEmitter<void>();
+  protected commandStartEmitter = new EventEmitter<void>();
+  protected commandEndEmitter = new EventEmitter<{ exitCode: number | undefined }>();
+
   public readonly onData: IEvent<string> = this.dataEmitter.event;
   public readonly onResize: IEvent<{ cols: number; rows: number }> = this.resizeEmitter.event;
   public readonly onBell: IEvent<void> = this.bellEmitter.event;
@@ -45,6 +50,14 @@ export class TerminalCore implements IDisposable {
   public readonly onLineFeed: IEvent<void> = this.lineFeedEmitter.event;
   public readonly onWriteParsed: IEvent<void> = this.writeParsedEmitter.event;
   public readonly onBinary: IEvent<string> = this.binaryEmitter.event;
+
+  /** Fires when OSC 133 A is received (shell prompt is about to be drawn). */
+  public readonly onPromptStart: IEvent<void> = this.promptStartEmitter.event;
+  /** Fires when OSC 133 C is received (user hit Enter — command is running). */
+  public readonly onCommandStart: IEvent<void> = this.commandStartEmitter.event;
+  /** Fires when OSC 133 D is received (command finished). exitCode is undefined if not reported. */
+  public readonly onCommandEnd: IEvent<{ exitCode: number | undefined }> =
+    this.commandEndEmitter.event;
 
   protected isDisposed = false;
   protected addons: ITerminalAddon[] = [];
@@ -132,6 +145,7 @@ export class TerminalCore implements IDisposable {
 
     if (typeof data === 'string' && data.includes('\x1b]')) {
       this.checkForTitleChange(data);
+      this.checkForShellIntegration(data);
     }
 
     this.checkCursorMove();
@@ -213,6 +227,9 @@ export class TerminalCore implements IDisposable {
     this.lineFeedEmitter.dispose();
     this.writeParsedEmitter.dispose();
     this.binaryEmitter.dispose();
+    this.promptStartEmitter.dispose();
+    this.commandStartEmitter.dispose();
+    this.commandEndEmitter.dispose();
   }
 
   scrollLines(amount: number): void {
@@ -364,6 +381,41 @@ export class TerminalCore implements IDisposable {
     const response = this.wasmTerm.readResponse();
     if (response) {
       this.dataEmitter.fire(response);
+    }
+  }
+
+  /**
+   * Intercept OSC 133 shell-integration markers in outgoing PTY data.
+   *
+   * A = prompt start   B = input start (ignored here, fires with A)
+   * C = command start  D = command end (optionally with exit code)
+   *
+   * Sequences span a single write in practice; partial-write edge cases
+   * are not handled — the common case is one atomic write per marker.
+   */
+  protected checkForShellIntegration(data: string): void {
+    // OSC 133 ; <letter> [; <params>] ST|BEL
+    const re = /\x1b\]133;([A-D])([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    let match: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: Standard regex pattern
+    while ((match = re.exec(data)) !== null) {
+      const marker = match[1];
+      const params = match[2];
+      switch (marker) {
+        case 'A':
+          this.promptStartEmitter.fire();
+          break;
+        case 'C':
+          this.commandStartEmitter.fire();
+          break;
+        case 'D': {
+          // params may contain ";exit_code=N" or just be ";N" (numeric exit)
+          const codeMatch = /(?:;|^)(\d+)/.exec(params);
+          const exitCode = codeMatch ? Number.parseInt(codeMatch[1], 10) : undefined;
+          this.commandEndEmitter.fire({ exitCode });
+          break;
+        }
+      }
     }
   }
 

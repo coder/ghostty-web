@@ -122,11 +122,15 @@ export class Terminal extends TerminalCore {
   private selectionChangeEmitter = new EventEmitter<void>();
   private keyEmitter = new EventEmitter<IKeyEvent>();
   private renderEmitter = new EventEmitter<{ start: number; end: number }>();
+  private mouseCursorChangeEmitter = new EventEmitter<string>();
 
   // Browser-specific events
   public readonly onSelectionChange: IEvent<void> = this.selectionChangeEmitter.event;
   public readonly onKey: IEvent<IKeyEvent> = this.keyEmitter.event;
   public readonly onRender: IEvent<{ start: number; end: number }> = this.renderEmitter.event;
+  /** Fires when the application changes the mouse cursor via OSC 22.
+   *  The value is a CSS cursor name (e.g. "default", "crosshair", "wait"). */
+  public readonly onMouseCursorChange: IEvent<string> = this.mouseCursorChangeEmitter.event;
 
   // Lifecycle state
   private isOpen = false;
@@ -501,6 +505,12 @@ export class Terminal extends TerminalCore {
 
     if (this.options.convertEol && typeof data === 'string') {
       data = data.replace(/\n/g, '\r\n');
+    }
+
+    // Intercept OSC 22 (mouse cursor shape) before handing off to WASM.
+    // The WASM stores it internally but provides no C API to query it.
+    if (typeof data === 'string' && data.includes('\x1b]22;')) {
+      this.interceptOsc22(data);
     }
 
     this.writeInternal(data, callback);
@@ -909,6 +919,7 @@ export class Terminal extends TerminalCore {
     this.selectionChangeEmitter.dispose();
     this.keyEmitter.dispose();
     this.renderEmitter.dispose();
+    this.mouseCursorChangeEmitter.dispose();
 
     super.dispose();
   }
@@ -992,6 +1003,32 @@ export class Terminal extends TerminalCore {
     if (!w || !h) return;
     this.textarea.style.left = `${col * w}px`;
     this.textarea.style.top = `${row * h}px`;
+  }
+
+  // Track the last cursor applied so we only update the DOM when it changes.
+  private lastOsc22Cursor = 'text';
+
+  /**
+   * Intercept OSC 22 mouse-cursor-shape sequences emitted by the PTY.
+   * Updates the canvas CSS cursor and fires onMouseCursorChange.
+   *
+   * Format: ESC ] 22 ; <w3c-cursor-name> BEL|ST
+   *
+   * Ghostty's MouseShape names map 1-to-1 to W3C CSS cursor values after
+   * replacing underscores with hyphens (e.g. "context_menu" → "context-menu").
+   */
+  private interceptOsc22(data: string): void {
+    const re = /\x1b\]22;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    let match: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: Standard regex pattern
+    while ((match = re.exec(data)) !== null) {
+      const cssCursor = match[1].replace(/_/g, '-') || 'default';
+      if (cssCursor === this.lastOsc22Cursor) continue;
+      this.lastOsc22Cursor = cssCursor;
+      if (this.canvas) this.canvas.style.cursor = cssCursor;
+      if (this.element) this.element.style.cursor = cssCursor;
+      this.mouseCursorChangeEmitter.fire(cssCursor);
+    }
   }
 
   private armBootstrapBlank(): void {
