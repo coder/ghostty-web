@@ -1,7 +1,8 @@
 /**
- * Public API for @cmux/ghostty-terminal
+ * Public API for ghostty-web
  *
- * Main entry point following xterm.js conventions
+ * Main entry point following xterm.js conventions.
+ * For headless mode (no DOM), use 'ghostty-web/headless' instead.
  */
 
 import { Ghostty } from './ghostty';
@@ -54,8 +55,11 @@ export function getGhostty(): Ghostty {
   return ghosttyInstance;
 }
 
-// Main Terminal class
+// Main Terminal class (browser - full functionality)
 export { Terminal } from './terminal';
+
+// Core Terminal class (headless-compatible base)
+export { TerminalCore } from './terminal-core';
 
 // xterm.js-compatible interfaces
 export type {
@@ -68,6 +72,10 @@ export type {
   IBufferRange,
   IKeyEvent,
   IUnicodeVersionProvider,
+  IBufferNamespace,
+  IBuffer,
+  IBufferLine,
+  IBufferCell,
 } from './interfaces';
 
 // Ghostty WASM components (for advanced usage)
