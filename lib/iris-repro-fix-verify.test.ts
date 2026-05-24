@@ -174,7 +174,9 @@ describe('Scrollback bytes fix verification', () => {
   });
 
   // Find the minimum scrollback value that prevents corruption
-  test('minimum safe scrollback value', async () => {
+  test(
+    'minimum safe scrollback value',
+    async () => {
     for (const sb of [10000, 50000, 100000, 500000, 1000000, 5000000, 10000000]) {
       const term = await createIsolatedTerminal({ cols: 160, rows: 39, scrollback: sb });
       const container = document.createElement('div');
@@ -195,5 +197,7 @@ describe('Scrollback bytes fix verification', () => {
       console.log(`scrollback=${sb}: drops=${drops} ${drops === 0 ? '✓' : '✗'}`);
       term.dispose();
     }
-  });
+    },
+    60000
+  );
 });

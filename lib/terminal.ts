@@ -92,6 +92,8 @@ function createBlankBootstrapCells(
     bg_r: bg.r,
     bg_g: bg.g,
     bg_b: bg.b,
+    fgIsDefault: false,
+    bgIsDefault: false,
     flags: 0,
     width: 1,
     hyperlink_id: 0,
@@ -393,6 +395,10 @@ export class Terminal implements ITerminalCore {
     this.canvas.style.width = `${metrics.width * this.cols}px`;
     this.canvas.style.height = `${metrics.height * this.rows}px`;
 
+    // Push the new per-cell pixel size into the WASM terminal so size
+    // reports / kitty graphics see the updated metrics.
+    this.updateWasmPixelSize();
+
     // Force full re-render with new font
     this.renderer.render(this.wasmTerm, true, this.viewportY, this);
   }
@@ -461,7 +467,9 @@ export class Terminal implements ITerminalCore {
     ];
 
     return {
-      scrollbackLimit: scrollback,
+      // scrollback is a line count (xterm.js API); the WASM C API expects bytes.
+      // 1000 bytes/line matches native Ghostty's 10 000-line = 10 MB default.
+      scrollbackLimit: Math.min(scrollback * 1000, 0xffff_ffff),
       fgColor: this.parseColorToHex(theme?.foreground),
       bgColor: this.parseColorToHex(theme?.background),
       cursorColor: this.parseColorToHex(theme?.cursor),
@@ -615,6 +623,10 @@ export class Terminal implements ITerminalCore {
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
 
+      // Push initial cell pixel dims into the WASM terminal — needed for
+      // size reports and kitty graphics from the very first vt_write.
+      this.updateWasmPixelSize();
+
       // Create mouse tracking configuration
       const canvas = this.canvas;
       const renderer = this.renderer;
@@ -682,6 +694,8 @@ export class Terminal implements ITerminalCore {
       // Forward selection change events
       this.selectionManager.onSelectionChange(() => {
         this.selectionChangeEmitter.fire();
+        // Selection rows need to repaint with the highlight overlay.
+        this.requestRender();
       });
 
       // Initialize link detection system
@@ -711,8 +725,16 @@ export class Terminal implements ITerminalCore {
       this.armBootstrapBlank();
       this.renderer.render(this.bootstrapBuffer, true, this.viewportY, this, this.scrollbarOpacity);
 
-      // Start render loop
-      this.startRenderLoop();
+      // Wire the renderer back to the render scheduler so internal
+      // state changes (cursor blink) wake the loop on demand.
+      this.renderer.setOnRequestRender(() => this.requestRender());
+
+      // Run one synchronous render+cursor-poll to mirror the prior
+      // loop's first iteration. Some downstream callers
+      // (notably refreshRowMetaCache for isRowWrapped) walk the WASM
+      // row iterator immediately after open() and rely on the second
+      // update() / clearDirty pair to settle WASM state.
+      this.renderTick();
 
       // Focus input (auto-focus so user can start typing immediately)
       if (this.options.focusOnOpen !== false) {
@@ -883,7 +905,9 @@ export class Terminal implements ITerminalCore {
       this.renderer.render(this.wasmTerm, false, this.viewportY, this, this.scrollbarOpacity);
     }
 
-    // Render will happen on next animation frame (if not already drained above)
+    // Wake the render scheduler — the write almost certainly mutated
+    // visible state. Idempotent if a render is already pending.
+    this.requestRender();
   }
 
   /**
@@ -982,6 +1006,11 @@ export class Terminal implements ITerminalCore {
       this.canvas!.style.width = `${metrics.width * cols}px`;
       this.canvas!.style.height = `${metrics.height * rows}px`;
 
+      // Refresh WASM cell pixel dims after the resize. Cell metrics
+      // typically don't change on a logical resize, but this handles
+      // DPR changes and is cheap (no-ops when values are unchanged).
+      this.updateWasmPixelSize();
+
       // Fire resize event
       this.resizeEmitter.fire({ cols, rows });
 
@@ -991,9 +1020,10 @@ export class Terminal implements ITerminalCore {
       console.error('Terminal resize failed:', e);
     }
 
-    // Flush any writes that were queued during resize, then restart render loop
+    // Flush any writes that were queued during resize, then schedule a
+    // render to pick up the new dimensions / flushed writes.
     this.flushWriteQueue();
-    this.startRenderLoop();
+    this.requestRender();
   }
 
   /**
@@ -1017,6 +1047,11 @@ export class Terminal implements ITerminalCore {
     }
     const config = this.buildWasmConfig();
     this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, config);
+
+    // The fresh WASM terminal starts with zero cell pixel dims, so CSI
+    // 14/16/18 t and kitty graphics sizing would silently report zeros
+    // until a font/resize event re-pushed them. Reapply now.
+    this.updateWasmPixelSize();
 
     // Clear renderer and re-arm the bootstrap blank until real terminal output arrives
     this.armBootstrapBlank();
@@ -1223,6 +1258,8 @@ export class Terminal implements ITerminalCore {
       if (scrollbackLength > 0) {
         this.showScrollbar();
       }
+
+      this.requestRender();
     }
   }
 
@@ -1243,6 +1280,7 @@ export class Terminal implements ITerminalCore {
       this.viewportY = scrollbackLength;
       this.scrollEmitter.fire(this.viewportY);
       this.showScrollbar();
+      this.requestRender();
     }
   }
 
@@ -1257,6 +1295,7 @@ export class Terminal implements ITerminalCore {
       if (this.getScrollbackLength() > 0) {
         this.showScrollbar();
       }
+      this.requestRender();
     }
   }
 
@@ -1276,6 +1315,8 @@ export class Terminal implements ITerminalCore {
       if (scrollbackLength > 0) {
         this.showScrollbar();
       }
+
+      this.requestRender();
     }
   }
 
@@ -1302,6 +1343,7 @@ export class Terminal implements ITerminalCore {
       if (scrollbackLength > 0) {
         this.showScrollbar();
       }
+      this.requestRender();
       return;
     }
 
@@ -1350,6 +1392,8 @@ export class Terminal implements ITerminalCore {
       this.scrollAnimationFrame = undefined;
       this.scrollAnimationStartTime = undefined;
       this.scrollAnimationStartY = undefined;
+      // Final-position render
+      this.requestRender();
       return;
     }
 
@@ -1369,6 +1413,11 @@ export class Terminal implements ITerminalCore {
     if (scrollbackLength > 0) {
       this.showScrollbar();
     }
+
+    // Each tick mutates viewportY, so the main render path needs to
+    // catch up. The animateScroll rAF below only advances the scroll
+    // state; rendering is the renderTick's job.
+    this.requestRender();
 
     // Continue animation
     this.scrollAnimationFrame = requestAnimationFrame(this.animateScroll);
@@ -1432,6 +1481,23 @@ export class Terminal implements ITerminalCore {
   // ==========================================================================
 
   /**
+   * Push the renderer's per-cell pixel size into the WASM terminal.
+   *
+   * Called from setup, open(), and resize() — everywhere the renderer
+   * may have rebuilt its FontMetrics. Affects in-band size reports
+   * (CSI 14/16/18 t) and kitty graphics placement sizing; without it
+   * the terminal returns zeros for those queries.
+   *
+   * GhosttyTerminal.setCellPixelSize short-circuits when the values
+   * haven't changed, so this is cheap to call from any of the above.
+   */
+  private updateWasmPixelSize(): void {
+    if (!this.renderer || !this.wasmTerm) return;
+    const metrics = this.renderer.getMetrics();
+    this.wasmTerm.setCellPixelSize(metrics.width, metrics.height);
+  }
+
+  /**
    * Cancel the render loop
    */
   private cancelRenderLoop(): void {
@@ -1452,42 +1518,57 @@ export class Terminal implements ITerminalCore {
   }
 
   /**
-   * Start the render loop
+   * Schedule a single render on the next animation frame. No-op if one
+   * is already pending or the terminal is closed/disposed.
+   *
+   * Replaces the previous perpetual rAF chain, which kept a CPU core
+   * hot at ~60Hz even on a static screen because every frame paid for a
+   * render() entry/exit and a getCursor() round-trip into WASM. With
+   * this design, the terminal goes idle (zero JS work, zero WASM calls)
+   * once the last event-driven render is done, until the next event
+   * wakes it via requestRender().
+   *
+   * Wake points are added on every event source that mutates renderable
+   * state: writes from the PTY, scrolls, resizes, mouse motion (link
+   * hover), selection changes, the cursor-blink interval (via the
+   * renderer's onRequestRender callback), and each smooth-scroll tick.
+   *
+   * Alternative design we considered: leave the rAF chain in place but
+   * have it short-circuit when no work is pending and self-cancel after
+   * N idle frames, with the same wake points re-arming it. End-state
+   * CPU is identical; the difference is purely code shape (a perpetual
+   * loop with self-cancel logic vs. ad-hoc rAF scheduling). We picked
+   * this shape for simplicity.
    */
-  private startRenderLoop(): void {
-    if (this.animationFrameId) return; // already running
-    const loop = () => {
-      if (!this.isDisposed && this.isOpen) {
-        // Render using WASM's native dirty tracking
-        // The render() method:
-        // 1. Calls update() once to sync state and check dirty flags
-        // 2. Only redraws dirty rows when forceAll=false
-        // 3. Always calls clearDirty() at the end
-        this.renderer!.render(
-          this.bootstrapBuffer,
-          false,
-          this.viewportY,
-          this,
-          this.scrollbarOpacity
-        );
-
-        // Check for cursor movement (Phase 2: onCursorMove event)
-        // Note: getCursor() reads from already-updated render state (from render() above)
-        const cursor = this.wasmTerm!.getCursor();
-        if (cursor.y !== this.lastCursorY) {
-          this.lastCursorY = cursor.y;
-          this.cursorMoveEmitter.fire();
-        }
-
-        // Note: onRender event is intentionally not fired in the render loop
-        // to avoid performance issues. For now, consumers can use requestAnimationFrame
-        // if they need frame-by-frame updates.
-
-        this.animationFrameId = requestAnimationFrame(loop);
-      }
-    };
-    loop();
+  private requestRender(): void {
+    if (this.animationFrameId !== undefined) return;
+    if (this.isDisposed || !this.isOpen) return;
+    this.animationFrameId = requestAnimationFrame(this.renderTick);
   }
+
+  private renderTick = (): void => {
+    this.animationFrameId = undefined;
+    if (this.isDisposed || !this.isOpen) return;
+
+    // Render using WASM's native dirty tracking
+    // The render() method:
+    // 1. Calls update() once to sync state and check dirty flags
+    // 2. Only redraws dirty rows when forceAll=false
+    // 3. Always calls clearDirty() at the end
+    this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
+
+    // Check for cursor movement (Phase 2: onCursorMove event)
+    // Note: getCursor() reads from already-updated render state (from render() above)
+    const cursor = this.wasmTerm!.getCursor();
+    if (cursor.y !== this.lastCursorY) {
+      this.lastCursorY = cursor.y;
+      this.cursorMoveEmitter.fire();
+    }
+
+    // Note: onRender event is intentionally not fired here to avoid
+    // performance issues. Consumers can use requestAnimationFrame if
+    // they need frame-by-frame updates.
+  };
 
   /**
    * Get a line from native WASM scrollback buffer
