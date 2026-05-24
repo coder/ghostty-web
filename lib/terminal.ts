@@ -136,6 +136,11 @@ export class Terminal extends TerminalCore {
   // Issue #161 (echo latency): synchronous render on PTY echo
   private awaitingEcho = false;
 
+  // Synchronized output (DEC mode 2026): timestamp when sync began; renders
+  // are deferred while active but force-flush after SYNC_OUTPUT_TIMEOUT_MS.
+  private syncOutputStartTime: number | undefined = undefined;
+  private static readonly SYNC_OUTPUT_TIMEOUT_MS = 500;
+
   // Theme state for partial merge support
   private currentTheme: Required<ITheme> = { ...DEFAULT_THEME };
 
@@ -382,6 +387,11 @@ export class Terminal extends TerminalCore {
       });
       parent.addEventListener('focus', () => {
         textarea.focus();
+        if (this.wasmTerm?.hasFocusEvents()) this.dataEmitter.fire('\x1b[I');
+      });
+
+      parent.addEventListener('blur', () => {
+        if (this.wasmTerm?.hasFocusEvents()) this.dataEmitter.fire('\x1b[O');
       });
 
       this.renderer = new CanvasRenderer(this.canvas, {
@@ -950,6 +960,19 @@ export class Terminal extends TerminalCore {
   private renderTick = (): void => {
     this.animationFrameId = undefined;
     if (this.isDisposed || !this.isOpen) return;
+
+    // Defer render while synchronized output (DEC mode 2026) is active.
+    // Force-flush after SYNC_OUTPUT_TIMEOUT_MS to guard against apps that
+    // forget to close the sync window.
+    if (this.wasmTerm!.getMode(2026, false)) {
+      const now = performance.now();
+      if (this.syncOutputStartTime === undefined) this.syncOutputStartTime = now;
+      if (now - this.syncOutputStartTime < Terminal.SYNC_OUTPUT_TIMEOUT_MS) {
+        this.requestRender();
+        return;
+      }
+    }
+    this.syncOutputStartTime = undefined;
 
     this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
 
