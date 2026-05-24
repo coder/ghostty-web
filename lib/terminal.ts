@@ -958,7 +958,18 @@ export class Terminal extends TerminalCore {
       this.lastCursorY = cursor.y;
       this.cursorMoveEmitter.fire();
     }
+
+    this.syncTextareaToCursor(cursor.x, cursor.y);
   };
+
+  private syncTextareaToCursor(col: number, row: number): void {
+    if (!this.textarea || !this.renderer) return;
+    const w = this.renderer.charWidth;
+    const h = this.renderer.charHeight;
+    if (!w || !h) return;
+    this.textarea.style.left = `${col * w}px`;
+    this.textarea.style.top = `${row * h}px`;
+  }
 
   private armBootstrapBlank(): void {
     const theme = { ...DEFAULT_THEME, ...this.options.theme };
