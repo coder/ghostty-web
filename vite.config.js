@@ -1,3 +1,4 @@
+import { resolve } from 'path';
 import { defineConfig } from 'vite';
 import dts from 'vite-plugin-dts';
 
@@ -10,21 +11,24 @@ export default defineConfig({
     dts({
       include: ['lib/**/*.ts'],
       exclude: ['lib/**/*.test.ts'],
-      rollupTypes: true, // Bundle all .d.ts into single file
-      copyDtsFiles: false, // Don't copy individual .d.ts files
+      rollupTypes: true,
+      copyDtsFiles: true,
     }),
   ],
   build: {
     lib: {
-      entry: 'lib/index.ts',
-      name: 'GhosttyWeb',
-      fileName: (format) => {
-        return format === 'es' ? 'ghostty-web.js' : 'ghostty-web.umd.cjs';
+      entry: {
+        'ghostty-web': resolve(__dirname, 'lib/index.ts'),
+        headless: resolve(__dirname, 'lib/headless.ts'),
       },
-      formats: ['es', 'umd'],
+      name: 'GhosttyWeb',
+      fileName: (format, entryName) => {
+        return format === 'es' ? `${entryName}.es.js` : `${entryName}.cjs.js`;
+      },
+      formats: ['es', 'cjs'],
     },
     rollupOptions: {
-      external: [], // No external dependencies
+      external: [],
       output: {
         assetFileNames: 'assets/[name][extname]',
         globals: {},
