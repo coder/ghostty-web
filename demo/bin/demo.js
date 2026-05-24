@@ -13,8 +13,13 @@ import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Node-pty for cross-platform PTY support
-import pty from '@lydell/node-pty';
+// Node-pty for cross-platform PTY support. The 1.2.0-beta.x line adds a
+// `pixelSize` argument to resize(), which sets ws_xpixel / ws_ypixel in
+// the slave PTY's winsize struct so kitty kittens (icat etc.) can detect
+// graphics support via TIOCGWINSZ instead of falling back to terminal
+// queries. Lydell's fork is based on 1.1.0-beta14 (pre-pixelSize), so we
+// use upstream's beta directly.
+import pty from 'node-pty';
 // WebSocket server
 import { WebSocketServer } from 'ws';
 
@@ -247,12 +252,32 @@ const HTML_TEMPLATE = `<!doctype html>
       const wsUrl = protocol + '//' + window.location.host + '/ws?cols=' + term.cols + '&rows=' + term.rows;
       let ws;
 
+      // Read total canvas pixel dims (CSS pixels). The server stuffs these
+      // into ws_xpixel / ws_ypixel via node-pty's resize(cols, rows, pixelSize)
+      // so kittens like icat see non-zero TIOCGWINSZ pixel fields.
+      function getPixelSize() {
+        const canvas = container.querySelector('canvas');
+        return canvas
+          ? { xpixel: canvas.clientWidth, ypixel: canvas.clientHeight }
+          : { xpixel: 0, ypixel: 0 };
+      }
+
       function connect() {
         setStatus('connecting', 'Connecting...');
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
           setStatus('connected', 'Connected');
+          // Push initial pixel dims so TIOCGWINSZ-gated tools see them
+          // before the first resize event.
+          const px = getPixelSize();
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols: term.cols,
+            rows: term.rows,
+            xpixel: px.xpixel,
+            ypixel: px.ypixel,
+          }));
         };
 
         ws.onmessage = (event) => {
@@ -282,7 +307,14 @@ const HTML_TEMPLATE = `<!doctype html>
       // Handle resize - notify PTY when terminal dimensions change
       term.onResize(({ cols, rows }) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+          const px = getPixelSize();
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols,
+            rows,
+            xpixel: px.xpixel,
+            ypixel: px.ypixel,
+          }));
         }
       });
 
@@ -509,7 +541,18 @@ wss.on('connection', (ws, req) => {
       try {
         const msg = JSON.parse(message);
         if (msg.type === 'resize') {
-          ptyProcess.resize(msg.cols, msg.rows);
+          // node-pty 1.2.0+ accepts a third pixelSize arg that sets
+          // ws_xpixel / ws_ypixel in the PTY winsize struct. Without it,
+          // kitty kittens (icat, etc.) read zeros via TIOCGWINSZ and
+          // refuse to render images.
+          if (msg.xpixel > 0 && msg.ypixel > 0) {
+            ptyProcess.resize(msg.cols, msg.rows, {
+              width: msg.xpixel,
+              height: msg.ypixel,
+            });
+          } else {
+            ptyProcess.resize(msg.cols, msg.rows);
+          }
           return;
         }
       } catch (e) {

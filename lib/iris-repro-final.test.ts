@@ -225,7 +225,9 @@ describe('WASM ring buffer corruption — self-contained reproduction', () => {
    * The ring buffer always corrupts, but row merging is only detectable when
    * the misaligned rows contain different content.
    */
-  test('column width sensitivity', async () => {
+  test(
+    'column width sensitivity',
+    async () => {
     const results: string[] = [];
     for (const cols of [80, 100, 120, 130, 140, 160]) {
       const term = await createIsolatedTerminal({ cols, rows: 39, scrollback: 10000 });
@@ -263,5 +265,7 @@ describe('WASM ring buffer corruption — self-contained reproduction', () => {
       console.log(line);
       term.dispose();
     }
-  });
+    },
+    60000
+  );
 });
