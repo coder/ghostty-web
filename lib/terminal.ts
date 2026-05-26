@@ -575,8 +575,10 @@ export class Terminal implements ITerminalCore {
     // Invalidate link cache (content changed)
     this.linkDetector?.invalidateCache();
 
-    // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
-    if (this.viewportY !== 0) {
+    // Phase 2: Auto-scroll to bottom on new output, but only if the user
+    // is already following output at the bottom. If they've scrolled into
+    // history, respect their position (matches xterm.js behavior).
+    if (this.viewportY <= 0.5) {
       this.scrollToBottom();
     }
 
