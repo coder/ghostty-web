@@ -1,12 +1,3 @@
-diff --git a/.gitignore b/.gitignore
-index e451b171a..89c623d8b 100644
---- a/.gitignore
-+++ b/.gitignore
-@@ -23,3 +23,4 @@ glad.zip
- /ghostty.qcow2
- 
- vgcore.*
-+node_modules/
 diff --git a/include/ghostty/vt.h b/include/ghostty/vt.h
 index 4f8fef88e..ca9fb1d4d 100644
 --- a/include/ghostty/vt.h
@@ -319,10 +310,10 @@ index 000000000..c467102c3
 +
 +#endif /* GHOSTTY_VT_TERMINAL_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 03a883e20..1336676d7 100644
+index 426660621..a238a6a2f 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -140,6 +140,45 @@ comptime {
+@@ -143,6 +143,45 @@ comptime {
          @export(&c.sgr_unknown_partial, .{ .name = "ghostty_sgr_unknown_partial" });
          @export(&c.sgr_attribute_tag, .{ .name = "ghostty_sgr_attribute_tag" });
          @export(&c.sgr_attribute_value, .{ .name = "ghostty_sgr_attribute_value" });
@@ -437,10 +428,10 @@ index bc92597f5..d0ee49c1b 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 000000000..73ae2e6fa
+index 000000000..11c870548
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1116 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -557,7 +548,7 @@ index 000000000..73ae2e6fa
 +            .insert_lines => self.terminal.insertLines(value),
 +            .insert_blanks => self.terminal.insertBlanks(value),
 +            .delete_lines => self.terminal.deleteLines(value),
-+            .scroll_up => self.terminal.scrollUp(value),
++            .scroll_up => try self.terminal.scrollUp(value),
 +            .scroll_down => self.terminal.scrollDown(value),
 +            .horizontal_tab => try self.horizontalTab(value),
 +            .horizontal_tab_back => try self.horizontalTabBack(value),
@@ -582,7 +573,7 @@ index 000000000..73ae2e6fa
 +                }
 +            },
 +            .save_cursor => self.terminal.saveCursor(),
-+            .restore_cursor => try self.terminal.restoreCursor(),
++            .restore_cursor => self.terminal.restoreCursor(),
 +            .invoke_charset => self.terminal.invokeCharset(value.bank, value.charset, value.locking),
 +            .configure_charset => self.terminal.configureCharset(value.slot, value.charset),
 +            .set_attribute => switch (value) {
@@ -610,14 +601,7 @@ index 000000000..73ae2e6fa
 +            .full_reset => self.terminal.fullReset(),
 +            .start_hyperlink => try self.terminal.screens.active.startHyperlink(value.uri, value.id),
 +            .end_hyperlink => self.terminal.screens.active.endHyperlink(),
-+            .prompt_start => {
-+                self.terminal.screens.active.cursor.page_row.semantic_prompt = .prompt;
-+                self.terminal.flags.shell_redraws_prompt = value.redraw;
-+            },
-+            .prompt_continuation => self.terminal.screens.active.cursor.page_row.semantic_prompt = .prompt_continuation,
-+            .prompt_end => self.terminal.markSemanticPrompt(.input),
-+            .end_of_input => self.terminal.markSemanticPrompt(.command),
-+            .end_of_command => self.terminal.screens.active.cursor.page_row.semantic_prompt = .input,
++            .semantic_prompt => try self.terminal.semanticPrompt(value),
 +            .mouse_shape => self.terminal.mouse_shape = value,
 +            .color_operation => try self.colorOperation(value.op, &value.requests),
 +            .kitty_color_report => try self.kittyColorOperation(value),
@@ -700,7 +684,7 @@ index 000000000..73ae2e6fa
 +    inline fn horizontalTab(self: *ResponseHandler, count: u16) !void {
 +        for (0..count) |_| {
 +            const x = self.terminal.screens.active.cursor.x;
-+            try self.terminal.horizontalTab();
++            self.terminal.horizontalTab();
 +            if (x == self.terminal.screens.active.cursor.x) break;
 +        }
 +    }
@@ -708,7 +692,7 @@ index 000000000..73ae2e6fa
 +    inline fn horizontalTabBack(self: *ResponseHandler, count: u16) !void {
 +        for (0..count) |_| {
 +            const x = self.terminal.screens.active.cursor.x;
-+            try self.terminal.horizontalTabBack();
++            self.terminal.horizontalTabBack();
 +            if (x == self.terminal.screens.active.cursor.x) break;
 +        }
 +    }
@@ -728,7 +712,7 @@ index 000000000..73ae2e6fa
 +            .save_cursor => if (enabled) {
 +                self.terminal.saveCursor();
 +            } else {
-+                try self.terminal.restoreCursor();
++                self.terminal.restoreCursor();
 +            },
 +            .enable_mode_3 => {},
 +            .@"132_column" => try self.terminal.deccolm(
@@ -1564,8 +1548,43 @@ index 000000000..73ae2e6fa
 +    try std.testing.expectEqual(@as(u32, 'l'), cells[3].codepoint);
 +    try std.testing.expectEqual(@as(u32, 'o'), cells[4].codepoint);
 +}
+diff --git a/src/terminal/osc/parsers/semantic_prompt.zig b/src/terminal/osc/parsers/semantic_prompt.zig
+index d3a117515..fa2639581 100644
+--- a/src/terminal/osc/parsers/semantic_prompt.zig
++++ b/src/terminal/osc/parsers/semantic_prompt.zig
+@@ -4,6 +4,7 @@ const std = @import("std");
+ const Parser = @import("../../osc.zig").Parser;
+ const OSCCommand = @import("../../osc.zig").Command;
+ const string_encoding = @import("../../../os/string_encoding.zig");
++const lib = @import("../../../lib/main.zig");
+ 
+ const log = std.log.scoped(.osc_semantic_prompt);
+ 
+@@ -17,6 +18,22 @@ pub const Command = struct {
+     action: Action,
+     options_unvalidated: []const u8,
+ 
++    /// C ABI representation. Required so this type can participate in the
++    /// C-compatible tagged union generated for `stream.Action` when building
++    /// libghostty-vt with the C ABI enabled (e.g. the WASM target). The raw
++    /// options bytes are exposed as a string; they are not validated here.
++    pub const C = extern struct {
++        action: c_int,
++        options: lib.String,
++    };
++
++    pub fn cval(self: Command) C {
++        return .{
++            .action = @intFromEnum(self.action),
++            .options = .init(self.options_unvalidated),
++        };
++    }
++
+     pub const Action = enum {
+         fresh_line, // 'L'
+         fresh_line_new_prompt, // 'A'
 diff --git a/src/terminal/render.zig b/src/terminal/render.zig
-index b6430ea34..10e0ef79d 100644
+index 2332866ac..dcfa15f57 100644
 --- a/src/terminal/render.zig
 +++ b/src/terminal/render.zig
 @@ -322,13 +322,14 @@ pub const RenderState = struct {
