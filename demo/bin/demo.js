@@ -739,6 +739,7 @@ if (DEV_MODE) {
       port: HTTP_PORT,
       strictPort: true,
       cors: false,
+      allowedHosts: AUTH_CONFIG.allowedHosts,
     },
   });
 
