@@ -38,6 +38,11 @@ import { CanvasRenderer } from './renderer';
 import { SelectionManager } from './selection-manager';
 import type { ILink, ILinkProvider } from './types';
 
+interface PreserveScrollAnchor {
+  topOffset: number;
+  lineSignatures: string[];
+}
+
 // ============================================================================
 // Terminal Class
 // ============================================================================
@@ -127,6 +132,10 @@ export class Terminal implements ITerminalCore {
   private scrollbarDragStart: number | null = null;
   private scrollbarDragStartViewportY: number = 0;
 
+  private preserveScrollEstimateDecoder = new TextDecoder();
+  private preserveScrollEstimateCarry: string = '';
+  private readonly PRESERVE_SCROLL_ANCHOR_SEARCH_RADIUS = 50;
+
   // Scrollbar visibility/auto-hide state
   private scrollbarVisible: boolean = false;
   private scrollbarOpacity: number = 0;
@@ -152,6 +161,7 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
+      preserveScrollOnWrite: options.preserveScrollOnWrite ?? false,
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -559,6 +569,20 @@ export class Terminal implements ITerminalCore {
     // preserve selection when new data arrives. Selection is cleared by user actions
     // like clicking or typing, not by incoming data.
 
+    const savedViewportY = this.viewportY;
+    const savedTargetViewportY = this.targetViewportY;
+    const savedScrollbackLength = this.getScrollbackLength();
+    const wasAlternateScreen = this.wasmTerm!.isAlternateScreen();
+    const shouldPreserveScroll =
+      this.options.preserveScrollOnWrite &&
+      Math.floor(savedViewportY) > 0 &&
+      Math.floor(savedTargetViewportY) > 0 &&
+      !wasAlternateScreen;
+    const savedCursorX = shouldPreserveScroll ? this.wasmTerm!.getCursor().x : 0;
+    const preserveScrollAnchor = shouldPreserveScroll
+      ? this.createPreserveScrollAnchor(savedViewportY)
+      : undefined;
+
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
 
@@ -577,9 +601,52 @@ export class Terminal implements ITerminalCore {
     // Invalidate link cache (content changed)
     this.linkDetector?.invalidateCache();
 
-    // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
-    if (this.viewportY !== 0) {
-      this.scrollToBottom();
+    // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior), unless the
+    // caller opts into preserving a scrolled-up viewport during streaming writes.
+    if (shouldPreserveScroll && !this.wasmTerm!.isAlternateScreen()) {
+      const newScrollbackLength = this.getScrollbackLength();
+      const scrollbackDelta = newScrollbackLength - savedScrollbackLength;
+      const mayHaveEvictedScrollback = newScrollbackLength >= this.options.scrollback;
+      const estimatedScrollbackShift = this.estimatePreserveScrollShift(data, savedCursorX);
+      const estimatedEvictedRows = Math.max(
+        0,
+        estimatedScrollbackShift - Math.max(0, scrollbackDelta)
+      );
+      // If scrollback grew below the configured cap, retained rows keep their offsets,
+      // so the signed delta is sufficient and avoids scanning on every append.
+      const anchoredViewportY =
+        preserveScrollAnchor && (scrollbackDelta <= 0 || mayHaveEvictedScrollback)
+          ? this.findAnchoredViewportY(
+              preserveScrollAnchor,
+              newScrollbackLength,
+              estimatedEvictedRows
+            )
+          : undefined;
+      const nextViewportY =
+        anchoredViewportY ??
+        this.clampViewportY(savedViewportY + scrollbackDelta, newScrollbackLength);
+      const viewportDelta = nextViewportY - savedViewportY;
+      const nextTargetViewportY = this.clampViewportY(
+        savedTargetViewportY + viewportDelta,
+        newScrollbackLength
+      );
+
+      if (nextViewportY !== this.viewportY || nextTargetViewportY !== this.targetViewportY) {
+        this.viewportY = nextViewportY;
+        this.targetViewportY = nextTargetViewportY;
+        this.scrollEmitter.fire(Math.floor(this.viewportY));
+
+        if (newScrollbackLength > 0) {
+          this.showScrollbar();
+        }
+      }
+    } else {
+      if (this.options.preserveScrollOnWrite) {
+        this.updatePreserveScrollEstimateState(data);
+      }
+      if (this.viewportY !== 0) {
+        this.scrollToBottom();
+      }
     }
 
     // Check for title changes (OSC 0, 1, 2 sequences)
@@ -602,6 +669,229 @@ export class Terminal implements ITerminalCore {
     }
 
     // Render will happen on next animation frame
+  }
+
+  private createPreserveScrollAnchor(viewportY: number): PreserveScrollAnchor | undefined {
+    const scrollbackLength = this.getScrollbackLength();
+    const flooredViewportY = Math.max(0, Math.floor(viewportY));
+    const visibleScrollbackRows = Math.min(flooredViewportY, this.rows);
+    const topOffset = scrollbackLength - flooredViewportY;
+
+    if (visibleScrollbackRows <= 0 || topOffset < 0) {
+      return undefined;
+    }
+
+    const lineCount = Math.min(visibleScrollbackRows, 5, scrollbackLength - topOffset);
+    const lineSignatures: string[] = [];
+
+    for (let row = 0; row < lineCount; row++) {
+      const signature = this.getLineSignature(this.getScrollbackLine(topOffset + row));
+      if (signature === undefined) {
+        return undefined;
+      }
+      lineSignatures.push(signature);
+    }
+
+    return lineSignatures.length > 0 ? { topOffset, lineSignatures } : undefined;
+  }
+
+  private estimatePreserveScrollShift(data: string | Uint8Array, initialColumn: number): number {
+    const completeText = this.updatePreserveScrollEstimateState(data);
+    const printableText = this.stripControlSequencesForScrollEstimate(completeText);
+    const printableRows = this.estimatePrintableRowMovement(printableText, initialColumn);
+    const scrollUpRows = this.estimateCsiScrollUpRows(completeText);
+    const indexRows = this.estimateIndexControlRows(completeText);
+
+    return printableRows + scrollUpRows + indexRows;
+  }
+
+  private updatePreserveScrollEstimateState(data: string | Uint8Array): string {
+    const decodedText =
+      typeof data === 'string'
+        ? data
+        : this.preserveScrollEstimateDecoder.decode(data, { stream: true });
+    const text = this.preserveScrollEstimateCarry + decodedText;
+    this.preserveScrollEstimateCarry = this.getTrailingControlSequencePrefix(text);
+
+    return text.slice(0, text.length - this.preserveScrollEstimateCarry.length);
+  }
+
+  private getTrailingControlSequencePrefix(data: string): string {
+    const escIndex = data.lastIndexOf('\x1b');
+    const c1CsiIndex = data.lastIndexOf('\x9b');
+    const start = Math.max(escIndex, c1CsiIndex);
+    if (start < 0) {
+      return '';
+    }
+
+    const suffix = data.slice(start);
+    if (/^\x1b\[[0-?]*[ -/]*$/.test(suffix) || /^\x9b[0-?]*[ -/]*$/.test(suffix)) {
+      return suffix;
+    }
+    if (/^\x1b\][^\x07]*(?:\x1b)?$/.test(suffix)) {
+      return suffix;
+    }
+    if (/^\x1bP[\s\S]*(?:\x1b)?$/.test(suffix)) {
+      return suffix;
+    }
+
+    return suffix === '\x1b' ? suffix : '';
+  }
+
+  private stripControlSequencesForScrollEstimate(data: string): string {
+    return data
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1bP[\s\S]*?(?:\x1b\\|\x07)/g, '')
+      .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1b[@-Z\\-_]/g, '')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  }
+
+  private estimatePrintableRowMovement(data: string, initialColumn: number): number {
+    let rows = 0;
+    let columns = Math.max(0, Math.min(Math.floor(initialColumn), Math.max(1, this.cols) - 1));
+    const maxColumns = Math.max(1, this.cols);
+
+    for (const char of data) {
+      if (char === '\r') {
+        columns = 0;
+        continue;
+      }
+
+      if (char === '\n') {
+        rows++;
+        continue;
+      }
+
+      const width = this.estimateCellWidth(char.codePointAt(0)!, columns, maxColumns);
+      if (width === 0) {
+        continue;
+      }
+
+      if (columns > 0 && columns + width > maxColumns) {
+        rows++;
+        columns = 0;
+      }
+
+      columns += width;
+      while (columns > maxColumns) {
+        rows++;
+        columns -= maxColumns;
+      }
+    }
+
+    return rows;
+  }
+
+  private estimateCellWidth(codepoint: number, currentColumn: number, maxColumns: number): number {
+    if (codepoint === 0x09) {
+      const remainder = currentColumn % 8;
+      const nextTabWidth = remainder === 0 ? 8 : 8 - remainder;
+      return Math.min(nextTabWidth, Math.max(0, maxColumns - currentColumn));
+    }
+
+    if (this.isCombiningCodepoint(codepoint)) {
+      return 0;
+    }
+
+    return this.isWideCodepoint(codepoint) ? 2 : 1;
+  }
+
+  private isCombiningCodepoint(codepoint: number): boolean {
+    return (
+      (codepoint >= 0x0300 && codepoint <= 0x036f) ||
+      (codepoint >= 0x1ab0 && codepoint <= 0x1aff) ||
+      (codepoint >= 0x1dc0 && codepoint <= 0x1dff) ||
+      (codepoint >= 0x20d0 && codepoint <= 0x20ff) ||
+      (codepoint >= 0xfe20 && codepoint <= 0xfe2f)
+    );
+  }
+
+  private isWideCodepoint(codepoint: number): boolean {
+    return (
+      codepoint >= 0x1100 &&
+      (codepoint <= 0x115f ||
+        codepoint === 0x2329 ||
+        codepoint === 0x232a ||
+        (codepoint >= 0x2e80 && codepoint <= 0xa4cf && codepoint !== 0x303f) ||
+        (codepoint >= 0xac00 && codepoint <= 0xd7a3) ||
+        (codepoint >= 0xf900 && codepoint <= 0xfaff) ||
+        (codepoint >= 0xfe10 && codepoint <= 0xfe19) ||
+        (codepoint >= 0xfe30 && codepoint <= 0xfe6f) ||
+        (codepoint >= 0xff00 && codepoint <= 0xff60) ||
+        (codepoint >= 0xffe0 && codepoint <= 0xffe6) ||
+        (codepoint >= 0x1f300 && codepoint <= 0x1faff) ||
+        (codepoint >= 0x20000 && codepoint <= 0x3fffd))
+    );
+  }
+
+  private estimateCsiScrollUpRows(data: string): number {
+    let rows = 0;
+
+    for (const match of data.matchAll(/(?:\x1b\[|\x9b)(\d*)S/g)) {
+      rows += match[1] === '' ? 1 : Number.parseInt(match[1], 10);
+    }
+
+    return rows;
+  }
+
+  private estimateIndexControlRows(data: string): number {
+    return (data.match(/\x1b[DE]|[\x84\x85]/g) ?? []).length;
+  }
+
+  private findAnchoredViewportY(
+    anchor: PreserveScrollAnchor,
+    scrollbackLength: number,
+    estimatedEvictedRows: number
+  ): number | undefined {
+    const lastOffset = Math.min(anchor.topOffset, scrollbackLength - anchor.lineSignatures.length);
+    const expectedOffset = Math.max(0, lastOffset - estimatedEvictedRows);
+    const firstOffset = Math.max(0, expectedOffset - this.PRESERVE_SCROLL_ANCHOR_SEARCH_RADIUS);
+    const startOffset = Math.min(
+      lastOffset,
+      expectedOffset + this.PRESERVE_SCROLL_ANCHOR_SEARCH_RADIUS
+    );
+
+    for (let distance = 0; distance <= this.PRESERVE_SCROLL_ANCHOR_SEARCH_RADIUS; distance++) {
+      const lowerOffset = expectedOffset - distance;
+      if (lowerOffset >= firstOffset && this.scrollbackMatchesAnchor(anchor, lowerOffset)) {
+        return this.clampViewportY(scrollbackLength - lowerOffset, scrollbackLength);
+      }
+
+      const upperOffset = expectedOffset + distance;
+      if (
+        distance > 0 &&
+        upperOffset <= startOffset &&
+        this.scrollbackMatchesAnchor(anchor, upperOffset)
+      ) {
+        return this.clampViewportY(scrollbackLength - upperOffset, scrollbackLength);
+      }
+    }
+
+    return undefined;
+  }
+
+  private scrollbackMatchesAnchor(anchor: PreserveScrollAnchor, offset: number): boolean {
+    for (let row = 0; row < anchor.lineSignatures.length; row++) {
+      const signature = this.getLineSignature(this.getScrollbackLine(offset + row));
+      if (signature !== anchor.lineSignatures[row]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private getLineSignature(cells: GhosttyCell[] | null): string | undefined {
+    if (!cells) {
+      return undefined;
+    }
+
+    return cells.map((cell) => `${cell.codepoint}:${cell.flags}:${cell.width}`).join(',');
+  }
+
+  private clampViewportY(viewportY: number, scrollbackLength: number): number {
+    return Math.max(0, Math.min(viewportY, scrollbackLength));
   }
 
   /**
@@ -927,6 +1217,7 @@ export class Terminal implements ITerminalCore {
 
     if (newViewportY !== this.viewportY) {
       this.viewportY = newViewportY;
+      this.targetViewportY = newViewportY;
       this.scrollEmitter.fire(this.viewportY);
 
       // Show scrollbar when scrolling (with auto-hide)
@@ -951,6 +1242,7 @@ export class Terminal implements ITerminalCore {
     const scrollbackLength = this.getScrollbackLength();
     if (scrollbackLength > 0 && this.viewportY !== scrollbackLength) {
       this.viewportY = scrollbackLength;
+      this.targetViewportY = scrollbackLength;
       this.scrollEmitter.fire(this.viewportY);
       this.showScrollbar();
     }
@@ -962,6 +1254,7 @@ export class Terminal implements ITerminalCore {
   public scrollToBottom(): void {
     if (this.viewportY !== 0) {
       this.viewportY = 0;
+      this.targetViewportY = 0;
       this.scrollEmitter.fire(this.viewportY);
       // Show scrollbar briefly when scrolling to bottom
       if (this.getScrollbackLength() > 0) {
@@ -980,6 +1273,7 @@ export class Terminal implements ITerminalCore {
 
     if (newViewportY !== this.viewportY) {
       this.viewportY = newViewportY;
+      this.targetViewportY = newViewportY;
       this.scrollEmitter.fire(this.viewportY);
 
       // Show scrollbar when scrolling to specific line
