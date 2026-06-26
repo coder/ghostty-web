@@ -1564,6 +1564,35 @@ index 000000000..73ae2e6fa
 +    try std.testing.expectEqual(@as(u32, 'l'), cells[3].codepoint);
 +    try std.testing.expectEqual(@as(u32, 'o'), cells[4].codepoint);
 +}
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+index ba2af2473..b8be8f273 100644
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -851,10 +851,19 @@ pub fn cursorDownScroll(self: *Screen) !void {
+-        // Clear the new row so it gets our bg color. We only do this
+-        // if we have a bg color at all.
+-        if (self.cursor.style.bg_color != .none) {
++        // Always clear the new row's cells. When pages.grow() extends an
++        // existing page, the new row's cell memory may contain stale data
++        // from previously erased rows. Without clearing, these stale cells
++        // become visible when the row isn't fully overwritten, such as after
++        // bare CRLF output with the default cursor style.
++        {
+             const page: *Page = &page_pin.node.data;
++            const row = self.cursor.page_row;
++            const cells_offset = row.cells;
++            const dirty = row.dirty;
+             self.clearCells(
+                 page,
+-                self.cursor.page_row,
+-                page.getCells(self.cursor.page_row),
++                row,
++                page.getCells(row),
+             );
++            // Reset row-level metadata that clearCells does not touch while
++            // preserving the backing cell offset and dirty state.
++            row.* = .{ .cells = cells_offset, .dirty = dirty };
+         }
 diff --git a/src/terminal/render.zig b/src/terminal/render.zig
 index b6430ea34..10e0ef79d 100644
 --- a/src/terminal/render.zig
