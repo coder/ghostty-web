@@ -6,3 +6,6 @@ dist/
 
 # WASM build output (built locally and in CI)
 ghostty-vt.wasm
+
+# Visual render test failure artifacts
+demo/baselines/*.fail.png
