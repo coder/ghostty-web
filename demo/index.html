@@ -191,11 +191,44 @@
         connectWebSocket();
       }
 
-      function connectWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws?cols=${term.cols}&rows=${term.rows}`;
+      async function fetchAuthToken() {
+        const response = await fetch('/api/token', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`Token request failed with HTTP ${response.status}`);
+        }
 
-        ws = new WebSocket(wsUrl);
+        const body = await response.json();
+        if (!body || typeof body.token !== 'string' || body.token.length === 0) {
+          throw new Error('Token response did not include a token');
+        }
+
+        return body.token;
+      }
+
+      function buildWebSocketUrl(token) {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const params = new URLSearchParams();
+        params.set('cols', String(term.cols));
+        params.set('rows', String(term.rows));
+        params.set('token', token);
+        return `${protocol}//${window.location.host}/ws?${params.toString()}`;
+      }
+
+      async function connectWebSocket() {
+        updateConnectionStatus(false, 'Authenticating...');
+
+        let token;
+        try {
+          token = await fetchAuthToken();
+        } catch (error) {
+          console.error('Authentication failed:', error);
+          updateConnectionStatus(false, 'Auth error');
+          setTimeout(connectWebSocket, 3000);
+          return;
+        }
+
+        updateConnectionStatus(false, 'Connecting...');
+        ws = new WebSocket(buildWebSocketUrl(token));
 
         ws.onopen = () => {
           console.log('WebSocket connected');
@@ -209,7 +242,7 @@
 
         ws.onerror = (error) => {
           console.error('WebSocket error:', error);
-          updateConnectionStatus(false);
+          updateConnectionStatus(false, 'Error');
         };
 
         ws.onclose = () => {
@@ -225,16 +258,16 @@
         };
       }
 
-      function updateConnectionStatus(connected) {
+      function updateConnectionStatus(connected, message) {
         const dot = document.getElementById('connection-dot');
         const text = document.getElementById('connection-text');
 
         if (connected) {
           dot.classList.add('connected');
-          text.textContent = 'Connected';
+          text.textContent = message || 'Connected';
         } else {
           dot.classList.remove('connected');
-          text.textContent = 'Disconnected';
+          text.textContent = message || 'Disconnected';
         }
       }
 

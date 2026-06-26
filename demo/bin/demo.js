@@ -18,11 +18,29 @@ import pty from '@lydell/node-pty';
 // WebSocket server
 import { WebSocketServer } from 'ws';
 
+import {
+  createAuthConfig,
+  isLoopbackHost,
+  isWildcardBindHost,
+  validateTokenRequest,
+  validateWebSocketRequest,
+} from './auth.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DEV_MODE = process.argv.includes('--dev');
-const HTTP_PORT = process.env.PORT || (DEV_MODE ? 8000 : 8080);
+const HTTP_PORT = parsePort(process.env.PORT || (DEV_MODE ? '8000' : '8080'));
+const AUTH_CONFIG = createAuthConfig();
+const HOST = AUTH_CONFIG.bindHost;
+
+function parsePort(value) {
+  const port = Number.parseInt(value, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`PORT must be an integer from 1 to 65535: ${value}`);
+  }
+  return port;
+}
 
 // ============================================================================
 // Locate ghostty-web assets
@@ -240,12 +258,46 @@ const HTML_TEMPLATE = `<!doctype html>
 
       // Connect to WebSocket PTY server (use same origin as HTTP server)
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = protocol + '//' + window.location.host + '/ws?cols=' + term.cols + '&rows=' + term.rows;
       let ws;
 
-      function connect() {
+      async function fetchAuthToken() {
+        const response = await fetch('/api/token', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error('Token request failed with HTTP ' + response.status);
+        }
+
+        const body = await response.json();
+        if (!body || typeof body.token !== 'string' || body.token.length === 0) {
+          throw new Error('Token response did not include a token');
+        }
+
+        return body.token;
+      }
+
+      function buildWebSocketUrl(token) {
+        const params = new URLSearchParams();
+        params.set('cols', String(term.cols));
+        params.set('rows', String(term.rows));
+        params.set('token', token);
+        return protocol + '//' + window.location.host + '/ws?' + params.toString();
+      }
+
+      async function connect() {
+        setStatus('connecting', 'Authenticating...');
+
+        let token;
+        try {
+          token = await fetchAuthToken();
+        } catch (error) {
+          console.error('Authentication failed:', error);
+          setStatus('disconnected', 'Auth error');
+          term.write('\\r\\n\\x1b[31mAuthentication failed. Retrying in 2s...\\x1b[0m\\r\\n');
+          setTimeout(connect, 2000);
+          return;
+        }
+
         setStatus('connecting', 'Connecting...');
-        ws = new WebSocket(wsUrl);
+        ws = new WebSocket(buildWebSocketUrl(token));
 
         ws.onopen = () => {
           setStatus('connected', 'Connected');
@@ -338,7 +390,16 @@ const MIME_TYPES = {
 // ============================================================================
 
 const httpServer = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = parseRequestUrl(req);
+  if (!url) {
+    writeHttpDecision(res, { status: 400, reason: 'Bad Request' });
+    return;
+  }
+
+  if (handleTokenRequest(req, res, url)) {
+    return;
+  }
+
   const pathname = url.pathname;
 
   // Serve index page
@@ -381,6 +442,60 @@ function serveFile(filePath, res) {
   });
 }
 
+function parseRequestUrl(req) {
+  try {
+    return new URL(req.url || '/', 'http://127.0.0.1');
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeHttpDecision(res, decision) {
+  res.writeHead(decision.status, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(decision.reason);
+}
+
+function writeTokenResponse(res) {
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(JSON.stringify({ token: AUTH_CONFIG.token }));
+}
+
+function handleTokenRequest(req, res, url) {
+  if (url.pathname !== '/api/token') {
+    return false;
+  }
+
+  if (req.method !== 'GET') {
+    res.writeHead(405, {
+      Allow: 'GET',
+      'Content-Type': 'text/plain; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end('Method Not Allowed');
+    return true;
+  }
+
+  const decision = validateTokenRequest(AUTH_CONFIG, {
+    host: req.headers.host,
+    origin: req.headers.origin,
+  });
+
+  if (!decision.ok) {
+    writeHttpDecision(res, decision);
+    return true;
+  }
+
+  writeTokenResponse(res);
+  return true;
+}
+
 // ============================================================================
 // WebSocket Server (using ws package)
 // ============================================================================
@@ -416,23 +531,67 @@ function createPtySession(cols, rows) {
 // WebSocket server attached to HTTP server (same port)
 const wss = new WebSocketServer({ noServer: true });
 
-// Handle HTTP upgrade for WebSocket connections
-httpServer.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+function rejectUpgrade(socket, decision) {
+  if (socket.destroyed) {
+    return;
+  }
 
-  if (url.pathname === '/ws') {
-    // In production, consider validating req.headers.origin to prevent CSRF
-    // For development/demo purposes, we allow all origins
+  const body = decision.reason + '\n';
+  socket.write(
+    `HTTP/1.1 ${decision.status} ${decision.reason}\r\n` +
+      'Connection: close\r\n' +
+      'Content-Type: text/plain; charset=utf-8\r\n' +
+      'X-Content-Type-Options: nosniff\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      '\r\n' +
+      body
+  );
+  socket.destroy();
+}
+
+function handleWebSocketUpgrade(req, socket, head) {
+  const url = parseRequestUrl(req);
+  if (!url) {
+    rejectUpgrade(socket, { status: 400, reason: 'Bad Request' });
+    return true;
+  }
+
+  if (url.pathname !== '/ws') {
+    return false;
+  }
+
+  const decision = validateWebSocketRequest(AUTH_CONFIG, {
+    host: req.headers.host,
+    origin: req.headers.origin,
+    token: url.searchParams.get('token'),
+  });
+
+  if (!decision.ok) {
+    rejectUpgrade(socket, decision);
+    return true;
+  }
+
+  if (!socket.destroyed && !socket.readableEnded) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
-  } else {
+  }
+  return true;
+}
+
+// Handle HTTP upgrade for WebSocket connections
+httpServer.on('upgrade', (req, socket, head) => {
+  if (!handleWebSocketUpgrade(req, socket, head)) {
     socket.destroy();
   }
 });
 
 wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = parseRequestUrl(req);
+  if (!url) {
+    ws.close();
+    return;
+  }
   const cols = Number.parseInt(url.searchParams.get('cols') || '80');
   const rows = Number.parseInt(url.searchParams.get('rows') || '24');
 
@@ -508,12 +667,17 @@ wss.on('connection', (ws, req) => {
 // Startup
 // ============================================================================
 
+function formatUrlHost(host) {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
 function printBanner(url) {
   console.log('\n' + '═'.repeat(60));
   console.log('  🚀 ghostty-web demo server' + (DEV_MODE ? ' (dev mode)' : ''));
   console.log('═'.repeat(60));
   console.log(`\n  📺 Open: ${url}`);
   console.log(`  📡 WebSocket PTY: same endpoint /ws`);
+  console.log('  🔐 WebSocket auth: per-run same-origin token');
   console.log(`  🐚 Shell: ${getShell()}`);
   console.log(`  📁 Home: ${homedir()}`);
   if (DEV_MODE) {
@@ -522,6 +686,12 @@ function printBanner(url) {
     console.log(`  📦 Using local build: ${distPath}`);
   }
   console.log('\n  ⚠️  This server provides shell access.');
+  console.log('     It binds to ' + HOST + ' and rejects cross-origin WebSockets.');
+  if (isWildcardBindHost(HOST) || !isLoopbackHost(HOST)) {
+    console.log(
+      '     Remote access requires GHOSTTY_ALLOWED_HOSTS and can expose your shell if misconfigured.'
+    );
+  }
   console.log('     Only use for local development.\n');
   console.log('═'.repeat(60));
   console.log('  Press Ctrl+C to stop.\n');
@@ -544,9 +714,31 @@ if (DEV_MODE) {
   const { createServer } = await import('vite');
   const vite = await createServer({
     root: repoRoot,
+    plugins: [
+      {
+        name: 'ghostty-demo-auth',
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            const url = parseRequestUrl(req);
+            if (!url) {
+              writeHttpDecision(res, { status: 400, reason: 'Bad Request' });
+              return;
+            }
+
+            if (handleTokenRequest(req, res, url)) {
+              return;
+            }
+
+            next();
+          });
+        },
+      },
+    ],
     server: {
+      host: HOST,
       port: HTTP_PORT,
       strictPort: true,
+      cors: false,
     },
   });
 
@@ -557,30 +749,20 @@ if (DEV_MODE) {
   // This ensures our handler runs BEFORE Vite's handlers
   if (vite.httpServer) {
     vite.httpServer.prependListener('upgrade', (req, socket, head) => {
-      const pathname = req.url?.split('?')[0] || req.url || '';
-
-      // ONLY handle /ws - everything else passes through unchanged to Vite
-      if (pathname === '/ws') {
-        if (!socket.destroyed && !socket.readableEnded) {
-          wss.handleUpgrade(req, socket, head, (ws) => {
-            wss.emit('connection', ws, req);
-          });
-        }
-        // Stop here - we handled it, socket is consumed
-        // Don't call other listeners
+      // ONLY handle /ws - everything else passes through unchanged to Vite.
+      if (handleWebSocketUpgrade(req, socket, head)) {
         return;
       }
 
-      // For non-/ws paths, explicitly do nothing and let the event propagate
-      // The key is: don't return, don't touch the socket, just let it pass through
-      // Vite's handlers (which were added before ours via prependListener) will process it
+      // For non-/ws paths, explicitly do nothing and let the event propagate.
+      // The key is: don't return, don't touch the socket, just let Vite process it.
     });
   }
 
-  printBanner(`http://localhost:${HTTP_PORT}/demo/`);
+  printBanner(`http://${formatUrlHost(HOST)}:${HTTP_PORT}/demo/`);
 } else {
   // Production mode: static file server
-  httpServer.listen(HTTP_PORT, () => {
-    printBanner(`http://localhost:${HTTP_PORT}`);
+  httpServer.listen(HTTP_PORT, HOST, () => {
+    printBanner(`http://${formatUrlHost(HOST)}:${HTTP_PORT}`);
   });
 }

@@ -20,7 +20,9 @@ Originally created for [Mux](https://github.com/coder/mux) (a desktop app for is
   npx @ghostty-web/demo@next
   ```
 
-  This starts a local HTTP server with a real shell on `http://localhost:8080`. Works best on Linux and macOS.
+  This starts a loopback-only HTTP server with a real shell on `http://127.0.0.1:8080`. The demo protects `/ws` with a per-run same-origin token and rejects cross-origin WebSocket handshakes. Works best on Linux and macOS.
+
+  To intentionally bind somewhere else, set `HOST=<host>`. If you serve the demo through extra hostnames or a wildcard bind such as `HOST=0.0.0.0`, also set `GHOSTTY_ALLOWED_HOSTS=host1,host2`. Avoid remote exposure unless you understand the risk: the demo starts a real local shell.
 
 ![ghostty](https://github.com/user-attachments/assets/aceee7eb-d57b-4d89-ac3d-ee1885d0187a)
 
