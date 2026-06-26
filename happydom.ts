@@ -12,7 +12,7 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
 // Register Happy DOM globals (window, document, etc.)
-GlobalRegistrator.register();
+GlobalRegistrator.register({ url: 'http://localhost/' });
 
 // Mock Canvas 2D Context
 // Happy DOM doesn't provide canvas rendering APIs, so we mock them for testing.
