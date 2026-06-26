@@ -2332,6 +2332,18 @@ describe('Public Mutable Options', () => {
     expect(term.options.scrollback).toBe(5000);
   });
 
+  test('options expose default values when none are provided', async () => {
+    const term = await createIsolatedTerminal();
+    try {
+      expect(term.options).toBeDefined();
+      expect(term.options.cols).toBe(80);
+      expect(term.options.rows).toBe(24);
+      expect(term.options.scrollback).toBe(10000);
+    } finally {
+      term.dispose();
+    }
+  });
+
   test('options can be mutated at runtime', async () => {
     const term = await createIsolatedTerminal();
     expect(term.options.disableStdin).toBe(false);
