@@ -722,6 +722,11 @@ export class Terminal implements ITerminalCore {
   }
 
   private getTrailingControlSequencePrefix(data: string): string {
+    const stringPrefix = this.getTrailingStringControlSequencePrefix(data);
+    if (stringPrefix !== '') {
+      return stringPrefix;
+    }
+
     const escIndex = data.lastIndexOf('\x1b');
     const c1CsiIndex = data.lastIndexOf('\x9b');
     const start = Math.max(escIndex, c1CsiIndex);
@@ -733,20 +738,46 @@ export class Terminal implements ITerminalCore {
     if (/^\x1b\[[0-?]*[ -/]*$/.test(suffix) || /^\x9b[0-?]*[ -/]*$/.test(suffix)) {
       return suffix;
     }
-    if (/^\x1b\][^\x07]*(?:\x1b)?$/.test(suffix)) {
-      return suffix;
-    }
-    if (/^\x1bP[\s\S]*(?:\x1b)?$/.test(suffix)) {
-      return suffix;
-    }
 
     return suffix === '\x1b' ? suffix : '';
   }
 
+  private getTrailingStringControlSequencePrefix(data: string): string {
+    const introducers = ['\x1b]', '\x1bP', '\x9d', '\x90'];
+    const starts = introducers
+      .flatMap((introducer) => {
+        const matches: Array<{ index: number; introducer: string }> = [];
+        let index = data.indexOf(introducer);
+        while (index !== -1) {
+          matches.push({ index, introducer });
+          index = data.indexOf(introducer, index + introducer.length);
+        }
+        return matches;
+      })
+      .sort((left, right) => left.index - right.index);
+
+    for (const { index, introducer } of starts) {
+      const content = data.slice(index + introducer.length);
+      if (this.findStringControlTerminatorIndex(content) === -1) {
+        return data.slice(index);
+      }
+    }
+
+    return '';
+  }
+
+  private findStringControlTerminatorIndex(data: string): number {
+    const terminatorIndexes = [data.indexOf('\x07'), data.indexOf('\x1b\\'), data.indexOf('\x9c')]
+      .filter((index) => index !== -1)
+      .sort((left, right) => left - right);
+
+    return terminatorIndexes[0] ?? -1;
+  }
+
   private stripControlSequencesForScrollEstimate(data: string): string {
     return data
-      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
-      .replace(/\x1bP[\s\S]*?(?:\x1b\\|\x07)/g, '')
+      .replace(/(?:\x1b\]|\x9d)[^\x07\x9c]*(?:\x07|\x1b\\|\x9c)/g, '')
+      .replace(/(?:\x1bP|\x90)[\s\S]*?(?:\x1b\\|\x07|\x9c)/g, '')
       .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
       .replace(/\x1b[@-Z\\-_]/g, '')
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');

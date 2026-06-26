@@ -1001,6 +1001,46 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() carries string control sequences split at ST escape byte', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 1000,
+    });
+
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+
+    try {
+      term.viewportY = 500;
+      (term as any).targetViewportY = 500;
+      (term as any).getScrollbackLength = () => 1000;
+      (term as any).getScrollbackLine = (offset: number) => makeSignatureLine(`line-${offset}`);
+      term.wasmTerm!.write = (() => {}) as typeof term.wasmTerm.write;
+
+      const oscPrefix = `\x1b]0;${'title'.repeat(50)}\x1b`;
+      term.write(oscPrefix);
+      expect((term as any).preserveScrollEstimateCarry).toBe(oscPrefix);
+
+      term.write('\\');
+      expect((term as any).preserveScrollEstimateCarry).toBe('');
+      expect(term.getViewportY()).toBe(500);
+
+      const dcsPrefix = `\x1bP${'payload'.repeat(50)}\x1b`;
+      term.write(dcsPrefix);
+      expect((term as any).preserveScrollEstimateCarry).toBe(dcsPrefix);
+
+      term.write('\\');
+      expect((term as any).preserveScrollEstimateCarry).toBe('');
+      expect(term.getViewportY()).toBe(500);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() estimates CSI scroll-up rows split across writes', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,
