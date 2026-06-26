@@ -612,24 +612,29 @@ export class Terminal implements ITerminalCore {
         0,
         estimatedScrollbackShift - Math.max(0, scrollbackDelta)
       );
+      const scrollbackOffsetsUnchanged = scrollbackDelta === 0 && estimatedEvictedRows === 0;
       // If scrollback grew below the configured cap, retained rows keep their offsets,
-      // so the signed delta is sufficient and avoids scanning on every append.
+      // so the signed delta is sufficient and avoids scanning on every append. If a
+      // no-growth write could not have evicted rows, keep fractional smooth-scroll
+      // positions intact instead of snapping through the integer anchor path.
       const anchoredViewportY =
-        preserveScrollAnchor && (scrollbackDelta <= 0 || mayHaveEvictedScrollback)
+        !scrollbackOffsetsUnchanged &&
+        preserveScrollAnchor &&
+        (scrollbackDelta <= 0 || mayHaveEvictedScrollback)
           ? this.findAnchoredViewportY(
               preserveScrollAnchor,
               newScrollbackLength,
               estimatedEvictedRows
             )
           : undefined;
-      const nextViewportY =
-        anchoredViewportY ??
-        this.clampViewportY(savedViewportY + scrollbackDelta, newScrollbackLength);
+      const nextViewportY = scrollbackOffsetsUnchanged
+        ? this.clampViewportY(savedViewportY, newScrollbackLength)
+        : (anchoredViewportY ??
+          this.clampViewportY(savedViewportY + scrollbackDelta, newScrollbackLength));
       const viewportDelta = nextViewportY - savedViewportY;
-      const nextTargetViewportY = this.clampViewportY(
-        savedTargetViewportY + viewportDelta,
-        newScrollbackLength
-      );
+      const nextTargetViewportY = scrollbackOffsetsUnchanged
+        ? this.clampViewportY(savedTargetViewportY, newScrollbackLength)
+        : this.clampViewportY(savedTargetViewportY + viewportDelta, newScrollbackLength);
 
       if (nextViewportY !== this.viewportY || nextTargetViewportY !== this.targetViewportY) {
         this.viewportY = nextViewportY;

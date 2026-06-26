@@ -1552,6 +1552,35 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() preserves fractional viewport on no-growth writes', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 1000,
+    });
+
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+
+    try {
+      term.viewportY = 3.5;
+      (term as any).targetViewportY = 4.5;
+      (term as any).getScrollbackLength = () => 1000;
+      (term as any).getScrollbackLine = (offset: number) => makeSignatureLine(`line-${offset}`);
+      term.wasmTerm!.write = (() => {}) as typeof term.wasmTerm.write;
+
+      term.write('x');
+
+      expect(term.getViewportY()).toBe(3.5);
+      expect((term as any).targetViewportY).toBe(4.5);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() does not move preserved viewport when scrollback does not grow', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,
