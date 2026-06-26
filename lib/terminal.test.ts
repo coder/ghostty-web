@@ -46,6 +46,39 @@ function setSelectionViewportRelative(
   }
 }
 
+function spyOnRendererRender(term: Terminal): {
+  renderArgs: Array<Parameters<NonNullable<Terminal['renderer']>['render']>>;
+  restore: () => void;
+} {
+  const renderer = term.renderer;
+  if (!renderer) {
+    throw new Error('Expected terminal renderer');
+  }
+
+  const originalRender = renderer.render;
+  const renderArgs: Array<Parameters<typeof renderer.render>> = [];
+  renderer.render = ((...args: Parameters<typeof renderer.render>) => {
+    renderArgs.push(args);
+    return originalRender.call(renderer, ...args);
+  }) as typeof renderer.render;
+
+  return {
+    renderArgs,
+    restore: () => {
+      renderer.render = originalRender as typeof renderer.render;
+    },
+  };
+}
+
+function expectEchoRender(
+  term: Terminal,
+  renderArgs: Array<Parameters<NonNullable<Terminal['renderer']>['render']>>
+): void {
+  expect(renderArgs).toHaveLength(1);
+  expect(renderArgs[0][0]).toBe(term.wasmTerm);
+  expect(renderArgs[0][1]).toBe(false);
+}
+
 describe('Terminal', () => {
   let container: HTMLElement;
 
@@ -2919,6 +2952,172 @@ describe('Write Behavior', () => {
     expect(callbackOrder).toEqual([1, 2, 3]);
 
     term.dispose();
+  });
+});
+
+// ==========================================================================
+// xterm.js Compatibility: Echo Latency Optimization
+// ==========================================================================
+
+describe('Echo Latency Optimization', () => {
+  let container: HTMLElement | null = null;
+
+  beforeEach(async () => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('renders synchronously for the first write after user input', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    const { renderArgs, restore } = spyOnRendererRender(term);
+
+    try {
+      term.input('x', true);
+      expect(renderArgs).toHaveLength(0);
+
+      term.write('x');
+      expectEchoRender(term, renderArgs);
+    } finally {
+      restore();
+      term.dispose();
+    }
+  });
+
+  test('does not synchronously render subsequent output without another user input', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    const { renderArgs, restore } = spyOnRendererRender(term);
+
+    try {
+      term.input('x', true);
+      term.write('x');
+      expectEchoRender(term, renderArgs);
+
+      term.write('bulk output');
+      expect(renderArgs).toHaveLength(1);
+    } finally {
+      restore();
+      term.dispose();
+    }
+  });
+
+  test('does not synchronously render after programmatic input', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    const { renderArgs, restore } = spyOnRendererRender(term);
+
+    try {
+      term.input('x', false);
+      expect(renderArgs).toHaveLength(0);
+
+      term.write('x');
+      expect(renderArgs).toHaveLength(0);
+    } finally {
+      restore();
+      term.dispose();
+    }
+  });
+
+  test('renders synchronously for the first write after paste', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    const { renderArgs, restore } = spyOnRendererRender(term);
+
+    try {
+      term.paste('hello');
+      expect(renderArgs).toHaveLength(0);
+
+      term.write('hello');
+      expectEchoRender(term, renderArgs);
+    } finally {
+      restore();
+      term.dispose();
+    }
+  });
+
+  test('does not mark echo when stdin is disabled', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24, disableStdin: true });
+    term.open(container);
+    const { renderArgs, restore } = spyOnRendererRender(term);
+
+    try {
+      term.input('x', true);
+      term.paste('hello');
+      term.write('xhello');
+
+      expect(renderArgs).toHaveLength(0);
+    } finally {
+      restore();
+      term.dispose();
+    }
+  });
+
+  test('renders synchronously for the first write after keyboard input', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    const { renderArgs, restore } = spyOnRendererRender(term);
+    const receivedData: string[] = [];
+    term.onData((data) => receivedData.push(data));
+
+    try {
+      const keyEvent = new KeyboardEvent('keydown', {
+        key: 'a',
+        code: 'KeyA',
+        keyCode: 65,
+        bubbles: true,
+        cancelable: true,
+      });
+      container.dispatchEvent(keyEvent);
+
+      expect(receivedData.length).toBeGreaterThan(0);
+      term.write('a');
+      expectEchoRender(term, renderArgs);
+    } finally {
+      restore();
+      term.dispose();
+    }
+  });
+
+  test('marks echo before firing synchronous onData listeners', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    term.open(container);
+    term.onData((data) => term.write(data));
+    const { renderArgs, restore } = spyOnRendererRender(term);
+
+    try {
+      term.input('z', true);
+      expectEchoRender(term, renderArgs);
+
+      term.write('bulk output');
+      expect(renderArgs).toHaveLength(1);
+    } finally {
+      restore();
+      term.dispose();
+    }
   });
 });
 
