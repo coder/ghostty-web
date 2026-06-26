@@ -1,0 +1,81 @@
+name: Release Please
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          NPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Test release tooling
+        run: bun test scripts/release-please-ai scripts/release-please-runner.test.ts
+
+      - name: Run Release Please
+        id: release-please
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+        run: bun run release-please
+
+      - name: Dispatch publish workflow for stable release
+        if: steps.release-please.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAGS: ${{ steps.release-please.outputs.release_tags }}
+        run: |
+          set -euo pipefail
+          for tag in $RELEASE_TAGS; do
+            echo "Dispatching publish.yml for $tag"
+            gh workflow run publish.yml --ref "$tag" --field "tag=$tag"
+          done
+
+      - name: Dispatch checks for release PR branches
+        if: steps.release-please.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_METADATA: ${{ steps.release-please.outputs.pr_metadata }}
+        run: |
+          set -euo pipefail
+          node <<'NODE' > /tmp/release-prs.tsv
+          const metadata = JSON.parse(process.env.PR_METADATA || '[]');
+          for (const pr of metadata) {
+            if (!pr.branch || !pr.title) throw new Error(`Invalid PR metadata: ${JSON.stringify(pr)}`);
+            console.log(`${pr.branch}\t${pr.title}`);
+          }
+          NODE
+          while IFS=$'\t' read -r branch title; do
+            echo "Dispatching checks for $branch ($title)"
+            gh workflow run ci.yml --ref "$branch"
+            gh workflow run pr-title.yml --ref "$branch" --raw-field "title=$title"
+          done < /tmp/release-prs.tsv

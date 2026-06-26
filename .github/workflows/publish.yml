@@ -1,33 +1,74 @@
 name: publish
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to release, e.g. v0.5.0
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
   workflow_run:
     workflows: ['ci']
-    types:
-      - completed
-    branches:
-      - main
+    types: [completed]
+    branches: [main]
 
 permissions:
-  contents: write # Required for creating GitHub releases
-  id-token: write # Required for OIDC trusted publishing
+  contents: read
+  id-token: write
 
 jobs:
-  publish:
-    name: publish to npm
+  publish-stable:
+    name: publish stable packages
     runs-on: ubuntu-latest
-    # Only run if CI workflow succeeded (for workflow_run trigger)
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout code
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          if [[ -z "$TAG" || ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a vX.Y.Z tag, got '$TAG'" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0 # Required for git describe to find tags
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
           submodules: recursive
+
+      - name: Validate tag and source versions
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          if ! git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "Tag $TAG is not an ancestor of origin/main" >&2
+            exit 1
+          fi
+          node <<'NODE'
+          const fs = require('fs');
+          const version = process.env.VERSION;
+          const root = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+          const demo = JSON.parse(fs.readFileSync('demo/package.json', 'utf8')).version;
+          const flake = fs.readFileSync('flake.nix', 'utf8').match(/version = "([^"]+)";/)?.[1];
+          for (const [name, value] of Object.entries({ root, demo, flake })) {
+            if (value !== version) throw new Error(`${name} version ${value} does not match tag version ${version}`);
+          }
+          console.log(`Validated source versions for ${version}`);
+          NODE
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -39,11 +80,8 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Build WASM
-        run: ./scripts/build-wasm.sh
-
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Check formatting
         run: bun run fmt
@@ -60,178 +98,186 @@ jobs:
       - name: Build library
         run: bun run build
 
+      - name: Check WASM size
+        run: |
+          SIZE=$(stat -c%s ghostty-vt.wasm)
+          echo "WASM size: $SIZE bytes"
+          if [ "$SIZE" -gt 524288 ]; then
+            echo "❌ Error: WASM exceeds 512 KiB limit"
+            exit 1
+          fi
+
       - name: Setup Node.js for npm
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      # Ensure npm 11.5.1 or later for trusted publishing
-      - run: npm install -g npm@latest
+      - name: Ensure current npm for trusted publishing
+        run: npm install -g npm@latest
 
-      - name: Detect trigger type
-        id: detect
-        run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo "is_tag=true" >> $GITHUB_OUTPUT
-            echo "trigger_type=tag" >> $GITHUB_OUTPUT
-            echo "trigger_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-            echo "📦 Detected tag push: ${GITHUB_REF#refs/tags/}"
-          else
-            echo "is_tag=false" >> $GITHUB_OUTPUT
-            echo "trigger_type=branch" >> $GITHUB_OUTPUT
-            echo "trigger_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
-            echo "🚧 Detected branch push: ${GITHUB_REF#refs/heads/}"
-          fi
-
-      - name: Generate version
-        id: version
-        run: |
-          if [[ "${{ steps.detect.outputs.is_tag }}" == "true" ]]; then
-            # For tags, extract version from git tag (strip 'v' prefix)
-            NPM_VERSION="${GITHUB_REF#refs/tags/v}"
-            NPM_TAG="latest"
-            echo "📦 Publishing stable release: ${NPM_VERSION}"
-          else
-            # Get base version from latest tag for pre-releases
-            LATEST_TAG=$(git describe --tags --abbrev=0)
-            BASE_VERSION="${LATEST_TAG#v}"
-            # For main branch, create a pre-release version using git describe
-            # Format: 0.3.0-next.5.g1a2b3c4 (base-next.commits.hash)
-            GIT_COMMIT=$(git rev-parse --short HEAD)
-            COMMITS_SINCE_TAG=$(git rev-list --count HEAD ^$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD) 2>/dev/null || echo "0")
-            NPM_VERSION="${BASE_VERSION}-next.${COMMITS_SINCE_TAG}.g${GIT_COMMIT}"
-            NPM_TAG="next"
-            echo "🚧 Publishing pre-release: ${NPM_VERSION}"
-          fi
-
-          echo "version=${NPM_VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${NPM_TAG}" >> $GITHUB_OUTPUT
-
-          # Update package.json with the new version
-          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json')); pkg.version = '${NPM_VERSION}'; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
-
-          echo "Updated package.json to version ${NPM_VERSION}"
-
-      - name: Check if version exists
-        id: check-exists
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          VERSION="${{ steps.version.outputs.version }}"
-
-          if npm view "${PACKAGE_NAME}@${VERSION}" version &>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Version ${VERSION} already exists on npm"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Version ${VERSION} does not exist, will publish"
-          fi
-
-      - name: Publish to npm (with OIDC trusted publishing)
-        if: steps.check-exists.outputs.exists == 'false'
-        run: npm publish --tag ${{ steps.version.outputs.tag }} --provenance --access public
-
-      - name: Update dist-tag (version already exists)
-        if: steps.check-exists.outputs.exists == 'true' && steps.detect.outputs.is_tag == 'true'
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="${{ steps.version.outputs.tag }}"
-
-          echo "Version ${VERSION} already published, updating dist-tag to ${TAG}"
-          npm dist-tag add "${PACKAGE_NAME}@${VERSION}" "${TAG}"
-
-      - name: Skip (pre-release already exists)
-        if: steps.check-exists.outputs.exists == 'true' && steps.detect.outputs.is_tag != 'true'
-        run: |
-          echo "⏭️ Pre-release version already exists, skipping"
-
-      - name: Create GitHub Release
-        if: steps.detect.outputs.is_tag == 'true'
-        run: gh release create "${{ steps.detect.outputs.trigger_name }}" --title "${{ steps.detect.outputs.trigger_name }}" --generate-notes --verify-tag
+      - name: Publish ghostty-web
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${VERSION} already exists; skipping publish"
+            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" latest || echo "Unable to repair latest dist-tag with current npm credentials; package already exists."
+          else
+            npm publish --provenance --access public
+          fi
 
-  publish-demo:
-    name: publish @ghostty-web/demo to npm
+      - name: Pin and validate demo package
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const version = process.env.VERSION;
+          const path = 'demo/package.json';
+          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+          pkg.version = version;
+          pkg.dependencies['ghostty-web'] = version;
+          fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+          console.log(`Pinned @ghostty-web/demo to ghostty-web ${version}`);
+          NODE
+
+      - name: Publish @ghostty-web/demo
+        working-directory: demo
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${VERSION} already exists; skipping publish"
+            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" latest || echo "Unable to repair latest dist-tag with current npm credentials; package already exists."
+          else
+            npm publish --provenance --access public
+          fi
+
+  publish-next:
+    name: publish next packages
     runs-on: ubuntu-latest
-    needs: publish
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: Checkout code
+      - name: Checkout CI head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+          submodules: recursive
+
+      - name: Skip release commits
+        id: release-commit
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          SUBJECT=$(git log -1 --format=%s "$HEAD_SHA")
+          echo "subject=$SUBJECT"
+          if [[ "$SUBJECT" =~ ^chore\(release\):\  ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping next publish for release commit"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Bun
+        if: steps.release-commit.outputs.skip != 'true'
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Setup Zig
+        if: steps.release-commit.outputs.skip != 'true'
+        uses: ./.github/actions/setup-zig
+        with:
+          version: 0.15.2
+
+      - name: Install dependencies
+        if: steps.release-commit.outputs.skip != 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Build library
+        if: steps.release-commit.outputs.skip != 'true'
+        run: bun run build
 
       - name: Setup Node.js for npm
+        if: steps.release-commit.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm install -g npm@latest
+      - name: Ensure current npm for trusted publishing
+        if: steps.release-commit.outputs.skip != 'true'
+        run: npm install -g npm@latest
 
-      - name: Detect trigger type
-        id: detect
-        run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo "is_tag=true" >> $GITHUB_OUTPUT
-            echo "trigger_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          else
-            echo "is_tag=false" >> $GITHUB_OUTPUT
-            echo "trigger_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Generate demo version
+      - name: Compute next version
+        if: steps.release-commit.outputs.skip != 'true'
         id: version
-        working-directory: demo
         run: |
-          if [[ "${{ steps.detect.outputs.is_tag }}" == "true" ]]; then
-            # For tags, extract version from git tag (strip 'v' prefix)
-            NPM_VERSION="${GITHUB_REF#refs/tags/v}"
-            NPM_TAG="latest"
-            # Pin to exact version to avoid npx cache issues with transitive deps
-            GHOSTTY_WEB_DEP="${NPM_VERSION}"
-          else
-            # Get base version from latest tag for pre-releases
-            LATEST_TAG=$(git describe --tags --abbrev=0)
-            BASE_VERSION="${LATEST_TAG#v}"
-            GIT_COMMIT=$(git rev-parse --short HEAD)
-            COMMITS_SINCE_TAG=$(git rev-list --count HEAD ^${LATEST_TAG})
-            NPM_VERSION="${BASE_VERSION}-next.${COMMITS_SINCE_TAG}.g${GIT_COMMIT}"
-            NPM_TAG="next"
-            # Pin to exact version to avoid npx cache issues with transitive deps
-            GHOSTTY_WEB_DEP="${NPM_VERSION}"
-          fi
+          set -euo pipefail
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          BASE_VERSION="${LATEST_TAG#v}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          COMMITS_SINCE_TAG=$(git rev-list --count HEAD ^"$LATEST_TAG")
+          NEXT_VERSION="${BASE_VERSION}-next.${COMMITS_SINCE_TAG}.g${SHORT_SHA}"
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing next version $NEXT_VERSION"
 
-          echo "version=${NPM_VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${NPM_TAG}" >> $GITHUB_OUTPUT
-
-          # Update version and ghostty-web dependency
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json'));
-            pkg.version = '${NPM_VERSION}';
-            pkg.dependencies['ghostty-web'] = '${GHOSTTY_WEB_DEP}';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-          echo "Updated demo package.json: version=${NPM_VERSION}, ghostty-web=${GHOSTTY_WEB_DEP}"
-
-      - name: Check if demo version exists
-        id: check-exists
-        working-directory: demo
+      - name: Prepare root package
+        if: steps.release-commit.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          pkg.version = process.env.VERSION;
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          NODE
+
+      - name: Publish ghostty-web next
+        if: steps.release-commit.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
           PACKAGE_NAME=$(node -p "require('./package.json').name")
-          VERSION="${{ steps.version.outputs.version }}"
-
-          if npm view "${PACKAGE_NAME}@${VERSION}" version &>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${VERSION} already exists; skipping"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            npm publish --tag next --provenance --access public
           fi
 
-      - name: Publish demo to npm
-        if: steps.check-exists.outputs.exists == 'false'
+      - name: Prepare demo package
+        if: steps.release-commit.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('demo/package.json', 'utf8'));
+          pkg.version = process.env.VERSION;
+          pkg.dependencies['ghostty-web'] = process.env.VERSION;
+          fs.writeFileSync('demo/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          NODE
+
+      - name: Publish @ghostty-web/demo next
+        if: steps.release-commit.outputs.skip != 'true'
         working-directory: demo
-        run: npm publish --tag ${{ steps.version.outputs.tag }} --provenance --access public
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${VERSION} already exists; skipping"
+          else
+            npm publish --tag next --provenance --access public
+          fi

@@ -1,0 +1,45 @@
+name: PR Title
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: PR title to validate
+        required: true
+        type: string
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request title
+        if: github.event_name != 'merge_group'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          DISPATCH_TITLE: ${{ inputs.title }}
+        run: |
+          node <<'NODE'
+          const title = process.env.EVENT_NAME === 'workflow_dispatch'
+            ? process.env.DISPATCH_TITLE
+            : process.env.PR_TITLE;
+          const pattern = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|deps)(\([^)]+\))?!?: .+$/;
+          if (!title || !pattern.test(title)) {
+            console.error(`Invalid PR title: ${title || '<empty>'}`);
+            console.error('Expected Conventional Commit format, e.g. feat(renderer): add cursor support');
+            process.exit(1);
+          }
+          console.log(`Valid PR title: ${title}`);
+          NODE
+
+      - name: Merge queue title validation already completed
+        if: github.event_name == 'merge_group'
+        run: echo "Skipping merge_group; PR title was validated before entering the queue."
