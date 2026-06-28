@@ -571,13 +571,13 @@ export class Terminal implements ITerminalCore {
 
     const savedViewportY = this.viewportY;
     const savedTargetViewportY = this.targetViewportY;
-    const savedScrollbackLength = this.getScrollbackLength();
-    const wasAlternateScreen = this.wasmTerm!.isAlternateScreen();
-    const shouldPreserveScroll =
+    const preserveCandidate =
       this.options.preserveScrollOnWrite &&
       Math.floor(savedViewportY) > 0 &&
-      Math.floor(savedTargetViewportY) > 0 &&
-      !wasAlternateScreen;
+      Math.floor(savedTargetViewportY) > 0;
+    const wasAlternateScreen = preserveCandidate ? this.wasmTerm!.isAlternateScreen() : false;
+    const shouldPreserveScroll = preserveCandidate && !wasAlternateScreen;
+    const savedScrollbackLength = shouldPreserveScroll ? this.getScrollbackLength() : 0;
     const savedCursorX = shouldPreserveScroll ? this.wasmTerm!.getCursor().x : 0;
     const preserveScrollAnchor = shouldPreserveScroll
       ? this.createPreserveScrollAnchor(savedViewportY)
