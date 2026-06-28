@@ -29,7 +29,7 @@ export interface IRenderable {
    * For cells with grapheme_len > 0, this returns all codepoints combined.
    * For simple cells, returns the single character.
    */
-  getGraphemeString?(row: number, col: number): string;
+  getGraphemeString?(row: number, col: number, refreshRenderState?: boolean): string;
 }
 
 export interface IScrollbackProvider {
@@ -641,8 +641,9 @@ export class CanvasRenderer {
     // Get the character to render - use grapheme lookup for complex scripts
     let char: string;
     if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
-      // Cell has additional codepoints - get full grapheme cluster
-      char = this.currentBuffer.getGraphemeString(y, x);
+      // Cell has additional codepoints - get full grapheme cluster.
+      // Line fetches already refreshed the render state; avoid per-cell refreshes.
+      char = this.currentBuffer.getGraphemeString(y, x, false);
     } else {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
