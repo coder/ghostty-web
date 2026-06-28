@@ -205,6 +205,34 @@ describe('Terminal', () => {
       disposable.dispose();
     });
 
+    test('emits terminal query responses through onData by default', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      const receivedData: string[] = [];
+      term.onData((data) => receivedData.push(data));
+
+      term.write('\x1b[5n');
+
+      expect(receivedData).toContain('\x1b[0n');
+
+      term.dispose();
+    });
+
+    test('can keep terminal query responses out of onData', async () => {
+      const term = await createIsolatedTerminal({ emitTerminalResponses: false });
+      term.open(container!);
+
+      const receivedData: string[] = [];
+      term.onData((data) => receivedData.push(data));
+
+      term.write('\x1b[5n');
+
+      expect(receivedData).toEqual([]);
+
+      term.dispose();
+    });
+
     test('onResize fires when terminal is resized', async () => {
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container!);
