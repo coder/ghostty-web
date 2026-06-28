@@ -364,6 +364,46 @@ export class GhosttyTerminal {
     this.exports.ghostty_terminal_free(this.handle);
   }
 
+  /**
+   * Update terminal colors at runtime. All color values are applied directly
+   * (no sentinel — 0x000000 is valid black). Forces a full redraw on next render.
+   */
+  setColors(config: GhosttyTerminalConfig): void {
+    const configPtr = this.exports.ghostty_wasm_alloc_u8_array(GHOSTTY_CONFIG_SIZE);
+    if (configPtr === 0) return;
+
+    try {
+      const view = new DataView(this.memory.buffer);
+      let offset = configPtr;
+
+      // scrollback_limit (u32) — ignored by setColors but must be present in struct
+      view.setUint32(offset, 0, true);
+      offset += 4;
+
+      // fg_color (u32)
+      view.setUint32(offset, config.fgColor ?? 0, true);
+      offset += 4;
+
+      // bg_color (u32)
+      view.setUint32(offset, config.bgColor ?? 0, true);
+      offset += 4;
+
+      // cursor_color (u32)
+      view.setUint32(offset, config.cursorColor ?? 0, true);
+      offset += 4;
+
+      // palette[16] (u32 * 16)
+      for (let i = 0; i < 16; i++) {
+        view.setUint32(offset, config.palette?.[i] ?? 0, true);
+        offset += 4;
+      }
+
+      this.exports.ghostty_terminal_set_colors(this.handle, configPtr);
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(configPtr, GHOSTTY_CONFIG_SIZE);
+    }
+  }
+
   // ==========================================================================
   // RenderState API - The key performance optimization
   // ==========================================================================
