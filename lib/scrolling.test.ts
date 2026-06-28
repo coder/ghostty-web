@@ -885,6 +885,7 @@ describe('preserveScrollOnWrite', () => {
   test('write() preserves capped viewport when pending wrap evicts a row', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,
+      scrollback: 5,
     });
 
     const oldScrollback = ['old-0', 'old-1', 'old-2', 'old-3', 'old-4'].map(makeSignatureLine);
@@ -912,6 +913,41 @@ describe('preserveScrollOnWrite', () => {
       term.write('x');
 
       expect(term.getViewportY()).toBe(4);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      term.wasmTerm!.getCursor = originalGetCursor;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
+  test('write() does not move duplicate capped viewport for last-column in-place updates', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 5,
+    });
+
+    const duplicateScrollback = Array.from({ length: 5 }, () => makeSignatureLine(''));
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetCursor = term.wasmTerm!.getCursor.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+
+    try {
+      term.viewportY = 3;
+      (term as any).targetViewportY = 3;
+      (term as any).getScrollbackLength = () => 5;
+      (term as any).getScrollbackLine = (offset: number) => duplicateScrollback[offset] ?? null;
+      term.wasmTerm!.getCursor = (() => ({
+        ...originalGetCursor(),
+        x: term.cols - 1,
+      })) as typeof term.wasmTerm.getCursor;
+      term.wasmTerm!.write = (() => {}) as typeof term.wasmTerm.write;
+
+      term.write('x');
+
+      expect(term.getViewportY()).toBe(3);
     } finally {
       term.wasmTerm!.write = originalWrite;
       term.wasmTerm!.getCursor = originalGetCursor;

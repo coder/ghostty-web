@@ -607,12 +607,15 @@ export class Terminal implements ITerminalCore {
       const newScrollbackLength = this.getScrollbackLength();
       const scrollbackDelta = newScrollbackLength - savedScrollbackLength;
       const mayHaveEvictedScrollback = newScrollbackLength >= this.options.scrollback;
-      const estimatedScrollbackShift = this.estimatePreserveScrollShift(data, savedCursorX);
-      const estimatedEvictedRows = Math.max(
-        0,
-        estimatedScrollbackShift - Math.max(0, scrollbackDelta)
-      );
-      const scrollbackOffsetsUnchanged = scrollbackDelta === 0 && estimatedEvictedRows === 0;
+      const scrollEstimate = this.estimatePreserveScrollShift(data, savedCursorX);
+      const estimatedEvictedRows = Math.max(0, scrollEstimate.rows - Math.max(0, scrollbackDelta));
+      const shouldProbePendingWrap =
+        scrollbackDelta === 0 &&
+        mayHaveEvictedScrollback &&
+        savedCursorX >= Math.max(0, this.cols - 1) &&
+        scrollEstimate.hasPrintableCells;
+      const scrollbackOffsetsUnchanged =
+        scrollbackDelta === 0 && estimatedEvictedRows === 0 && !shouldProbePendingWrap;
       // If scrollback grew below the configured cap, retained rows keep their offsets,
       // so the signed delta is sufficient and avoids scanning on every append. If a
       // no-growth write could not have evicted rows, keep fractional smooth-scroll
@@ -700,14 +703,36 @@ export class Terminal implements ITerminalCore {
     return lineSignatures.length > 0 ? { topOffset, lineSignatures } : undefined;
   }
 
-  private estimatePreserveScrollShift(data: string | Uint8Array, initialColumn: number): number {
+  private estimatePreserveScrollShift(
+    data: string | Uint8Array,
+    initialColumn: number
+  ): { rows: number; hasPrintableCells: boolean } {
     const completeText = this.updatePreserveScrollEstimateState(data);
     const printableText = this.stripControlSequencesForScrollEstimate(completeText);
     const printableRows = this.estimatePrintableRowMovement(printableText, initialColumn);
     const scrollUpRows = this.estimateCsiScrollUpRows(completeText);
     const indexRows = this.estimateIndexControlRows(completeText);
 
-    return printableRows + scrollUpRows + indexRows;
+    return {
+      rows: printableRows + scrollUpRows + indexRows,
+      hasPrintableCells: this.hasPrintableCells(printableText),
+    };
+  }
+
+  private hasPrintableCells(data: string): boolean {
+    const maxColumns = Math.max(1, this.cols);
+
+    for (const char of data) {
+      if (char === '\r' || char === '\n') {
+        continue;
+      }
+
+      if (this.estimateCellWidth(char.codePointAt(0)!, 0, maxColumns) > 0) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private updatePreserveScrollEstimateState(data: string | Uint8Array): string {
@@ -787,28 +812,16 @@ export class Terminal implements ITerminalCore {
     let rows = 0;
     let columns = Math.max(0, Math.min(Math.floor(initialColumn), Math.max(1, this.cols) - 1));
     const maxColumns = Math.max(1, this.cols);
-    let maybePendingWrap = columns >= maxColumns - 1;
 
     for (const char of data) {
       if (char === '\r') {
         columns = 0;
-        maybePendingWrap = false;
         continue;
       }
 
       if (char === '\n') {
         rows++;
-        if (columns >= maxColumns) {
-          columns = maxColumns - 1;
-        }
-        maybePendingWrap = false;
         continue;
-      }
-
-      if (maybePendingWrap) {
-        rows++;
-        columns = 0;
-        maybePendingWrap = false;
       }
 
       const width = this.estimateCellWidth(char.codePointAt(0)!, columns, maxColumns);
@@ -826,7 +839,6 @@ export class Terminal implements ITerminalCore {
         rows++;
         columns -= maxColumns;
       }
-      maybePendingWrap = columns >= maxColumns;
     }
 
     return rows;
