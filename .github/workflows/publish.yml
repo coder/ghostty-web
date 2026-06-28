@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Git tag to release, e.g. v0.5.0
+        description: Git tag to release, e.g. v0.5.0-rc.0
         required: true
         type: string
   push:
@@ -33,12 +33,20 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${INPUT_TAG:-$REF_NAME}"
-          if [[ -z "$TAG" || ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Expected a vX.Y.Z tag, got '$TAG'" >&2
+          if [[ -z "$TAG" || ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected a vX.Y.Z or vX.Y.Z-prerelease tag, got '$TAG'" >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          VERSION="${TAG#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            NPM_TAG="${VERSION#*-}"
+            NPM_TAG="${NPM_TAG%%.*}"
+          else
+            NPM_TAG="latest"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tag
         uses: actions/checkout@v4
@@ -119,14 +127,15 @@ jobs:
       - name: Publish ghostty-web
         env:
           VERSION: ${{ steps.tag.outputs.version }}
+          NPM_TAG: ${{ steps.tag.outputs.npm_tag }}
         run: |
           set -euo pipefail
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "${PACKAGE_NAME}@${VERSION} already exists; skipping publish"
-            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" latest || echo "Unable to repair latest dist-tag with current npm credentials; package already exists."
+            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" "${NPM_TAG}" || echo "Unable to repair ${NPM_TAG} dist-tag with current npm credentials; package already exists."
           else
-            npm publish --provenance --access public
+            npm publish --tag "${NPM_TAG}" --provenance --access public
           fi
 
       - name: Pin and validate demo package
@@ -149,14 +158,15 @@ jobs:
         working-directory: demo
         env:
           VERSION: ${{ steps.tag.outputs.version }}
+          NPM_TAG: ${{ steps.tag.outputs.npm_tag }}
         run: |
           set -euo pipefail
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "${PACKAGE_NAME}@${VERSION} already exists; skipping publish"
-            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" latest || echo "Unable to repair latest dist-tag with current npm credentials; package already exists."
+            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" "${NPM_TAG}" || echo "Unable to repair ${NPM_TAG} dist-tag with current npm credentials; package already exists."
           else
-            npm publish --provenance --access public
+            npm publish --tag "${NPM_TAG}" --provenance --access public
           fi
 
   publish-next:

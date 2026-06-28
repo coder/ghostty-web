@@ -1,5 +1,16 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { formatOutputLines, formatPrMetadata } from './release-please-runner';
+
+describe('release-please config', () => {
+  test('creates the next release as an RC prerelease for pipeline dogfooding', () => {
+    const config = JSON.parse(readFileSync('release-please-config.json', 'utf8'));
+
+    expect(config.versioning).toBe('prerelease');
+    expect(config.prerelease).toBe(true);
+    expect(config['prerelease-type']).toBe('rc.0');
+  });
+});
 
 describe('release-please runner output formatting', () => {
   test('formats release tags, PR branches, and JSON PR metadata', () => {
