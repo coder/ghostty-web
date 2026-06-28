@@ -780,7 +780,7 @@ export class Terminal implements ITerminalCore {
       .replace(/(?:\x1bP|\x90)[\s\S]*?(?:\x1b\\|\x07|\x9c)/g, '')
       .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
       .replace(/\x1b[@-Z\\-_]/g, '')
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
   }
 
   private estimatePrintableRowMovement(data: string, initialColumn: number): number {

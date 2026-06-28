@@ -1472,6 +1472,40 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() does not count C1 IND/NEL controls as printable columns', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 2000,
+    });
+
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+    let afterWrite = false;
+
+    try {
+      term.viewportY = 500;
+      (term as any).targetViewportY = 500;
+      (term as any).getScrollbackLength = () => 2000;
+      (term as any).getScrollbackLine = (offset: number) => {
+        const shiftedOffset = afterWrite ? offset + 1200 : offset;
+        return makeSignatureLine(`line-${shiftedOffset}`);
+      };
+      term.wasmTerm!.write = (() => {
+        afterWrite = true;
+      }) as typeof term.wasmTerm.write;
+
+      term.write('\x85'.repeat(1200));
+
+      expect(term.getViewportY()).toBe(1700);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() clamps tab estimates at the row edge', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,
