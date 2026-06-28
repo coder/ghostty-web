@@ -776,7 +776,7 @@ export class Terminal implements ITerminalCore {
 
   private stripControlSequencesForScrollEstimate(data: string): string {
     return data
-      .replace(/(?:\x1b\]|\x9d)[^\x07\x9c]*(?:\x07|\x1b\\|\x9c)/g, '')
+      .replace(/(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c)/g, '')
       .replace(/(?:\x1bP|\x90)[\s\S]*?(?:\x1b\\|\x07|\x9c)/g, '')
       .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
       .replace(/\x1b[@-Z\\-_]/g, '')

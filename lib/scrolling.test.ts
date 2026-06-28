@@ -1608,6 +1608,42 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() preserves printable OSC 8 labels between ST-terminated controls', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 1000,
+    });
+
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+    let afterWrite = false;
+
+    try {
+      term.viewportY = 500;
+      (term as any).targetViewportY = 500;
+      (term as any).getScrollbackLength = () => 1000;
+      (term as any).getScrollbackLine = (offset: number) => {
+        const shiftedOffset = afterWrite ? offset + 120 : offset;
+        return makeSignatureLine(`line-${shiftedOffset}`);
+      };
+      term.wasmTerm!.write = (() => {
+        afterWrite = true;
+      }) as typeof term.wasmTerm.write;
+
+      const openHyperlink = '\x1b]8;;https://example.com\x1b\\';
+      const closeHyperlink = '\x1b]8;;\x1b\\';
+      term.write(`${openHyperlink}${'label\r\n'.repeat(120)}${closeHyperlink}`);
+
+      expect(term.getViewportY()).toBe(620);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() follows output while smooth scroll target is bottom', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,
