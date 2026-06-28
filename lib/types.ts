@@ -379,7 +379,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     parser: number,
     paramsPtr: number,
     subsPtr: number,
-    paramsLen: number
+    paramsLen: number,
   ): number;
   ghostty_sgr_next(parser: number, attrPtr: number): boolean;
   ghostty_sgr_attribute_tag(attrPtr: number): number;
@@ -396,7 +396,7 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     eventPtr: number,
     bufPtr: number,
     bufLen: number,
-    writtenPtr: number
+    writtenPtr: number,
   ): number;
 
   // Key event
@@ -421,6 +421,9 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_render_state_get_cursor_x(terminal: TerminalHandle): number;
   ghostty_render_state_get_cursor_y(terminal: TerminalHandle): number;
   ghostty_render_state_get_cursor_visible(terminal: TerminalHandle): boolean;
+  /** Returns 0=block, 1=bar, 2=underline */
+  ghostty_render_state_get_cursor_style(terminal: TerminalHandle): number;
+  ghostty_render_state_get_cursor_blinking(terminal: TerminalHandle): boolean;
   ghostty_render_state_get_bg_color(terminal: TerminalHandle): number; // 0xRRGGBB
   ghostty_render_state_get_fg_color(terminal: TerminalHandle): number; // 0xRRGGBB
   ghostty_render_state_is_row_dirty(terminal: TerminalHandle, row: number): boolean;
@@ -428,14 +431,14 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_render_state_get_viewport(
     terminal: TerminalHandle,
     bufPtr: number,
-    bufLen: number
+    bufLen: number,
   ): number; // Returns total cells written or -1 on error
   ghostty_render_state_get_grapheme(
     terminal: TerminalHandle,
     row: number,
     col: number,
     bufPtr: number,
-    bufLen: number
+    bufLen: number,
   ): number; // Returns count of codepoints or -1 on error
 
   // Terminal modes
@@ -449,14 +452,14 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     terminal: TerminalHandle,
     offset: number,
     bufPtr: number,
-    bufLen: number
+    bufLen: number,
   ): number; // Returns cells written or -1 on error
   ghostty_terminal_get_scrollback_grapheme(
     terminal: TerminalHandle,
     offset: number,
     col: number,
     bufPtr: number,
-    bufLen: number
+    bufLen: number,
   ): number; // Returns codepoint count or -1 on error
   ghostty_terminal_is_row_wrapped(terminal: TerminalHandle, row: number): number;
 
@@ -466,14 +469,14 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
     row: number,
     col: number,
     bufPtr: number,
-    bufLen: number
+    bufLen: number,
   ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
   ghostty_terminal_get_scrollback_hyperlink_uri(
     terminal: TerminalHandle,
     offset: number,
     col: number,
     bufPtr: number,
-    bufLen: number
+    bufLen: number,
   ): number; // Returns bytes written, 0 if no hyperlink, -1 on error
 
   // Response API (for DSR and other terminal queries)
