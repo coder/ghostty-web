@@ -1298,6 +1298,40 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() estimates emoji grapheme clusters as one wide cell', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 1000,
+    });
+
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+    let afterWrite = false;
+
+    try {
+      term.viewportY = 500;
+      (term as any).targetViewportY = 500;
+      (term as any).getScrollbackLength = () => 1000;
+      (term as any).getScrollbackLine = (offset: number) => {
+        const shiftedOffset = afterWrite ? offset + 120 : offset;
+        return makeSignatureLine(`line-${shiftedOffset}`);
+      };
+      term.wasmTerm!.write = (() => {
+        afterWrite = true;
+      }) as typeof term.wasmTerm.write;
+
+      term.write(`${'🏳️‍🌈'.repeat(10)}\r\n`.repeat(120));
+
+      expect(term.getViewportY()).toBe(620);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() estimates wide-character cell widths for capped anchor preservation', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,

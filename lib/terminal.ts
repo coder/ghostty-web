@@ -136,6 +136,8 @@ export class Terminal implements ITerminalCore {
   private preserveScrollEstimateCarry: string = '';
   private readonly PRESERVE_SCROLL_ANCHOR_SEARCH_RADIUS = 50;
 
+  private readonly preserveScrollGraphemeSegmenter = this.createGraphemeSegmenter();
+
   // Scrollbar visibility/auto-hide state
   private scrollbarVisible: boolean = false;
   private scrollbarOpacity: number = 0;
@@ -722,12 +724,12 @@ export class Terminal implements ITerminalCore {
   private hasPrintableCells(data: string): boolean {
     const maxColumns = Math.max(1, this.cols);
 
-    for (const char of data) {
-      if (char === '\r' || char === '\n') {
+    for (const grapheme of this.segmentGraphemes(data)) {
+      if (grapheme === '\r' || grapheme === '\n') {
         continue;
       }
 
-      if (this.estimateCellWidth(char.codePointAt(0)!, 0, maxColumns) > 0) {
+      if (this.estimateGraphemeCellWidth(grapheme, 0, maxColumns) > 0) {
         return true;
       }
     }
@@ -813,18 +815,18 @@ export class Terminal implements ITerminalCore {
     let columns = Math.max(0, Math.min(Math.floor(initialColumn), Math.max(1, this.cols) - 1));
     const maxColumns = Math.max(1, this.cols);
 
-    for (const char of data) {
-      if (char === '\r') {
+    for (const grapheme of this.segmentGraphemes(data)) {
+      if (grapheme === '\r') {
         columns = 0;
         continue;
       }
 
-      if (char === '\n') {
+      if (grapheme === '\n') {
         rows++;
         continue;
       }
 
-      const width = this.estimateCellWidth(char.codePointAt(0)!, columns, maxColumns);
+      const width = this.estimateGraphemeCellWidth(grapheme, columns, maxColumns);
       if (width === 0) {
         continue;
       }
@@ -844,6 +846,71 @@ export class Terminal implements ITerminalCore {
     return rows;
   }
 
+  private createGraphemeSegmenter():
+    | { segment(input: string): Iterable<{ segment: string }> }
+    | undefined {
+    const Segmenter = (Intl as unknown as { Segmenter?: new (...args: any[]) => any }).Segmenter;
+    return Segmenter ? new Segmenter(undefined, { granularity: 'grapheme' }) : undefined;
+  }
+
+  private segmentGraphemes(data: string): string[] {
+    const segments = this.preserveScrollGraphemeSegmenter
+      ? Array.from(this.preserveScrollGraphemeSegmenter.segment(data), (segment) => segment.segment)
+      : Array.from(data);
+
+    const controlSafeSegments: string[] = [];
+    for (const segment of segments) {
+      let printableSegment = '';
+      for (const char of segment) {
+        if (char === '\r' || char === '\n' || char === '\t') {
+          if (printableSegment !== '') {
+            controlSafeSegments.push(printableSegment);
+            printableSegment = '';
+          }
+          controlSafeSegments.push(char);
+          continue;
+        }
+
+        printableSegment += char;
+      }
+
+      if (printableSegment !== '') {
+        controlSafeSegments.push(printableSegment);
+      }
+    }
+
+    return controlSafeSegments;
+  }
+
+  private estimateGraphemeCellWidth(
+    grapheme: string,
+    currentColumn: number,
+    maxColumns: number
+  ): number {
+    if (grapheme === '\t') {
+      return this.estimateCellWidth(0x09, currentColumn, maxColumns);
+    }
+
+    let hasSpacingCodepoint = false;
+    let hasWideCodepoint = false;
+
+    for (const char of grapheme) {
+      const codepoint = char.codePointAt(0)!;
+      if (this.isZeroWidthCodepoint(codepoint)) {
+        continue;
+      }
+
+      hasSpacingCodepoint = true;
+      hasWideCodepoint ||= this.isWideCodepoint(codepoint) || this.isRegionalIndicator(codepoint);
+    }
+
+    if (!hasSpacingCodepoint) {
+      return 0;
+    }
+
+    return hasWideCodepoint ? 2 : 1;
+  }
+
   private estimateCellWidth(codepoint: number, currentColumn: number, maxColumns: number): number {
     if (codepoint === 0x09) {
       const remainder = currentColumn % 8;
@@ -851,11 +918,20 @@ export class Terminal implements ITerminalCore {
       return Math.min(nextTabWidth, Math.max(0, maxColumns - currentColumn));
     }
 
-    if (this.isCombiningCodepoint(codepoint)) {
+    if (this.isZeroWidthCodepoint(codepoint)) {
       return 0;
     }
 
-    return this.isWideCodepoint(codepoint) ? 2 : 1;
+    return this.isWideCodepoint(codepoint) || this.isRegionalIndicator(codepoint) ? 2 : 1;
+  }
+
+  private isZeroWidthCodepoint(codepoint: number): boolean {
+    return (
+      this.isCombiningCodepoint(codepoint) ||
+      codepoint === 0x200d ||
+      (codepoint >= 0xfe00 && codepoint <= 0xfe0f) ||
+      (codepoint >= 0xe0100 && codepoint <= 0xe01ef)
+    );
   }
 
   private isCombiningCodepoint(codepoint: number): boolean {
@@ -866,6 +942,10 @@ export class Terminal implements ITerminalCore {
       (codepoint >= 0x20d0 && codepoint <= 0x20ff) ||
       (codepoint >= 0xfe20 && codepoint <= 0xfe2f)
     );
+  }
+
+  private isRegionalIndicator(codepoint: number): boolean {
+    return codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff;
   }
 
   private isWideCodepoint(codepoint: number): boolean {
