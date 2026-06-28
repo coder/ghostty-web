@@ -361,19 +361,22 @@ export class CanvasRenderer {
     if (hyperlinkChanged) {
       // Find rows containing the old or new hovered hyperlink
       // Must check the correct buffer based on viewportY (scrollback vs screen)
+      // Floor viewportY once: the scrollback/screen boundary and the offset math
+      // must use the same integer, otherwise fractional values (during smooth
+      // scroll) read one row past the scrollback and drop the top screen row.
+      const flooredViewportY = Math.floor(viewportY);
       for (let y = 0; y < dims.rows; y++) {
         let line: GhosttyCell[] | null = null;
 
         // Same logic as rendering: fetch from scrollback or screen
-        if (viewportY > 0) {
-          if (y < viewportY && scrollbackProvider) {
+        if (flooredViewportY > 0) {
+          if (y < flooredViewportY && scrollbackProvider) {
             // This row is from scrollback
-            // Floor viewportY for array access (handles fractional values during smooth scroll)
-            const scrollbackOffset = scrollbackLength - Math.floor(viewportY) + y;
+            const scrollbackOffset = scrollbackLength - flooredViewportY + y;
             line = scrollbackProvider.getScrollbackLine(scrollbackOffset);
           } else {
             // This row is from visible screen
-            const screenRow = y - Math.floor(viewportY);
+            const screenRow = y - flooredViewportY;
             line = buffer.getLine(screenRow);
           }
         } else {
@@ -441,6 +444,14 @@ export class CanvasRenderer {
       }
     }
 
+    // Floor viewportY once for row mapping. The scrollback/screen boundary
+    // comparison and the offset/screenRow math must use the SAME integer.
+    // During smooth scroll viewportY is fractional (e.g. 2.5); comparing rows
+    // against the raw value while indexing with the floored value read one row
+    // past the end of scrollback (returning null, leaving stale pixels) and
+    // dropped the top screen row, duplicating a line near the top of the view.
+    const flooredViewportY = Math.floor(viewportY);
+
     // Render each line
     for (let y = 0; y < dims.rows; y++) {
       if (!rowsToRender.has(y)) {
@@ -451,21 +462,20 @@ export class CanvasRenderer {
 
       // Fetch line from scrollback or visible screen
       let line: GhosttyCell[] | null = null;
-      if (viewportY > 0) {
+      if (flooredViewportY > 0) {
         // Scrolled up - need to fetch from scrollback + visible screen
         // When scrolled up N lines, we want to show:
         // - Scrollback lines (from the end) + visible screen lines
 
         // Check if this row should come from scrollback or visible screen
-        if (y < viewportY && scrollbackProvider) {
+        if (y < flooredViewportY && scrollbackProvider) {
           // This row is from scrollback (upper part of viewport)
           // Get from end of scrollback buffer
-          // Floor viewportY for array access (handles fractional values during smooth scroll)
-          const scrollbackOffset = scrollbackLength - Math.floor(viewportY) + y;
+          const scrollbackOffset = scrollbackLength - flooredViewportY + y;
           line = scrollbackProvider.getScrollbackLine(scrollbackOffset);
         } else {
           // This row is from visible screen (lower part of viewport)
-          const screenRow = viewportY > 0 ? y - Math.floor(viewportY) : y;
+          const screenRow = y - flooredViewportY;
           line = buffer.getLine(screenRow);
         }
       } else {
