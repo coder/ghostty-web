@@ -5,4 +5,5 @@ coverage/
 .git/
 .vite/
 bun.lock
+CHANGELOG.md
 ghostty/

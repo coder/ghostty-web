@@ -45,7 +45,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL || secrets.RELEASE_NOTES_MODEL }}
         run: bun run release-please
 
       - name: Dispatch publish workflow for stable release
