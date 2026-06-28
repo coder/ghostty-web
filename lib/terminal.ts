@@ -152,6 +152,7 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
+      focusOnOpen: options.focusOnOpen ?? true,
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
@@ -528,7 +529,9 @@ export class Terminal implements ITerminalCore {
       this.startRenderLoop();
 
       // Focus input (auto-focus so user can start typing immediately)
-      this.focus();
+      if (this.options.focusOnOpen !== false) {
+        this.focus();
+      }
     } catch (error) {
       // Clean up on error
       this.isOpen = false;
