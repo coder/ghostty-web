@@ -1542,6 +1542,46 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() resets estimated column after NEL controls', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+      scrollback: 1000,
+    });
+
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetCursor = term.wasmTerm!.getCursor.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+    let afterWrite = false;
+
+    try {
+      term.viewportY = 500;
+      (term as any).targetViewportY = 500;
+      (term as any).getScrollbackLength = () => 1000;
+      (term as any).getScrollbackLine = (offset: number) => {
+        const shiftedOffset = afterWrite ? offset + 120 : offset;
+        return makeSignatureLine(`line-${shiftedOffset}`);
+      };
+      term.wasmTerm!.getCursor = (() => ({
+        ...originalGetCursor(),
+        x: 10,
+      })) as typeof term.wasmTerm.getCursor;
+      term.wasmTerm!.write = (() => {
+        afterWrite = true;
+      }) as typeof term.wasmTerm.write;
+
+      term.write(`${'\x1bE'}${'x'.repeat(20)}`.repeat(120));
+
+      expect(term.getViewportY()).toBe(620);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      term.wasmTerm!.getCursor = originalGetCursor;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() does not count C1 IND/NEL controls as printable columns', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,
