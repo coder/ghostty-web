@@ -882,6 +882,45 @@ describe('preserveScrollOnWrite', () => {
     }
   });
 
+  test('write() preserves capped viewport when pending wrap evicts a row', async () => {
+    const { term, container } = await createPreserveScrollTestTerminal({
+      preserveScrollOnWrite: true,
+    });
+
+    const oldScrollback = ['old-0', 'old-1', 'old-2', 'old-3', 'old-4'].map(makeSignatureLine);
+    const newScrollback = ['old-1', 'old-2', 'old-3', 'old-4', 'new-5'].map(makeSignatureLine);
+    const originalWrite = term.wasmTerm!.write.bind(term.wasmTerm);
+    const originalGetCursor = term.wasmTerm!.getCursor.bind(term.wasmTerm);
+    const originalGetScrollbackLength = term.getScrollbackLength.bind(term);
+    const originalGetScrollbackLine = term.getScrollbackLine.bind(term);
+    let afterWrite = false;
+
+    try {
+      term.viewportY = 3;
+      (term as any).targetViewportY = 3;
+      (term as any).getScrollbackLength = () => 5;
+      (term as any).getScrollbackLine = (offset: number) =>
+        (afterWrite ? newScrollback : oldScrollback)[offset] ?? null;
+      term.wasmTerm!.getCursor = (() => ({
+        ...originalGetCursor(),
+        x: term.cols - 1,
+      })) as typeof term.wasmTerm.getCursor;
+      term.wasmTerm!.write = (() => {
+        afterWrite = true;
+      }) as typeof term.wasmTerm.write;
+
+      term.write('x');
+
+      expect(term.getViewportY()).toBe(4);
+    } finally {
+      term.wasmTerm!.write = originalWrite;
+      term.wasmTerm!.getCursor = originalGetCursor;
+      (term as any).getScrollbackLength = originalGetScrollbackLength;
+      (term as any).getScrollbackLine = originalGetScrollbackLine;
+      disposePreserveScrollTestTerminal(term, container);
+    }
+  });
+
   test('write() preserves viewport when a batched write reaches the scrollback cap', async () => {
     const { term, container } = await createPreserveScrollTestTerminal({
       preserveScrollOnWrite: true,

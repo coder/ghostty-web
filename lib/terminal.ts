@@ -787,16 +787,28 @@ export class Terminal implements ITerminalCore {
     let rows = 0;
     let columns = Math.max(0, Math.min(Math.floor(initialColumn), Math.max(1, this.cols) - 1));
     const maxColumns = Math.max(1, this.cols);
+    let maybePendingWrap = columns >= maxColumns - 1;
 
     for (const char of data) {
       if (char === '\r') {
         columns = 0;
+        maybePendingWrap = false;
         continue;
       }
 
       if (char === '\n') {
         rows++;
+        if (columns >= maxColumns) {
+          columns = maxColumns - 1;
+        }
+        maybePendingWrap = false;
         continue;
+      }
+
+      if (maybePendingWrap) {
+        rows++;
+        columns = 0;
+        maybePendingWrap = false;
       }
 
       const width = this.estimateCellWidth(char.codePointAt(0)!, columns, maxColumns);
@@ -814,6 +826,7 @@ export class Terminal implements ITerminalCore {
         rows++;
         columns -= maxColumns;
       }
+      maybePendingWrap = columns >= maxColumns;
     }
 
     return rows;
