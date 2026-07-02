@@ -1593,6 +1593,58 @@ index ba2af2473..b8be8f273 100644
 +            // preserving the backing cell offset and dirty state.
 +            row.* = .{ .cells = cells_offset, .dirty = dirty };
          }
+diff --git a/src/terminal/Parser.zig b/src/terminal/Parser.zig
+index 980906e49..c175d9d5b 100644
+--- a/src/terminal/Parser.zig
++++ b/src/terminal/Parser.zig
+@@ -27,6 +27,7 @@ pub const State = enum {
+     dcs_ignore,
+     osc_string,
+     sos_pm_apc_string,
++    screen_title_string,
+ };
+ 
+ /// Transition action is an action that can be taken during a state
+diff --git a/src/terminal/parse_table.zig b/src/terminal/parse_table.zig
+index 01bd569cb..fe6701794 100644
+--- a/src/terminal/parse_table.zig
++++ b/src/terminal/parse_table.zig
+@@ -148,6 +148,10 @@ fn genTable() Table {
+         // => dcs_entry
+         single(&result, 0x50, source, .dcs_entry, .none);
+ 
++        // GNU screen/tmux title sequence: ESC k <text> ST/BEL
++        // Consume payload so it never reaches the visible grid.
++        single(&result, 0x6B, source, .screen_title_string, .none);
++
+         // => csi_entry
+         single(&result, 0x5B, source, .csi_entry, .none);
+ 
+@@ -324,6 +328,24 @@ fn genTable() Table {
+         range(&result, 0x3C, 0x3F, source, .csi_param, .collect);
+     }
+ 
++    // screen_title_string
++    {
++        const source = State.screen_title_string;
++
++        // events
++        single(&result, 0x19, source, source, .ignore);
++        range(&result, 0, 0x06, source, source, .ignore);
++        range(&result, 0x08, 0x17, source, source, .ignore);
++        range(&result, 0x1C, 0x1F, source, source, .ignore);
++        range(&result, 0x20, 0xFF, source, source, .ignore);
++        single(&result, 0x7F, source, source, .ignore);
++
++        // Accept BEL and the 8-bit ST terminator explicitly; ESC \\ exits
++        // through the existing anywhere ESC transition.
++        single(&result, 0x07, source, .ground, .none);
++        single(&result, 0x9C, source, .ground, .none);
++    }
++
+     // osc_string
+     {
+         const source = State.osc_string;
 diff --git a/src/terminal/render.zig b/src/terminal/render.zig
 index b6430ea34..10e0ef79d 100644
 --- a/src/terminal/render.zig
