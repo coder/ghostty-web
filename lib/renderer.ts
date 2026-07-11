@@ -87,6 +87,18 @@ export const DEFAULT_THEME: Required<ITheme> = {
   brightWhite: '#ffffff',
 };
 
+/**
+ * Powerline separator codepoints (U+E0B0-U+E0B7: solid/outline triangles and
+ * half-circles). These are rendered as exact vector geometry instead of font
+ * glyphs — font rasterization leaves anti-aliasing fringe on the diagonals and
+ * sub-cell ink height (the background bleeds through above/below the glyph),
+ * which reads as smudging next to solid prompt-segment backgrounds. WezTerm
+ * and xterm.js (customGlyphs) special-case these codepoints the same way.
+ */
+export function isPowerlineSeparator(codepoint: number): boolean {
+  return codepoint >= 0xe0b0 && codepoint <= 0xe0b7;
+}
+
 // ============================================================================
 // CanvasRenderer Class
 // ============================================================================
@@ -586,6 +598,63 @@ export class CanvasRenderer {
   }
 
   /**
+   * Draw a Powerline separator (U+E0B0-U+E0B7) as vector geometry covering
+   * exactly the cell box. Even codepoints are the solid variants, odd ones the
+   * thin outline variants. Uses the already-set fillStyle, so colors follow
+   * the cell's foreground exactly like a font glyph would.
+   */
+  private drawPowerlineGlyph(
+    codepoint: number,
+    cellX: number,
+    cellY: number,
+    cellWidth: number,
+    cellHeight: number
+  ): void {
+    const ctx = this.ctx;
+    const midY = cellY + cellHeight / 2;
+    ctx.beginPath();
+    switch (codepoint) {
+      case 0xe0b0: // solid right-pointing triangle
+      case 0xe0b1: // right-pointing angle outline
+        ctx.moveTo(cellX, cellY);
+        ctx.lineTo(cellX + cellWidth, midY);
+        ctx.lineTo(cellX, cellY + cellHeight);
+        break;
+      case 0xe0b2: // solid left-pointing triangle
+      case 0xe0b3: // left-pointing angle outline
+        ctx.moveTo(cellX + cellWidth, cellY);
+        ctx.lineTo(cellX, midY);
+        ctx.lineTo(cellX + cellWidth, cellY + cellHeight);
+        break;
+      case 0xe0b4: // solid right half-circle
+      case 0xe0b5: // right half-circle outline
+        ctx.moveTo(cellX, cellY);
+        ctx.ellipse(cellX, midY, cellWidth, cellHeight / 2, 0, -Math.PI / 2, Math.PI / 2);
+        break;
+      default: // 0xe0b6 solid left half-circle, 0xe0b7 outline
+        ctx.moveTo(cellX + cellWidth, cellY + cellHeight);
+        ctx.ellipse(
+          cellX + cellWidth,
+          midY,
+          cellWidth,
+          cellHeight / 2,
+          0,
+          Math.PI / 2,
+          Math.PI * 1.5
+        );
+        break;
+    }
+    if (codepoint % 2 === 1) {
+      ctx.strokeStyle = this.ctx.fillStyle;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    } else {
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  /**
    * Render a cell's text and decorations (Pass 2 of two-pass rendering)
    * Selection foreground color is applied here to match the selection background.
    */
@@ -647,7 +716,18 @@ export class CanvasRenderer {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
     }
-    this.ctx.fillText(char, textX, textY);
+    if (cell.grapheme_len === 0 && isPowerlineSeparator(cell.codepoint || 0)) {
+      // Powerline separators as vector geometry filling the cell box exactly
+      // (see isPowerlineSeparator for why fonts can't render these cleanly).
+      this.drawPowerlineGlyph(cell.codepoint || 0, cellX, cellY, cellWidth, this.metrics.height);
+    } else {
+      // Clamp to the cell's allocated width: fallback-font glyphs (Nerd icons,
+      // emoji, symbols) often carry an advance wider than the cell measured
+      // from the primary font, and unclamped ink bleeds into neighbor cells
+      // where later partial repaints shave it into ragged artifacts. maxWidth
+      // compresses the advance to fit, like a Mono-patched font would.
+      this.ctx.fillText(char, textX, textY, cellWidth);
+    }
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {

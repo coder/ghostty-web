@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_THEME } from './renderer';
+import { DEFAULT_THEME, isPowerlineSeparator } from './renderer';
 
 describe('CanvasRenderer', () => {
   describe('Default Theme', () => {
@@ -59,6 +59,27 @@ describe('CanvasRenderer', () => {
       expect(DEFAULT_THEME.foreground).toMatch(hexPattern);
       expect(DEFAULT_THEME.background).toMatch(hexPattern);
       expect(DEFAULT_THEME.cursor).toMatch(hexPattern);
+    });
+  });
+
+  describe('Powerline Separator Detection', () => {
+    test('covers exactly U+E0B0 through U+E0B7', () => {
+      expect(isPowerlineSeparator(0xe0b0)).toBe(true); // solid right triangle
+      expect(isPowerlineSeparator(0xe0b1)).toBe(true); // right angle outline
+      expect(isPowerlineSeparator(0xe0b2)).toBe(true); // solid left triangle
+      expect(isPowerlineSeparator(0xe0b3)).toBe(true); // left angle outline
+      expect(isPowerlineSeparator(0xe0b4)).toBe(true); // solid right half-circle
+      expect(isPowerlineSeparator(0xe0b5)).toBe(true); // right half-circle outline
+      expect(isPowerlineSeparator(0xe0b6)).toBe(true); // solid left half-circle
+      expect(isPowerlineSeparator(0xe0b7)).toBe(true); // left half-circle outline
+    });
+
+    test('does not match neighbors or ordinary text', () => {
+      expect(isPowerlineSeparator(0xe0af)).toBe(false);
+      expect(isPowerlineSeparator(0xe0b8)).toBe(false); // extended set, still font-rendered
+      expect(isPowerlineSeparator(0xe0a0)).toBe(false); // branch glyph (has real ink, not geometry)
+      expect(isPowerlineSeparator(0x0041)).toBe(false); // 'A'
+      expect(isPowerlineSeparator(0)).toBe(false); // null cell
     });
   });
 });
