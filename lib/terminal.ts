@@ -100,6 +100,7 @@ export class Terminal implements ITerminalCore {
   // Lifecycle state
   private isOpen = false;
   private isDisposed = false;
+  private pixelRatioQuery?: MediaQueryList;
   private animationFrameId?: number;
   private writeQueue: Uint8Array[] = [];
   private awaitingEcho = false;
@@ -428,6 +429,9 @@ export class Terminal implements ITerminalCore {
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
+
+      // Follow browser zoom and moves to another display: re-render at the new pixel ratio.
+      this.watchPixelRatio();
 
       // Create mouse tracking configuration
       const canvas = this.canvas;
@@ -1089,6 +1093,24 @@ export class Terminal implements ITerminalCore {
   // ==========================================================================
 
   /**
+   * A `(resolution: Ndppx)` query for the current ratio fires when zoom or the display changes it;
+   * a ratio change alone fires no window resize event. Re-armed for the new ratio each time.
+   */
+  private watchPixelRatio(): void {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    this.pixelRatioQuery?.removeEventListener('change', this.onPixelRatioChange);
+    this.pixelRatioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    this.pixelRatioQuery.addEventListener('change', this.onPixelRatioChange);
+  }
+
+  private onPixelRatioChange = (): void => {
+    if (this.isDisposed || !this.renderer || !this.wasmTerm) return;
+    this.renderer.setDevicePixelRatio(window.devicePixelRatio);
+    this.renderer.render(this.wasmTerm, true, this.viewportY, this, this.scrollbarOpacity);
+    this.watchPixelRatio();
+  };
+
+  /**
    * Dispose terminal and clean up resources
    */
   dispose(): void {
@@ -1098,6 +1120,8 @@ export class Terminal implements ITerminalCore {
 
     this.isDisposed = true;
     this.isOpen = false;
+    this.pixelRatioQuery?.removeEventListener('change', this.onPixelRatioChange);
+    this.pixelRatioQuery = undefined;
 
     // Stop render loop and clear write queue
     this.cancelRenderLoop();

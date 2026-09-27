@@ -60,6 +60,20 @@ export interface FontMetrics {
 // Default Theme
 // ============================================================================
 
+/**
+ * The pixel ratio the canvas is rendered at: the device ratio rounded **up** to a whole number.
+ *
+ * A fractional ratio (browser zoom, scaled displays: 1.25, 1.36, 2.2, ...) put cell edges on
+ * fractional device pixels, leaving hairline seams between cell backgrounds, and made the
+ * per-frame size check never match. Rendering at the next integer keeps text crisp (the browser
+ * scales the finished bitmap down) and every cell edge on a whole pixel. The small epsilon keeps a
+ * ratio like 2.0000001 at 2.
+ */
+export function effectivePixelRatio(dpr: number | undefined | null): number {
+  const raw = typeof dpr === 'number' && Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  return Math.max(1, Math.ceil(raw - 0.01));
+}
+
 export const DEFAULT_THEME: Required<ITheme> = {
   foreground: '#d4d4d4',
   background: '#1e1e1e',
@@ -100,6 +114,8 @@ export class CanvasRenderer {
   private cursorBlink: boolean;
   private theme: Required<ITheme>;
   private devicePixelRatio: number;
+  private lastCols = 0;
+  private lastRows = 0;
   private metrics: FontMetrics;
   private palette: string[];
 
@@ -152,7 +168,9 @@ export class CanvasRenderer {
     this.cursorStyle = options.cursorStyle ?? 'block';
     this.cursorBlink = options.cursorBlink ?? false;
     this.theme = { ...DEFAULT_THEME, ...options.theme };
-    this.devicePixelRatio = options.devicePixelRatio ?? window.devicePixelRatio ?? 1;
+    this.devicePixelRatio = effectivePixelRatio(
+      options.devicePixelRatio ?? window.devicePixelRatio
+    );
 
     // Build color palette (16 ANSI colors)
     this.palette = [
@@ -231,9 +249,22 @@ export class CanvasRenderer {
   // ==========================================================================
 
   /**
+   * Update the pixel ratio after a browser zoom or a move to another display, and redraw at the
+   * new resolution. Takes the raw window.devicePixelRatio; it is normalised like the constructor's.
+   */
+  public setDevicePixelRatio(dpr: number): void {
+    const next = effectivePixelRatio(dpr);
+    if (next === this.devicePixelRatio) return;
+    this.devicePixelRatio = next;
+    if (this.lastCols > 0 && this.lastRows > 0) this.resize(this.lastCols, this.lastRows);
+  }
+
+  /**
    * Resize canvas to fit terminal dimensions
    */
   public resize(cols: number, rows: number): void {
+    this.lastCols = cols;
+    this.lastRows = rows;
     const cssWidth = cols * this.metrics.width;
     const cssHeight = rows * this.metrics.height;
 
@@ -285,10 +316,12 @@ export class CanvasRenderer {
       forceAll = true;
     }
 
-    // Resize canvas if dimensions changed
+    // Resize canvas if dimensions changed. canvas.width/height are integers, so compare with the
+    // rounded target: with a fractional ratio the raw product never matched and this resized and
+    // fully repainted on every frame.
     const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+      this.canvas.width !== Math.round(dims.cols * this.metrics.width * this.devicePixelRatio) ||
+      this.canvas.height !== Math.round(dims.rows * this.metrics.height * this.devicePixelRatio);
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_THEME } from './renderer';
+import { DEFAULT_THEME, effectivePixelRatio } from './renderer';
 
 describe('CanvasRenderer', () => {
   describe('Default Theme', () => {
@@ -60,5 +60,30 @@ describe('CanvasRenderer', () => {
       expect(DEFAULT_THEME.background).toMatch(hexPattern);
       expect(DEFAULT_THEME.cursor).toMatch(hexPattern);
     });
+  });
+});
+
+describe('effectivePixelRatio', () => {
+  test('whole ratios are kept', () => {
+    expect(effectivePixelRatio(1)).toBe(1);
+    expect(effectivePixelRatio(2)).toBe(2);
+    expect(effectivePixelRatio(3)).toBe(3);
+  });
+  test('fractional ratios round up (browser zoom, scaled displays)', () => {
+    expect(effectivePixelRatio(1.25)).toBe(2);
+    expect(effectivePixelRatio(1.36)).toBe(2);
+    expect(effectivePixelRatio(1.5)).toBe(2);
+    expect(effectivePixelRatio(2.2)).toBe(3);
+  });
+  test('float noise just above a whole ratio does not bump it', () => {
+    expect(effectivePixelRatio(2.0000001)).toBe(2);
+    expect(effectivePixelRatio(1.004)).toBe(1);
+  });
+  test('ratios below 1 and bad input fall back to 1', () => {
+    expect(effectivePixelRatio(0.5)).toBe(1);
+    expect(effectivePixelRatio(0)).toBe(1);
+    expect(effectivePixelRatio(Number.NaN)).toBe(1);
+    expect(effectivePixelRatio(undefined)).toBe(1);
+    expect(effectivePixelRatio(null)).toBe(1);
   });
 });
