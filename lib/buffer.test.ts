@@ -35,6 +35,28 @@ describe('Buffer API', () => {
     }
   });
 
+  for (const text of ['ASCII', 'e\u0301', '👩‍💻', '👋🏽', '🇺🇸']) {
+    test(`preserves ${JSON.stringify(text)} in buffer exports and snapshots`, () => {
+      term.write(text);
+      const line = term.buffer.active.getLine(0)!;
+      expect(line.translateToString(true)).toBe(text);
+      expect(line.getCell(0)!.getChars()).toBe(text === 'ASCII' ? 'A' : text);
+      if (text !== 'ASCII' && text !== 'e\u0301') {
+        expect(line.getCell(1)!.getChars()).toBe('');
+      }
+      term.write('\rchanged');
+      expect(line.translateToString(true)).toBe(text);
+    });
+
+    test(`preserves ${JSON.stringify(text)} in scrollback exports`, () => {
+      term.write(text);
+      term.write('\r\n'.repeat(24));
+      const line = term.buffer.normal.getLine(0)!;
+      expect(line.translateToString(true)).toBe(text);
+      expect(line.getCell(0)!.getChars()).toBe(text === 'ASCII' ? 'A' : text);
+    });
+  }
+
   describe('BufferNamespace', () => {
     test('should have buffer property', () => {
       expect(term.buffer).toBeDefined();
