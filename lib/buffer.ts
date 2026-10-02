@@ -198,14 +198,18 @@ export class Buffer implements IBuffer {
     }
 
     // Snapshot graphemes alongside scalar cells, before the terminal can change.
+    // grapheme_len counts codepoints beyond the first, so 0 means the scalar is exact.
+    // A failed lookup leaves the slot empty so getChars() falls back to the scalar.
+    const inScrollback = this.bufferType === 'normal' && y < scrollbackLength;
     let graphemes: string[] | undefined;
     for (let x = 0; x < cells.length; x++) {
-      if (cells[x].codepoint !== 0 && cells[x].grapheme_len > 0) {
+      if (cells[x].codepoint === 0 || cells[x].grapheme_len === 0) continue;
+      const codepoints = inScrollback
+        ? wasmTerm.getScrollbackGrapheme(y, x)
+        : wasmTerm.getGrapheme(lineNumber, x);
+      if (codepoints && codepoints.length > 0) {
         graphemes ??= [];
-        graphemes[x] =
-          this.bufferType === 'normal' && y < scrollbackLength
-            ? wasmTerm.getScrollbackGraphemeString(y, x)
-            : wasmTerm.getGraphemeString(lineNumber, x);
+        graphemes[x] = String.fromCodePoint(...codepoints);
       }
     }
     return new BufferLine(cells, isWrapped, wasmTerm.cols, graphemes);

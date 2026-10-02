@@ -57,6 +57,37 @@ describe('Buffer API', () => {
     });
   }
 
+  test('keeps the scalar when a grapheme lookup fails', () => {
+    term.write('e\u0301\r\n'.repeat(30));
+    const wasmTerm = term.wasmTerm!;
+    wasmTerm.getGrapheme = () => null;
+    wasmTerm.getScrollbackGrapheme = () => [];
+    const buffer = term.buffer.normal;
+    expect(buffer.getLine(0)!.getCell(0)!.getChars()).toBe('e');
+    expect(
+      buffer
+        .getLine(buffer.length - 2)!
+        .getCell(0)!
+        .getChars()
+    ).toBe('e');
+  });
+
+  test('makes no grapheme lookup for single-codepoint cells', () => {
+    term.write('ASCII\r\n'.repeat(30));
+    const wasmTerm = term.wasmTerm!;
+    let lookups = 0;
+    const countLookup = () => {
+      lookups++;
+      return null;
+    };
+    wasmTerm.getGrapheme = countLookup;
+    wasmTerm.getScrollbackGrapheme = countLookup;
+    const buffer = term.buffer.normal;
+    expect(buffer.getLine(0)!.translateToString(true)).toBe('ASCII');
+    expect(buffer.getLine(buffer.length - 2)!.translateToString(true)).toBe('ASCII');
+    expect(lookups).toBe(0);
+  });
+
   describe('BufferNamespace', () => {
     test('should have buffer property', () => {
       expect(term.buffer).toBeDefined();
