@@ -483,6 +483,12 @@ export class Terminal implements ITerminalCore {
           foreground: this.options.theme?.foreground ?? '#ffffff',
           background: this.options.theme?.background ?? '#000000',
         }),
+        // Cells start where the canvas does, which is not the parent's
+        // padding-box origin when the host pads the parent.
+        origin: () => ({
+          left: this.canvas?.offsetLeft ?? 0,
+          top: this.canvas?.offsetTop ?? 0,
+        }),
       });
 
       // Create mouse tracking configuration

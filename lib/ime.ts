@@ -51,6 +51,17 @@ export interface ImeOverlayOptions {
   metrics: () => ImeCellMetrics;
   /** Current view styling. Read per composition, for the same reason. */
   style: () => ImeViewStyle;
+  /**
+   * Where cell (0, 0) sits inside the parent, in CSS pixels: the canvas offset.
+   * A host that pads the parent moves the canvas off the padding-box origin
+   * that `position: absolute` measures from. Read per move. Defaults to (0, 0).
+   */
+  origin?: () => ImeOrigin;
+}
+
+export interface ImeOrigin {
+  left: number;
+  top: number;
 }
 
 /**
@@ -61,6 +72,7 @@ export class ImeOverlay {
   private readonly textarea: HTMLTextAreaElement;
   private readonly metrics: () => ImeCellMetrics;
   private readonly style: () => ImeViewStyle;
+  private readonly origin: () => ImeOrigin;
   private view: HTMLElement | null = null;
   private col = 0;
   private row = 0;
@@ -72,6 +84,7 @@ export class ImeOverlay {
     this.textarea = options.textarea;
     this.metrics = options.metrics;
     this.style = options.style;
+    this.origin = options.origin ?? (() => ({ left: 0, top: 0 }));
   }
 
   /** True while a composition is open. */
@@ -81,11 +94,12 @@ export class ImeOverlay {
 
   /**
    * Move the IME target to a cell. Called every frame the cursor is drawn, so
-   * it must stay cheap: bail out when the cell has not changed.
+   * it must stay cheap: only styles whose value changed are written. The cell
+   * alone is not enough to skip the work — a font change or a re-measure moves
+   * the same cell to a new pixel position.
    */
   moveTo(col: number, row: number): void {
     if (this.disposed) return;
-    if (col === this.col && row === this.row) return;
     this.col = col;
     this.row = row;
     this.applyPosition();
@@ -117,21 +131,31 @@ export class ImeOverlay {
     this.view = null;
   }
 
-  private applyPosition(): void {
+  /** The cursor cell's box inside the parent, or null before cells are measured. */
+  private cellBox(): { left: string; top: string; height: string } | null {
     const { width, height } = this.metrics();
-    if (!(width > 0) || !(height > 0)) return;
-    const left = `${this.col * width}px`;
-    const top = `${this.row * height}px`;
+    if (!(width > 0) || !(height > 0)) return null;
+    const origin = this.origin();
+    return {
+      left: `${origin.left + this.col * width}px`,
+      top: `${origin.top + this.row * height}px`,
+      height: `${height}px`,
+    };
+  }
+
+  private applyPosition(): void {
+    const box = this.cellBox();
+    if (!box) return;
     // The textarea is one cell tall so the platform anchors the candidate
     // window under the cursor line rather than under the top of the terminal.
     if (this.textarea.style) {
-      this.textarea.style.left = left;
-      this.textarea.style.top = top;
-      this.textarea.style.height = `${height}px`;
+      setStyle(this.textarea, 'left', box.left);
+      setStyle(this.textarea, 'top', box.top);
+      setStyle(this.textarea, 'height', box.height);
     }
     if (this.view) {
-      this.view.style.left = left;
-      this.view.style.top = top;
+      setStyle(this.view, 'left', box.left);
+      setStyle(this.view, 'top', box.top);
     }
   }
 
@@ -174,10 +198,10 @@ export class ImeOverlay {
   }
 
   private applyPositionTo(view: HTMLElement): void {
-    const { width, height } = this.metrics();
-    if (!(width > 0) || !(height > 0)) return;
-    view.style.left = `${this.col * width}px`;
-    view.style.top = `${this.row * height}px`;
+    const box = this.cellBox();
+    if (!box) return;
+    setStyle(view, 'left', box.left);
+    setStyle(view, 'top', box.top);
   }
 
   private hide(): void {
@@ -185,4 +209,9 @@ export class ImeOverlay {
     this.view.textContent = '';
     this.view.style.display = 'none';
   }
+}
+
+/** Write a style only when it changes, so a per-frame call stays cheap. */
+function setStyle(el: HTMLElement, prop: 'left' | 'top' | 'height', value: string): void {
+  if (el.style[prop] !== value) el.style[prop] = value;
 }

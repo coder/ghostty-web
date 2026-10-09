@@ -90,6 +90,51 @@ describe('ImeOverlay', () => {
     ime.dispose();
   });
 
+  test('measures cells from where the canvas starts, not the padding edge', () => {
+    // A host that pads the parent moves the canvas, and with it cell (0, 0),
+    // away from the padding-box origin that absolute positioning uses.
+    const parent = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    parent.appendChild(textarea);
+    document.body.appendChild(parent);
+    const ime = new ImeOverlay({
+      parent,
+      textarea,
+      metrics: cell,
+      style,
+      origin: () => ({ left: 12, top: 10 }),
+    });
+    ime.moveTo(2, 1);
+    expect(textarea.style.left).toBe('28px'); // 12 + 2 * 8
+    expect(textarea.style.top).toBe('26px'); // 10 + 1 * 16
+    ime.start();
+    ime.update('가');
+    expect(compositionView(parent)!.style.left).toBe('28px');
+    expect(compositionView(parent)!.style.top).toBe('26px');
+    ime.dispose();
+    parent.remove();
+  });
+
+  test('follows a cell size change while the cursor stays on the same cell', () => {
+    // A font change or a re-measure after a web font loads resizes cells
+    // without moving the cursor; the target must move with the new size.
+    let metrics = { width: 8, height: 16 };
+    const parent = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    parent.appendChild(textarea);
+    document.body.appendChild(parent);
+    const ime = new ImeOverlay({ parent, textarea, metrics: () => metrics, style });
+    ime.moveTo(4, 3);
+    expect(textarea.style.left).toBe('32px');
+    metrics = { width: 10, height: 20 };
+    ime.moveTo(4, 3);
+    expect(textarea.style.left).toBe('40px');
+    expect(textarea.style.top).toBe('60px');
+    expect(textarea.style.height).toBe('20px');
+    ime.dispose();
+    parent.remove();
+  });
+
   test('dispose removes the view', () => {
     const { ime, parent } = overlay();
     ime.start();
