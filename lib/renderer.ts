@@ -18,6 +18,13 @@ import { CellFlags } from './types';
 // Interface for objects that can be rendered
 export interface IRenderable {
   getLine(y: number): GhosttyCell[] | null;
+  /**
+   * Read every visible cell in one pass, returning a cols*rows array in row
+   * order. Optional. When it is present the renderer reads the viewport once
+   * per frame and slices each row out of it, instead of calling getLine() for
+   * every row it paints.
+   */
+  getViewport?(): GhosttyCell[];
   getCursor(): { x: number; y: number; visible: boolean };
   getDimensions(): { cols: number; rows: number };
   isRowDirty(y: number): boolean;
@@ -301,6 +308,35 @@ export class CanvasRenderer {
       this.lastViewportY = viewportY;
     }
 
+    // Read the viewport once for this frame.
+    //
+    // getLine() is a compatibility shim: it builds the whole viewport and then
+    // returns one row of it. Calling it per row therefore rebuilds the grid
+    // once for every row the frame paints, so a frame that paints R rows costs
+    // R full grid reads when one is enough.
+    //
+    // The memo lives for this call only. render() runs to completion before any
+    // write can land, so it cannot serve stale cells, and no caller outside
+    // render() is affected.
+    //
+    // Scrolled frames still take the old path, because those rows come from the
+    // scrollback provider rather than from the viewport.
+    let frameViewport: GhosttyCell[] | null | undefined;
+    const readLine = (y: number): GhosttyCell[] | null => {
+      if (viewportY > 0 || typeof buffer.getViewport !== 'function') {
+        return buffer.getLine(y);
+      }
+      if (frameViewport === undefined) {
+        frameViewport = buffer.getViewport();
+      }
+      if (!frameViewport) return buffer.getLine(y);
+      if (y < 0 || y >= dims.rows) return null;
+      const start = y * dims.cols;
+      // Same copy getLine() makes, so callers still never hold a reference
+      // into the reused cell pool.
+      return frameViewport.slice(start, start + dims.cols).map((cell) => ({ ...cell }));
+    };
+
     // Check if cursor position changed or if blinking (need to redraw cursor line)
     const cursorMoved =
       cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
@@ -308,7 +344,7 @@ export class CanvasRenderer {
       // Mark cursor lines as needing redraw
       if (!forceAll && !buffer.isRowDirty(cursor.y)) {
         // Need to redraw cursor line
-        const line = buffer.getLine(cursor.y);
+        const line = readLine(cursor.y);
         if (line) {
           this.renderLine(line, cursor.y, dims.cols);
         }
@@ -316,7 +352,7 @@ export class CanvasRenderer {
       if (cursorMoved && this.lastCursorPosition.y !== cursor.y) {
         // Also redraw old cursor line if cursor moved to different line
         if (!forceAll && !buffer.isRowDirty(this.lastCursorPosition.y)) {
-          const line = buffer.getLine(this.lastCursorPosition.y);
+          const line = readLine(this.lastCursorPosition.y);
           if (line) {
             this.renderLine(line, this.lastCursorPosition.y, dims.cols);
           }
@@ -374,11 +410,11 @@ export class CanvasRenderer {
           } else {
             // This row is from visible screen
             const screenRow = y - Math.floor(viewportY);
-            line = buffer.getLine(screenRow);
+            line = readLine(screenRow);
           }
         } else {
           // At bottom - fetch from visible screen
-          line = buffer.getLine(y);
+          line = readLine(y);
         }
 
         if (line) {
@@ -466,11 +502,11 @@ export class CanvasRenderer {
         } else {
           // This row is from visible screen (lower part of viewport)
           const screenRow = viewportY > 0 ? y - Math.floor(viewportY) : y;
-          line = buffer.getLine(screenRow);
+          line = readLine(screenRow);
         }
       } else {
         // At bottom - fetch from visible screen
-        line = buffer.getLine(y);
+        line = readLine(y);
       }
 
       if (line) {
