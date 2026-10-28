@@ -10,7 +10,22 @@
  * so we just need to scan for contiguous regions with the same ID.
  */
 
+import type { ILinkHandler } from '../interfaces';
 import type { IBufferRange, ILink, ILinkProvider } from '../types';
+
+/**
+ * Whether a URI uses http or https. The URI is whatever the application
+ * printed, so anything else (javascript:, file:, custom protocol handlers)
+ * must not become a clickable link by default.
+ */
+function isHttpUri(uri: string): boolean {
+  try {
+    const { protocol } = new URL(uri);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * OSC 8 Hyperlink Provider
@@ -96,10 +111,21 @@ export class OSC8LinkProvider implements ILinkProvider {
           end: { x: endX, y },
         };
 
+        // Like xterm.js, only http(s) links are clickable unless the link
+        // handler opts in to other schemes.
+        if (!this.terminal.options?.linkHandler?.allowNonHttpProtocols && !isHttpUri(uri)) {
+          continue;
+        }
+
         links.push({
           text: uri,
           range,
           activate: (event) => {
+            const linkHandler = this.terminal.options?.linkHandler;
+            if (linkHandler) {
+              linkHandler.activate(event, uri, range);
+              return;
+            }
             // Open link if Ctrl/Cmd is pressed
             if (event.ctrlKey || event.metaKey) {
               window.open(uri, '_blank', 'noopener,noreferrer');
@@ -233,6 +259,9 @@ export class OSC8LinkProvider implements ILinkProvider {
  * Minimal terminal interface required by OSC8LinkProvider
  */
 export interface ITerminalForOSC8Provider {
+  options?: {
+    linkHandler?: ILinkHandler | null;
+  };
   buffer: {
     active: {
       length: number;
