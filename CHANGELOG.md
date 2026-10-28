@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.5.0-rc.0](https://github.com/coder/ghostty-web/compare/v0.4.0...v0.5.0-rc.0) (2026-10-28)
+
+ghostty-web 0.5.0-rc.0 expands terminal application compatibility and fixes several rendering, input, and clipboard issues. The headline additions are mouse tracking for TUI apps (mc, htop, vim), OSC 8 hyperlink clicking via Cmd/Ctrl, and improved text selection with triple-click and a drag threshold. VT compatibility improves with Device Attributes (DA1/DA2) responses and correct draining of multiple queued WASM responses, which unblocks shells like nushell. Rendering fixes cover transparent backgrounds, block-cursor glyph visibility, and stale scrollback cells. The PTY demo server is hardened to bind loopback-only with per-run same-origin token auth.
+
+**Highlights**
+
+- Mouse tracking support: pointer, drag, motion, and wheel events are now encoded (SGR 1006 and X10) and sent to applications that enable DECSET mouse modes (1000/1002/1003/1006), with modifier-key support—enabling mouse-aware TUIs like mc, htop, and vim. (#106)
+- OSC 8 hyperlinks are now clickable with Cmd (macOS) or Ctrl (Windows/Linux). New WASM hyperlink URI lookups cover both the active viewport and scrollback, and links are cached by position range so multiple links on one line open the correct target. (#117)
+- Selection improvements: added triple-click line selection, a drag threshold to prevent selection flashes on simple clicks, correct scrollback-region selection, and automatic clearing of the selection when the user types. (#115)
+- Terminals now respond to Device Attributes queries (DA1 as VT220 with color, DA2 firmware report), improving compatibility with programs that probe terminal capabilities. (#102)
+- All pending WASM responses are now drained per write instead of just one, so multiple queries batched into a single write (e.g. during init) are answered—fixing hangs in shells like nushell that rely on cursor-position queries. (#103)
+
+### Features
+
+* add mouse tracking support for terminal applications ([#106](https://github.com/coder/ghostty-web/issues/106)) ([03ead6e](https://github.com/coder/ghostty-web/commit/03ead6e154b44656a8efc053694d0dedfc3dc476))
+* enable OSC 8 hyperlink clicking with Cmd/Ctrl modifier ([#117](https://github.com/coder/ghostty-web/issues/117)) ([3525675](https://github.com/coder/ghostty-web/commit/3525675cd4982bb133a31482e593af7266ca2910))
+* **selection:** Add triple-click and selection improvements ([#115](https://github.com/coder/ghostty-web/issues/115)) ([6a1a50d](https://github.com/coder/ghostty-web/commit/6a1a50df5b4f6b34d1b1de10fad3a0fc811bfbc0))
+
+
+### Bug Fixes
+
+* allow processing multiple terminal responses from WASM ([#103](https://github.com/coder/ghostty-web/issues/103)) ([c7e37fb](https://github.com/coder/ghostty-web/commit/c7e37fb371884868846437b22e493beeb09661b1))
+* check for bracketed paste in input handler ([#99](https://github.com/coder/ghostty-web/issues/99)) ([65aeac9](https://github.com/coder/ghostty-web/commit/65aeac9fecdf5ff66a2b3ea2209e3034dd9e6229))
+* clear canvas before filling to support transparent backgrounds ([#116](https://github.com/coder/ghostty-web/issues/116)) ([77e29d9](https://github.com/coder/ghostty-web/commit/77e29d963dbf458bb701cf72b91ace0886f72c8e))
+* clear scrolled row cells in wasm patch ([#180](https://github.com/coder/ghostty-web/issues/180)) ([bec9e16](https://github.com/coder/ghostty-web/commit/bec9e162b137478fb032d7edf60a2f29a6e5f04b))
+* **demo:** secure WebSocket PTY access ([#173](https://github.com/coder/ghostty-web/issues/173)) ([0556b95](https://github.com/coder/ghostty-web/commit/0556b954f969ce58b97ecff3a42a38852b176de0))
+* export Key, KeyAction, Mods, DirtyState as runtime values ([#130](https://github.com/coder/ghostty-web/issues/130)) ([65ed96f](https://github.com/coder/ghostty-web/commit/65ed96f4421cc8f3ca2b2e2681e3a62d9e2b6851))
+* prevent clipboard overwrite on single click without selection ([#124](https://github.com/coder/ghostty-web/issues/124)) ([fd09412](https://github.com/coder/ghostty-web/commit/fd094122ef00eb34630e6a352eb0a6514234ca74)), closes [#108](https://github.com/coder/ghostty-web/issues/108)
+* prevent terminal crash on resize during high-output programs ([#132](https://github.com/coder/ghostty-web/issues/132)) ([fc99955](https://github.com/coder/ghostty-web/commit/fc9995500898f94f74bab6b7cfe811da0005eeea))
+* render text under block cursor with cursorAccent color ([#131](https://github.com/coder/ghostty-web/issues/131)) ([174a554](https://github.com/coder/ghostty-web/commit/174a5547a4a6f178455f10e7928adb4fd300896f))
+* Respond to the device attributes sequences ([#101](https://github.com/coder/ghostty-web/issues/101)) ([#102](https://github.com/coder/ghostty-web/issues/102)) ([2ede417](https://github.com/coder/ghostty-web/commit/2ede417a0233c9a4211a5f7fba04b8dca34a102c))
+* send backtab escape sequence on Shift+Tab ([#112](https://github.com/coder/ghostty-web/issues/112)) ([98753e0](https://github.com/coder/ghostty-web/commit/98753e026b45d1533f1ca8c88592f37b65e9d9f4))
+
+
+### Documentation
+
+* document ITerminalOptions scrollback default ([#178](https://github.com/coder/ghostty-web/issues/178)) ([b6cf72a](https://github.com/coder/ghostty-web/commit/b6cf72a40bce833b3353bc1de7a9a96cc1d669cd))
+
 ## [0.4.0](https://github.com/coder/ghostty-web/compare/v0.3.0...v0.4.0) (2025-12-09)
 
 ### Features
