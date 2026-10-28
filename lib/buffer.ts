@@ -173,7 +173,7 @@ export class Buffer implements IBuffer {
     // Determine if accessing scrollback or visible screen
     const scrollbackLength = wasmTerm.getScrollbackLength();
     let cells: GhosttyCell[] | null;
-    let lineNumber: number;
+    let lineNumber: number = y;
     let isWrapped: boolean;
 
     if (this.bufferType === 'normal' && y < scrollbackLength) {
@@ -197,7 +197,22 @@ export class Buffer implements IBuffer {
       return undefined;
     }
 
-    return new BufferLine(cells, isWrapped, wasmTerm.cols);
+    // Snapshot graphemes alongside scalar cells, before the terminal can change.
+    // grapheme_len counts codepoints beyond the first, so 0 means the scalar is exact.
+    // A failed lookup leaves the slot empty so getChars() falls back to the scalar.
+    const inScrollback = this.bufferType === 'normal' && y < scrollbackLength;
+    let graphemes: string[] | undefined;
+    for (let x = 0; x < cells.length; x++) {
+      if (cells[x].codepoint === 0 || cells[x].grapheme_len === 0) continue;
+      const codepoints = inScrollback
+        ? wasmTerm.getScrollbackGrapheme(y, x)
+        : wasmTerm.getGrapheme(lineNumber, x);
+      if (codepoints && codepoints.length > 0) {
+        graphemes ??= [];
+        graphemes[x] = String.fromCodePoint(...codepoints);
+      }
+    }
+    return new BufferLine(cells, isWrapped, wasmTerm.cols, graphemes);
   }
 
   getNullCell(): IBufferCell {
@@ -221,7 +236,12 @@ export class BufferLine implements IBufferLine {
   private _isWrapped: boolean;
   private _length: number;
 
-  constructor(cells: GhosttyCell[], isWrapped: boolean, length: number) {
+  constructor(
+    cells: GhosttyCell[],
+    isWrapped: boolean,
+    length: number,
+    private graphemes?: string[]
+  ) {
     this.cells = cells;
     this._isWrapped = isWrapped;
     this._length = length;
@@ -260,7 +280,7 @@ export class BufferLine implements IBufferLine {
       );
     }
 
-    return new BufferCell(this.cells[x], x);
+    return new BufferCell(this.cells[x], x, this.graphemes?.[x]);
   }
 
   translateToString(trimRight = false, startColumn = 0, endColumn = this._length): string {
@@ -296,12 +316,18 @@ export class BufferCell implements IBufferCell {
   private cell: GhosttyCell;
   private x: number;
 
-  constructor(cell: GhosttyCell, x: number) {
+  constructor(
+    cell: GhosttyCell,
+    x: number,
+    private grapheme?: string
+  ) {
     this.cell = cell;
     this.x = x;
   }
 
   getChars(): string {
+    if (this.grapheme !== undefined) return this.grapheme;
+
     const codepoint = this.cell.codepoint;
 
     // Return empty string for null character or invalid codepoints

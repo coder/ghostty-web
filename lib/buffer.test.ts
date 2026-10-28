@@ -35,6 +35,59 @@ describe('Buffer API', () => {
     }
   });
 
+  for (const text of ['ASCII', 'e\u0301', '👩‍💻', '👋🏽', '🇺🇸']) {
+    test(`preserves ${JSON.stringify(text)} in buffer exports and snapshots`, () => {
+      term.write(text);
+      const line = term.buffer.active.getLine(0)!;
+      expect(line.translateToString(true)).toBe(text);
+      expect(line.getCell(0)!.getChars()).toBe(text === 'ASCII' ? 'A' : text);
+      if (text !== 'ASCII' && text !== 'e\u0301') {
+        expect(line.getCell(1)!.getChars()).toBe('');
+      }
+      term.write('\rchanged');
+      expect(line.translateToString(true)).toBe(text);
+    });
+
+    test(`preserves ${JSON.stringify(text)} in scrollback exports`, () => {
+      term.write(text);
+      term.write('\r\n'.repeat(24));
+      const line = term.buffer.normal.getLine(0)!;
+      expect(line.translateToString(true)).toBe(text);
+      expect(line.getCell(0)!.getChars()).toBe(text === 'ASCII' ? 'A' : text);
+    });
+  }
+
+  test('keeps the scalar when a grapheme lookup fails', () => {
+    term.write('e\u0301\r\n'.repeat(30));
+    const wasmTerm = term.wasmTerm!;
+    wasmTerm.getGrapheme = () => null;
+    wasmTerm.getScrollbackGrapheme = () => [];
+    const buffer = term.buffer.normal;
+    expect(buffer.getLine(0)!.getCell(0)!.getChars()).toBe('e');
+    expect(
+      buffer
+        .getLine(buffer.length - 2)!
+        .getCell(0)!
+        .getChars()
+    ).toBe('e');
+  });
+
+  test('makes no grapheme lookup for single-codepoint cells', () => {
+    term.write('ASCII\r\n'.repeat(30));
+    const wasmTerm = term.wasmTerm!;
+    let lookups = 0;
+    const countLookup = () => {
+      lookups++;
+      return null;
+    };
+    wasmTerm.getGrapheme = countLookup;
+    wasmTerm.getScrollbackGrapheme = countLookup;
+    const buffer = term.buffer.normal;
+    expect(buffer.getLine(0)!.translateToString(true)).toBe('ASCII');
+    expect(buffer.getLine(buffer.length - 2)!.translateToString(true)).toBe('ASCII');
+    expect(lookups).toBe(0);
+  });
+
   describe('BufferNamespace', () => {
     test('should have buffer property', () => {
       expect(term.buffer).toBeDefined();
