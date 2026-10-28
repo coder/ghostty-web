@@ -67,6 +67,16 @@ websocket.onmessage = (e) => term.write(e.data);
 
 For a comprehensive client <-> server example, refer to the [demo](./demo/index.html#L141).
 
+### Content-Security-Policy
+
+The WASM bundled with the library loads without a network request, so it needs no `connect-src` exception. To serve `ghostty-vt.wasm` yourself instead (it ships in `dist/`), pass its URL: `await init('/assets/ghostty-vt.wasm')`.
+
+Compiling WebAssembly requires `'wasm-unsafe-eval'` in `script-src`:
+
+```
+Content-Security-Policy: script-src 'self' 'wasm-unsafe-eval'
+```
+
 ## Development
 
 ghostty-web builds from Ghostty's source with a [patch](./patches/ghostty-wasm-api.patch) to expose additional
