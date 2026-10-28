@@ -157,6 +157,10 @@ index 000000000..c467102c3
 +int ghostty_render_state_get_cursor_x(GhosttyTerminal term);
 +int ghostty_render_state_get_cursor_y(GhosttyTerminal term);
 +bool ghostty_render_state_get_cursor_visible(GhosttyTerminal term);
++/** Get cursor style: 0=block, 1=bar, 2=underline */
++int ghostty_render_state_get_cursor_style(GhosttyTerminal term);
++/** Check if cursor is blinking */
++bool ghostty_render_state_get_cursor_blinking(GhosttyTerminal term);
 +
 +/** Get default colors as 0xRRGGBB */
 +uint32_t ghostty_render_state_get_bg_color(GhosttyTerminal term);
@@ -340,6 +344,8 @@ index 03a883e20..1336676d7 100644
 +        @export(&c.render_state_get_cursor_x, .{ .name = "ghostty_render_state_get_cursor_x" });
 +        @export(&c.render_state_get_cursor_y, .{ .name = "ghostty_render_state_get_cursor_y" });
 +        @export(&c.render_state_get_cursor_visible, .{ .name = "ghostty_render_state_get_cursor_visible" });
++        @export(&c.render_state_get_cursor_style, .{ .name = "ghostty_render_state_get_cursor_style" });
++        @export(&c.render_state_get_cursor_blinking, .{ .name = "ghostty_render_state_get_cursor_blinking" });
 +        @export(&c.render_state_get_bg_color, .{ .name = "ghostty_render_state_get_bg_color" });
 +        @export(&c.render_state_get_fg_color, .{ .name = "ghostty_render_state_get_fg_color" });
 +        @export(&c.render_state_is_row_dirty, .{ .name = "ghostty_render_state_is_row_dirty" });
@@ -398,6 +404,8 @@ index bc92597f5..d0ee49c1b 100644
 +pub const render_state_get_cursor_x = terminal.renderStateGetCursorX;
 +pub const render_state_get_cursor_y = terminal.renderStateGetCursorY;
 +pub const render_state_get_cursor_visible = terminal.renderStateGetCursorVisible;
++pub const render_state_get_cursor_style = terminal.renderStateGetCursorStyle;
++pub const render_state_get_cursor_blinking = terminal.renderStateGetCursorBlinking;
 +pub const render_state_get_bg_color = terminal.renderStateGetBgColor;
 +pub const render_state_get_fg_color = terminal.renderStateGetFgColor;
 +pub const render_state_is_row_dirty = terminal.renderStateIsRowDirty;
@@ -989,6 +997,22 @@ index 000000000..73ae2e6fa
 +pub fn renderStateGetCursorVisible(ptr: ?*anyopaque) callconv(.c) bool {
 +    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
 +    return wrapper.render_state.cursor.visible;
++}
++
++/// Get cursor style: 0=block, 1=bar, 2=underline
++pub fn renderStateGetCursorStyle(ptr: ?*anyopaque) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
++    return switch (wrapper.terminal.screens.active.cursor.cursor_style) {
++        .bar => 1,
++        .underline => 2,
++        else => 0,
++    };
++}
++
++/// Check if cursor is blinking
++pub fn renderStateGetCursorBlinking(ptr: ?*anyopaque) callconv(.c) bool {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
++    return wrapper.terminal.modes.get(.cursor_blinking);
 +}
 +
 +/// Get default background color as 0xRRGGBB
