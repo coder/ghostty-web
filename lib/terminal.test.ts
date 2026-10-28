@@ -160,6 +160,44 @@ describe('Terminal', () => {
       // open() is synchronous and throws immediately
       expect(() => term.open(container!)).toThrow('has been disposed');
     });
+
+    test('removes every document listener it added on dispose', async () => {
+      // A listener left on document keeps the terminal, its renderer and its
+      // canvas alive after dispose().
+      const added = new Set<EventListenerOrEventListenerObject>();
+      const originalAdd = document.addEventListener;
+      const originalRemove = document.removeEventListener;
+      document.addEventListener = function (
+        this: Document,
+        type: string,
+        listener: any,
+        opts?: any
+      ) {
+        added.add(listener);
+        return originalAdd.call(this, type, listener, opts);
+      } as typeof document.addEventListener;
+      document.removeEventListener = function (
+        this: Document,
+        type: string,
+        listener: any,
+        opts?: any
+      ) {
+        added.delete(listener);
+        return originalRemove.call(this, type, listener, opts);
+      } as typeof document.removeEventListener;
+
+      try {
+        const term = await createIsolatedTerminal();
+        term.open(container!);
+        expect(added.size).toBeGreaterThan(0);
+
+        term.dispose();
+        expect(added.size).toBe(0);
+      } finally {
+        document.addEventListener = originalAdd;
+        document.removeEventListener = originalRemove;
+      }
+    });
   });
 
   describe('Properties', () => {

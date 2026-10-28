@@ -1260,8 +1260,10 @@ export class Terminal implements ITerminalCore {
       this.element.removeAttribute('aria-multiline');
     }
 
-    // Remove document-level listeners (only if opened)
-    if (this.isOpen && typeof document !== 'undefined') {
+    // Remove document-level listeners. dispose() clears isOpen before it
+    // gets here, so this cannot depend on it; removing a listener that was
+    // never added is a no-op.
+    if (typeof document !== 'undefined') {
       document.removeEventListener('mouseup', this.handleMouseUp);
     }
 
