@@ -60,6 +60,17 @@ export interface IDisposable {
 
 export type IEvent<T> = (listener: (arg: T) => void) => IDisposable;
 
+/**
+ * Intercepts data on its way into the terminal (see
+ * `Terminal.attachCustomWriteHandler`). `write` hands data on to the terminal
+ * itself; the handler decides how often to call it and with what: the data as
+ * given, a changed version, in pieces, or not at all.
+ */
+export type CustomWriteHandler = (
+  data: string | Uint8Array,
+  write: (data: string | Uint8Array) => void
+) => void;
+
 export interface ITerminalAddon {
   activate(terminal: ITerminalCore): void;
   dispose(): void;

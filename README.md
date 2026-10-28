@@ -67,6 +67,36 @@ websocket.onmessage = (e) => term.write(e.data);
 
 For a comprehensive client <-> server example, refer to the [demo](./demo/index.html#L141).
 
+### Images (kitty graphics protocol)
+
+The WASM parser ignores the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
+so tools like `kitten icat` or yazi previews show nothing. `KittyGraphicsAddon` handles it in the
+browser: it takes the protocol's sequences out of the output before the terminal sees them, decodes the
+images, and draws them on a canvas laid over the terminal.
+
+```javascript
+import { KittyGraphicsAddon } from 'ghostty-web';
+
+const graphics = new KittyGraphicsAddon();
+term.loadAddon(graphics);
+
+websocket.onmessage = (e) => term.write(e.data);
+websocket.onopen = () => graphics.reset(); // when the output stream restarts, e.g. on reconnect
+```
+
+Direct transmission of RGB / RGBA / PNG (optionally zlib-compressed) is supported, with placement, cell
+sizing, cropping and deletion. File and shared-memory transmission are answered with an error so programs
+fall back to direct, and unicode placeholders, animation and layering under text are not supported. The
+terminal itself does not know images are there, so text written over an image does not erase it; images are
+cleared with the screen, on alternate-screen switches and on reset. Images are anchored to scrollback rows,
+which stops working once the scrollback is full (the terminal does not say how many rows it has evicted), so
+from then on an image on the main screen stays at its screen row instead of scrolling away with its text. Sizes reported to programs are device
+pixels, as in kitty and Ghostty. Memory limits (pixels per image, total decoded size, image count,
+transmission size) can be tuned with `new KittyGraphicsAddon({ limits })`.
+
+The addon reads the output through `term.attachCustomWriteHandler()`, which any addon or application can use
+to see data before the parser does.
+
 ## Development
 
 ghostty-web builds from Ghostty's source with a [patch](./patches/ghostty-wasm-api.patch) to expose additional

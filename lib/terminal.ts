@@ -21,6 +21,7 @@ import type { Ghostty, GhosttyCell, GhosttyTerminal, GhosttyTerminalConfig } fro
 import { getGhostty } from './index';
 import { InputHandler, type MouseTrackingConfig } from './input-handler';
 import type {
+  CustomWriteHandler,
   IBufferNamespace,
   IBufferRange,
   IDisposable,
@@ -120,6 +121,7 @@ export class Terminal implements ITerminalCore {
   private scrollAnimationStartY?: number;
   private scrollAnimationFrame?: number;
   private customWheelEventHandler?: (event: WheelEvent) => boolean;
+  private customWriteHandler?: CustomWriteHandler;
   private lastCursorY: number = 0; // Track cursor position for onCursorMove
 
   // Scrollbar interaction state
@@ -548,6 +550,12 @@ export class Terminal implements ITerminalCore {
       data = data.replace(/\n/g, '\r\n');
     }
 
+    if (this.customWriteHandler) {
+      this.customWriteHandler(data, (chunk) => this.writeInternal(chunk));
+      if (callback) requestAnimationFrame(callback);
+      return;
+    }
+
     this.writeInternal(data, callback);
   }
 
@@ -874,6 +882,21 @@ export class Terminal implements ITerminalCore {
     customWheelEventHandler?: (event: WheelEvent) => boolean
   ): void {
     this.customWheelEventHandler = customWheelEventHandler;
+  }
+
+  /**
+   * Attach a handler that sees everything written to the terminal (`write()`,
+   * `writeln()`) before the terminal parser does, and passes it on itself by
+   * calling the `write` it is given. Lets an addon act on sequences the WASM
+   * parser ignores, at the exact point in the stream where they appear:
+   * writes made before it have been applied, later ones have not.
+   *
+   * There is one handler; attaching replaces the previous one, and passing
+   * `undefined` removes it. Data written while none is attached goes straight
+   * to the terminal.
+   */
+  public attachCustomWriteHandler(customWriteHandler?: CustomWriteHandler): void {
+    this.customWriteHandler = customWriteHandler;
   }
 
   // ==========================================================================
