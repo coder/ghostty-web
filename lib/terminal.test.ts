@@ -1021,6 +1021,41 @@ describe('onTitleChange event', () => {
       expect(receivedTitle).toBe('Title with ST');
       term.dispose();
     });
+
+    test('should strip control characters from the title', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      term.open(container!);
+
+      let receivedTitle = '';
+      term.onTitleChange((title) => {
+        receivedTitle = title;
+      });
+
+      term.write('\x1b]2;safe\rspoofed\x08title\x07');
+
+      expect(receivedTitle).toBe('safespoofedtitle');
+      term.dispose();
+    });
+
+    test('should ignore titles longer than 255 bytes', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      term.open(container!);
+
+      let receivedTitle = '';
+      term.onTitleChange((title) => {
+        receivedTitle = title;
+      });
+
+      term.write('\x1b]2;short\x07');
+      term.write(`\x1b]2;${'a'.repeat(256)}\x07`);
+
+      expect(receivedTitle).toBe('short');
+      term.dispose();
+    });
   });
 });
 

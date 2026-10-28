@@ -38,6 +38,32 @@ import { CanvasRenderer } from './renderer';
 import { SelectionManager } from './selection-manager';
 import type { ILink, ILinkProvider } from './types';
 
+/** Longest window title accepted, in UTF-8 bytes, matching native Ghostty. */
+const MAX_TITLE_BYTES = 255;
+
+/**
+ * Clean up a window title set by the application (OSC 0 or 2).
+ *
+ * The title comes from terminal output, and embedders typically show it in
+ * the page or window title. A VT parser ignores C0 control characters inside
+ * an OSC string, so drop them (and DEL) here too, and ignore titles longer
+ * than native Ghostty accepts.
+ * @returns The title to use, or null to ignore the request
+ */
+function sanitizeTitle(title: string): string | null {
+  let clean = '';
+  for (const char of title) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 0x20 && code !== 0x7f) {
+      clean += char;
+    }
+  }
+  if (new TextEncoder().encode(clean).length > MAX_TITLE_BYTES) {
+    return null;
+  }
+  return clean;
+}
+
 // ============================================================================
 // Terminal Class
 // ============================================================================
@@ -1866,9 +1892,10 @@ export class Terminal implements ITerminalCore {
 
       // OSC 0 and OSC 2 set the title
       if (ps === '0' || ps === '2') {
-        if (pt !== this.currentTitle) {
-          this.currentTitle = pt;
-          this.titleChangeEmitter.fire(pt);
+        const title = sanitizeTitle(pt);
+        if (title !== null && title !== this.currentTitle) {
+          this.currentTitle = title;
+          this.titleChangeEmitter.fire(title);
         }
       }
     }
