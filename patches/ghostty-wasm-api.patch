@@ -368,6 +368,48 @@ index 03a883e20..1336676d7 100644
  
          // On Wasm we need to export our allocator convenience functions.
          if (builtin.target.cpu.arch.isWasm()) {
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 29f414e03..6b5ab19ab 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -5,6 +5,7 @@ const PageList = @This();
+ 
+ const std = @import("std");
+ const build_options = @import("terminal_options");
++const builtin = @import("builtin");
+ const Allocator = std.mem.Allocator;
+ const assert = @import("../quirks.zig").inlineAssert;
+ const fastmem = @import("../fastmem.zig");
+@@ -338,10 +339,10 @@ fn initPages(
+         const page_buf = try pool.pages.create();
+         // no errdefer because the pool deinit will clean these up
+ 
+-        // In runtime safety modes we have to memset because the Zig allocator
+-        // interface will always memset to 0xAA for undefined. In non-safe modes
+-        // we use a page allocator and the OS guarantees zeroed memory.
+-        if (comptime std.debug.runtime_safety) @memset(page_buf, 0);
++        // On WASM, the allocator reuses freed memory without zeroing, so we must
++        // always zero page buffers. On other platforms, only required with runtime
++        // safety (allocators init to 0xAA); in release the OS guarantees zeroed memory.
++        if (comptime builtin.target.cpu.arch.isWasm() or std.debug.runtime_safety) @memset(page_buf, 0);
+ 
+         // Initialize the first set of pages to contain our viewport so that
+         // the top of the first page is always the active area.
+@@ -2673,9 +2674,11 @@ inline fn createPageExt(
+     else
+         page_alloc.free(page_buf);
+ 
+-    // Required only with runtime safety because allocators initialize
+-    // to undefined, 0xAA.
+-    if (comptime std.debug.runtime_safety) @memset(page_buf, 0);
++    // On WASM, the allocator reuses freed memory without zeroing, so we must
++    // always zero page buffers to prevent stale grapheme/style data from
++    // corrupting the terminal state after a free+realloc cycle.
++    // On other platforms, only required with runtime safety (allocators init to 0xAA).
++    if (comptime builtin.target.cpu.arch.isWasm() or std.debug.runtime_safety) @memset(page_buf, 0);
+ 
+     page.* = .{
+         .data = .initBuf(.init(page_buf), layout),
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
 index bc92597f5..d0ee49c1b 100644
 --- a/src/terminal/c/main.zig
