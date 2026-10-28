@@ -532,6 +532,7 @@ export const COLORS_STRUCT_SIZE = 12;
  * All color values use 0xRRGGBB format. A value of 0 means "use default".
  */
 export interface GhosttyTerminalConfig {
+  /** Scrollback buffer size in bytes. Passed to Terminal.max_scrollback. */
   scrollbackLimit?: number;
   fgColor?: number;
   bgColor?: number;
@@ -604,7 +605,7 @@ export interface Cursor {
  * Terminal configuration (passed to ghostty_terminal_new_with_config)
  */
 export interface TerminalConfig {
-  scrollback_limit: number; // Number of scrollback lines (default: 10,000)
+  scrollback_limit: number; // Scrollback buffer size in bytes (default: 10,000)
   fg_color: RGB; // Default foreground color
   bg_color: RGB; // Default background color
 }
