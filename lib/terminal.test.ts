@@ -79,6 +79,21 @@ function expectEchoRender(
   expect(renderArgs[0][1]).toBe(false);
 }
 
+/**
+ * Helper to get visible text for a terminal row.
+ */
+function getTerminalLineText(term: Terminal, y: number): string {
+  const line = term.wasmTerm?.getLine(y);
+  if (!line) {
+    throw new Error(`Unable to read terminal line ${y}`);
+  }
+
+  return line
+    .map((cell) => String.fromCodePoint(cell.codepoint || 32))
+    .join('')
+    .trimEnd();
+}
+
 describe('Terminal', () => {
   let container: HTMLElement;
 
@@ -936,6 +951,107 @@ describe('onKey event', () => {
       expect(keyEvent).toBeTruthy();
       term.dispose();
     });
+  });
+});
+
+describe('GNU screen/tmux title sequences', () => {
+  const issueReproSequence = '\x1bk/tmp\x1b\\\r\n\x1bkls\x1b\\demo.txt\r\n';
+  let container: HTMLElement | null = null;
+
+  beforeEach(async () => {
+    if (typeof document !== 'undefined') {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+    }
+  });
+
+  afterEach(() => {
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+  });
+
+  test('ESC k title payload is ignored for string writes', async () => {
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    if (!container) return;
+    term.open(container);
+
+    try {
+      term.write(issueReproSequence);
+
+      expect(getTerminalLineText(term, 0)).toBe('');
+      expect(getTerminalLineText(term, 1)).toBe('demo.txt');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  test('ESC k title payload is ignored for BEL-terminated string writes', async () => {
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    if (!container) return;
+    term.open(container);
+
+    try {
+      term.write('\x1bkfoo\x07bar\r\n');
+
+      expect(getTerminalLineText(term, 0)).toBe('bar');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  test('ESC k title payload is ignored for 8-bit ST-terminated Uint8Array writes', async () => {
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    if (!container) return;
+    term.open(container);
+
+    try {
+      term.write(
+        new Uint8Array([0x1b, 0x6b, 0x66, 0x6f, 0x6f, 0x9c, 0x62, 0x61, 0x72, 0x0d, 0x0a])
+      );
+
+      expect(getTerminalLineText(term, 0)).toBe('bar');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  test('ESC k title payload is ignored for Uint8Array writes', async () => {
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    if (!container) return;
+    term.open(container);
+
+    try {
+      term.write(new TextEncoder().encode(issueReproSequence));
+
+      expect(getTerminalLineText(term, 0)).toBe('');
+      expect(getTerminalLineText(term, 1)).toBe('demo.txt');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  test('ESC k title payload remains ignored across split writes', async () => {
+    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+    if (!container) return;
+    term.open(container);
+
+    try {
+      term.write('\x1b');
+      term.write('k/tmp');
+      term.write('\x1b');
+      term.write('\\\r\n');
+      term.write('\x1b');
+      term.write('kls');
+      term.write('\x1b');
+      term.write('\\demo.txt\r\n');
+
+      expect(getTerminalLineText(term, 0)).toBe('');
+      expect(getTerminalLineText(term, 1)).toBe('demo.txt');
+    } finally {
+      term.dispose();
+    }
   });
 });
 
