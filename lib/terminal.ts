@@ -32,6 +32,7 @@ import type {
   IUnicodeVersionProvider,
 } from './interfaces';
 import { LinkDetector } from './link-detector';
+import { encodePaste } from './paste';
 import { OSC8LinkProvider } from './providers/osc8-link-provider';
 import { UrlRegexProvider } from './providers/url-regex-provider';
 import { CanvasRenderer } from './renderer';
@@ -633,14 +634,8 @@ export class Terminal implements ITerminalCore {
 
     this.awaitingEcho = true;
 
-    // Check if terminal has bracketed paste mode enabled
-    if (this.wasmTerm!.hasBracketedPaste()) {
-      // Wrap with bracketed paste sequences (DEC mode 2004)
-      this.dataEmitter.fire('\x1b[200~' + data + '\x1b[201~');
-    } else {
-      // Send data directly
-      this.dataEmitter.fire(data);
-    }
+    // Wrap with bracketed paste sequences (DEC mode 2004) if enabled
+    this.dataEmitter.fire(encodePaste(data, this.wasmTerm!.hasBracketedPaste()));
   }
 
   /**
