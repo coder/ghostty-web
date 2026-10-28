@@ -562,23 +562,22 @@ export class InputHandler {
   private handlePaste(event: ClipboardEvent): void {
     if (this.isDisposed) return;
 
-    // Prevent default paste behavior
-    event.preventDefault();
-    event.stopPropagation();
-
     // Get clipboard data
     const clipboardData = event.clipboardData;
     if (!clipboardData) {
-      console.warn('No clipboard data available');
       return;
     }
 
-    // Get text from clipboard
+    // Get text from clipboard — if there's no text (e.g. image-only paste),
+    // let the event continue bubbling so addons like ImagePasteAddon can handle it.
     const text = clipboardData.getData('text/plain');
     if (!text) {
-      console.warn('No text in clipboard');
       return;
     }
+
+    // We have text to handle — claim the event
+    event.preventDefault();
+    event.stopPropagation();
 
     if (this.shouldIgnorePasteEvent(text, 'paste')) {
       return;
