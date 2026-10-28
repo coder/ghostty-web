@@ -559,6 +559,13 @@ export class Terminal implements ITerminalCore {
     // preserve selection when new data arrives. Selection is cleared by user actions
     // like clicking or typing, not by incoming data.
 
+    // Save scroll state before writing.  viewportY is relative to the
+    // bottom, so if new lines push content into scrollback we need to
+    // bump viewportY by the same amount to keep the viewport locked on
+    // the same content.
+    const savedViewportY = this.viewportY;
+    const savedScrollback = savedViewportY > 0 ? this.wasmTerm!.getScrollbackLength() : 0;
+
     // Write directly to WASM terminal (handles VT parsing internally)
     this.wasmTerm!.write(data);
 
@@ -577,9 +584,19 @@ export class Terminal implements ITerminalCore {
     // Invalidate link cache (content changed)
     this.linkDetector?.invalidateCache();
 
-    // Phase 2: Auto-scroll to bottom on new output (xterm.js behavior)
-    if (this.viewportY !== 0) {
-      this.scrollToBottom();
+    // If the user had scrolled up, adjust viewportY so the viewport
+    // stays locked on the same content instead of drifting as new
+    // scrollback lines are added.  Clamp to the current scrollback
+    // length in case old lines were dropped by the scrollback limit.
+    if (savedViewportY > 0) {
+      const newScrollback = this.wasmTerm!.getScrollbackLength();
+      const delta = newScrollback - savedScrollback;
+      const newViewportY = Math.max(0, Math.min(savedViewportY + delta, newScrollback));
+      if (newViewportY !== savedViewportY) {
+        this.viewportY = newViewportY;
+        this.scrollEmitter.fire(this.viewportY);
+        if (newScrollback > 0) this.showScrollbar();
+      }
     }
 
     // Check for title changes (OSC 0, 1, 2 sequences)
