@@ -15,6 +15,7 @@
 
 import type { Ghostty } from './ghostty';
 import type { KeyEncoder } from './ghostty';
+import type { ImeOverlay } from './ime';
 import type { IKeyEvent } from './interfaces';
 import { Key, KeyAction, KeyEncoderOption, Mods } from './types';
 
@@ -196,6 +197,7 @@ export class InputHandler {
   private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
   private isDisposed = false;
+  private ime: ImeOverlay | null = null;
   private mouseButtonsPressed = 0; // Track which buttons are pressed for motion reporting
   private lastKeyDownData: string | null = null;
   private lastKeyDownTime = 0;
@@ -253,6 +255,14 @@ export class InputHandler {
    */
   setCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
     this.customKeyEventHandler = handler;
+  }
+
+  /**
+   * Give the handler the overlay that tracks the cursor cell, so composition
+   * can be drawn there. Null detaches it.
+   */
+  setImeOverlay(ime: ImeOverlay | null): void {
+    this.ime = ime;
   }
 
   /**
@@ -666,16 +676,23 @@ export class InputHandler {
   private handleCompositionStart(_event: CompositionEvent): void {
     if (this.isDisposed) return;
     this.isComposing = true;
+    this.ime?.start();
   }
 
   /**
    * Handle compositionupdate event
    */
-  private handleCompositionUpdate(_event: CompositionEvent): void {
+  private handleCompositionUpdate(event: CompositionEvent): void {
     if (this.isDisposed) return;
-    // We could track the current composition string here if we wanted to
-    // display it in a custom way, but for now we rely on the browser's
-    // input method editor UI.
+    // The browser's own IME UI cannot be relied on here: it draws the preedit
+    // inside the focused element, and the focused element is an invisible
+    // textarea. Draw it ourselves, at the cursor cell.
+    //
+    // This is what makes Korean usable at all. Hangul composes within a
+    // syllable — ㄱ, 가, 각 are three states of one character — so without a
+    // visible preedit there is nothing on screen between pressing a key and
+    // committing a syllable.
+    this.ime?.update(event.data ?? '');
   }
 
   /**
@@ -684,6 +701,7 @@ export class InputHandler {
   private handleCompositionEnd(event: CompositionEvent): void {
     if (this.isDisposed) return;
     this.isComposing = false;
+    this.ime?.end();
 
     const data = event.data;
     if (data && data.length > 0) {
