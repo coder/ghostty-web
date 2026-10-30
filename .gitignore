@@ -8,8 +8,10 @@ dist/
 ghostty-vt.wasm
 ghostty-vt-legacy.wasm
 
-# Regression evidence and isolated reference build output
+# Playwright output
 /test-results/
 /playwright-report/
 /playwright-report-*/
-/.regression-reference/
+
+# Local planning and review notes
+/docs/research/

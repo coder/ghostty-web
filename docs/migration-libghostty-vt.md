@@ -540,12 +540,11 @@ inside one cell.
 ## Integration review follow-up
 
 The initial four-lane review, a fresh completed four-reviewer follow-up, and their
-resulting fixes are recorded in
-[the integration review report](./integration-review.md), including bounded hyperlink
+resulting fixes covered bounded hyperlink
 identity storage, a pinned-upstream spacer-cache workaround, allocation/hold error
 cleanup, key ownership and modifier reporting, read-only wheel input, resize ordering,
-and legacy repaint corrections. The report also records the historical default-color
-query/render mismatch that remains a compatibility decision, not a claimed fix.
+and legacy repaint corrections. The historical default-color query/render mismatch
+remains a compatibility decision, not a claimed fix.
 
 ## Approved output and default-background policies
 
