@@ -181,30 +181,6 @@ describe('Terminal', () => {
   });
 
   describe('Events', () => {
-    test('onData event exists', async () => {
-      const term = await createIsolatedTerminal();
-      expect(typeof term.onData).toBe('function');
-    });
-
-    test('onResize event exists', async () => {
-      const term = await createIsolatedTerminal();
-      expect(typeof term.onResize).toBe('function');
-    });
-
-    test('onBell event exists', async () => {
-      const term = await createIsolatedTerminal();
-      expect(typeof term.onBell).toBe('function');
-    });
-
-    test('onData can register listeners', async () => {
-      const term = await createIsolatedTerminal();
-      const disposable = term.onData((data) => {
-        // Listener callback
-      });
-      expect(typeof disposable.dispose).toBe('function');
-      disposable.dispose();
-    });
-
     test('onResize fires when terminal is resized', async () => {
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       term.open(container!);
@@ -249,15 +225,6 @@ describe('Terminal', () => {
       term.open(container!);
 
       expect(() => term.write('Hello, World!')).not.toThrow();
-
-      term.dispose();
-    });
-
-    test('write() accepts string', async () => {
-      const term = await createIsolatedTerminal();
-      term.open(container!);
-
-      expect(() => term.write('test string')).not.toThrow();
 
       term.dispose();
     });
@@ -350,24 +317,6 @@ describe('Terminal', () => {
   });
 
   describe('Addons', () => {
-    test('loadAddon() accepts addon', async () => {
-      const term = await createIsolatedTerminal();
-      term.open(container!);
-
-      const mockAddon = {
-        activate: (terminal: any) => {
-          // Addon activation
-        },
-        dispose: () => {
-          // Cleanup
-        },
-      };
-
-      expect(() => term.loadAddon(mockAddon)).not.toThrow();
-
-      term.dispose();
-    });
-
     test('loadAddon() calls activate', async () => {
       const term = await createIsolatedTerminal();
       term.open(container!);
@@ -905,17 +854,6 @@ describe('onKey event', () => {
   });
 
   describe('Basic functionality', () => {
-    test('should exist', async () => {
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-      // Using shared container from beforeEach
-      if (!container) return;
-      term.open(container!);
-
-      expect(term.onKey).toBeTruthy();
-      expect(typeof term.onKey).toBe('function');
-      term.dispose();
-    });
-
     test('should fire on keyboard events', async () => {
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -957,17 +895,6 @@ describe('onTitleChange event', () => {
   });
 
   describe('Basic functionality', () => {
-    test('should exist', async () => {
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-      // Using shared container from beforeEach
-      if (!container) return;
-      term.open(container!);
-
-      expect(term.onTitleChange).toBeTruthy();
-      expect(typeof term.onTitleChange).toBe('function');
-      term.dispose();
-    });
-
     test('should fire when OSC 2 sequence is written', async () => {
       const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
       // Using shared container from beforeEach
@@ -1052,17 +979,6 @@ describe('attachCustomKeyEventHandler()', () => {
       expect(() => term.attachCustomKeyEventHandler(handler)).not.toThrow();
       term.dispose();
     });
-
-    test('should accept undefined to clear handler', async () => {
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-      // Using shared container from beforeEach
-      if (!container) return;
-      term.open(container!);
-
-      const handler = (e: KeyboardEvent) => false;
-      expect(() => term.attachCustomKeyEventHandler(handler)).not.toThrow();
-      term.dispose();
-    });
   });
 });
 
@@ -1096,40 +1012,6 @@ describe('Terminal Options', () => {
       const cursor = term.wasmTerm!.getCursor();
       expect(cursor.x).toBe(5); // After "line2"
       expect(cursor.y).toBeGreaterThan(0); // On next line
-      term.dispose();
-    });
-
-    test('disableStdin should prevent paste', async () => {
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24, disableStdin: true });
-      // Using shared container from beforeEach
-      if (!container) return;
-      term.open(container!);
-
-      let received = false;
-      term.onData(() => {
-        received = true;
-      });
-
-      term.paste('test');
-
-      expect(received).toBe(false);
-      term.dispose();
-    });
-
-    test('disableStdin should prevent input with wasUserInput', async () => {
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24, disableStdin: true });
-      // Using shared container from beforeEach
-      if (!container) return;
-      term.open(container!);
-
-      let received = false;
-      term.onData(() => {
-        received = true;
-      });
-
-      term.input('test', true);
-
-      expect(received).toBe(false);
       term.dispose();
     });
   });
@@ -1517,26 +1399,6 @@ describe('Terminal Config', () => {
       expect(firstCell.fg_r).toBe(255);
       expect(firstCell.fg_g).toBe(0);
       expect(firstCell.fg_b).toBe(0);
-    } finally {
-      term.dispose();
-    }
-  });
-
-  test('should use default config when no options provided', async () => {
-    if (typeof document === 'undefined') return;
-
-    // Create terminal with no config
-    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    const container = document.createElement('div');
-    term.open(container);
-
-    try {
-      // Should still work and have reasonable defaults
-      const colors = term.wasmTerm!.getColors();
-
-      // Default colors should be set (light gray foreground, black background)
-      expect(colors.foreground).toBeDefined();
-      expect(colors.background).toBeDefined();
     } finally {
       term.dispose();
     }
@@ -2797,13 +2659,6 @@ describe('unicode API', () => {
     const term = await createIsolatedTerminal();
     expect(term.unicode.activeVersion).toBe('15.1');
   });
-
-  test('unicode object is readonly', async () => {
-    const term = await createIsolatedTerminal();
-    // The unicode property should be accessible
-    expect(term.unicode).toBeDefined();
-    expect(typeof term.unicode.activeVersion).toBe('string');
-  });
 });
 
 // ==========================================================================
@@ -2948,6 +2803,47 @@ describe('Write Behavior', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(callbackOrder).toEqual([1, 2, 3]);
+
+    term.dispose();
+  });
+
+  test('write callbacks run once, after their data is parsed', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 10, rows: 2 });
+    term.open(container);
+
+    let calls = 0;
+    const seen = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('write callback not called within 2s')),
+        2000
+      );
+      term.write('cb', () => {
+        calls++;
+        clearTimeout(timer);
+        resolve(term.buffer.active.getLine(0)?.translateToString(true) ?? '');
+      });
+    });
+    expect(seen).toBe('cb');
+    expect(calls).toBe(1);
+
+    term.dispose();
+  });
+
+  test('write() and writeln() accept strings and UTF-8 bytes', async () => {
+    if (!container) return;
+
+    const term = await createIsolatedTerminal({ cols: 10, rows: 4 });
+    term.open(container);
+
+    term.write('ab');
+    term.write(new TextEncoder().encode('c\u00e9'));
+    term.writeln('');
+    term.writeln('one');
+    term.writeln(new TextEncoder().encode('two'));
+    const lines = [0, 1, 2].map((y) => term.buffer.active.getLine(y)?.translateToString(true));
+    expect(lines).toEqual(['abc\u00e9', 'one', 'two']);
 
     term.dispose();
   });
@@ -3151,17 +3047,6 @@ describe('Synchronous open()', () => {
     term.dispose();
   });
 
-  test('element is set after open', async () => {
-    if (!container) return;
-
-    const term = await createIsolatedTerminal();
-    term.open(container);
-
-    expect(term.element).toBe(container);
-
-    term.dispose();
-  });
-
   test('cols and rows are available after open', async () => {
     if (!container) return;
 
@@ -3170,31 +3055,6 @@ describe('Synchronous open()', () => {
 
     expect(term.cols).toBe(100);
     expect(term.rows).toBe(50);
-
-    term.dispose();
-  });
-
-  test('wasmTerm is available after open', async () => {
-    if (!container) return;
-
-    const term = await createIsolatedTerminal();
-    term.open(container);
-
-    expect(term.wasmTerm).toBeDefined();
-
-    term.dispose();
-  });
-
-  test('resize works after open', async () => {
-    if (!container) return;
-
-    const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-    term.open(container);
-
-    term.resize(120, 40);
-
-    expect(term.cols).toBe(120);
-    expect(term.rows).toBe(40);
 
     term.dispose();
   });

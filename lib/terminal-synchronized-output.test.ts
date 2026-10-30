@@ -23,9 +23,7 @@ const text = (line: GhosttyCell[]) =>
     .trimEnd();
 
 async function session(body: (s: Session) => void | Promise<void>): Promise<void> {
-  const ghostty = await Ghostty.load();
-  expect(ghostty.backend).toBe('libghostty-vt');
-  const term = new Terminal({ ghostty, cols: 12, rows: 3, scrollback: 100 });
+  const term = new Terminal({ ghostty: await Ghostty.load(), cols: 12, rows: 3, scrollback: 100 });
   const container = document.createElement('div');
   document.body.appendChild(container);
   try {

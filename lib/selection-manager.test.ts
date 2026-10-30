@@ -59,34 +59,6 @@ describe('SelectionManager', () => {
     }
   });
 
-  describe('Construction', () => {
-    test('creates without errors', async () => {
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-      expect(term).toBeDefined();
-    });
-  });
-
-  describe('API', () => {
-    test('has required public methods', async () => {
-      if (!container) return;
-
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-      term.open(container);
-
-      const selMgr = (term as any).selectionManager;
-      expect(typeof selMgr.getSelection).toBe('function');
-      expect(typeof selMgr.hasSelection).toBe('function');
-      expect(typeof selMgr.clearSelection).toBe('function');
-      expect(typeof selMgr.selectAll).toBe('function');
-      expect(typeof selMgr.getSelectionCoords).toBe('function');
-      expect(typeof selMgr.dispose).toBe('function');
-      expect(typeof selMgr.getDirtySelectionRows).toBe('function');
-      expect(typeof selMgr.clearDirtySelectionRows).toBe('function');
-
-      term.dispose();
-    });
-  });
-
   describe('Selection with absolute coordinates', () => {
     test('hasSelection returns false when no selection', async () => {
       if (!container) return;
@@ -572,29 +544,6 @@ describe('SelectionManager', () => {
       term.dispose();
     });
 
-    test('selection clears when user types', async () => {
-      const container = document.createElement('div');
-      Object.defineProperty(container, 'clientWidth', { value: 800 });
-      Object.defineProperty(container, 'clientHeight', { value: 480 });
-      if (!container) return;
-
-      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
-      term.open(container);
-
-      term.write('Hello World\r\n');
-
-      const selMgr = (term as any).selectionManager;
-      selMgr.selectLines(0, 0);
-      expect(selMgr.hasSelection()).toBe(true);
-
-      // Simulate the input callback clearing selection
-      // The actual input handler calls clearSelection before firing data
-      selMgr.clearSelection();
-      expect(selMgr.hasSelection()).toBe(false);
-
-      term.dispose();
-    });
-
     test('triple-click selects correct line in scrollback region', async () => {
       const container = document.createElement('div');
       Object.defineProperty(container, 'clientWidth', { value: 800 });
@@ -634,4 +583,261 @@ describe('SelectionManager', () => {
       term.dispose();
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// The terminal owns the selection: it stays on its content through output,
+// pruning, reflow and ED3, and Ghostty's formatter produces the copy text. The
+// public API keeps ghostty-web's row mapping: select() rows are viewportY + row,
+// selectLines() rows are viewport rows, selectAll() is the whole buffer.
+// ---------------------------------------------------------------------------
+
+const line = (i: number) => `R${String(i).padStart(5, '0')}`;
+const lines = (from: number, to: number) => {
+  let out = '';
+  for (let i = from; i < to; i++) out += `${line(i)}\r\n`;
+  return out;
+};
+
+async function withTerminal(
+  options: { cols: number; rows: number; scrollback?: number },
+  body: (term: Terminal, canvas: HTMLCanvasElement) => void | Promise<void>
+): Promise<void> {
+  const term = await createIsolatedTerminal(options);
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  try {
+    term.open(host);
+    await body(term, host.querySelector('canvas')!);
+  } finally {
+    term.dispose();
+    host.remove();
+  }
+}
+
+/** A primary-button mouse event at canvas offset (x, y). */
+function mouseAt(type: string, target: EventTarget, x: number, y: number): void {
+  const event = new MouseEvent(type, { bubbles: true, button: 0, detail: 1 });
+  Object.defineProperty(event, 'offsetX', { value: x });
+  Object.defineProperty(event, 'offsetY', { value: y });
+  target.dispatchEvent(event);
+}
+
+/** A primary-button mouse event at the centre of a cell. */
+function mouseAtCell(term: Terminal, type: string, target: EventTarget, col: number, row: number) {
+  const { width, height } = term.renderer!.getMetrics();
+  mouseAt(type, target, (col + 0.5) * width, (row + 0.5) * height);
+}
+
+const bufferText = (term: Terminal, y: number) =>
+  term.buffer.active.getLine(y)!.translateToString(true);
+
+describe('Selection anchored to content', () => {
+  test('select() and selectLines() keep the established row mapping and stay on their content', () =>
+    withTerminal({ cols: 10, rows: 4 }, (term) => {
+      term.write(lines(0, 20)); // 17 history rows; the screen shows rows 17..20
+      term.scrollLines(-3); // the viewport shows rows 14..17
+      term.select(0, 0, 6);
+      expect(term.getSelection()).toBe(line(3));
+      term.select(4, 1, 9);
+      expect(term.getSelection()).toBe(`04\n${line(5).slice(0, 3)}`);
+      term.selectLines(2, 1);
+      expect(term.getSelection()).toBe(`${line(15)}\n${line(16)}`);
+      // Row arguments are clamped to the viewport height.
+      term.selectLines(0, 99);
+      expect(term.getSelection()).toBe([14, 15, 16, 17].map(line).join('\n'));
+      // The resolved rows stay anchored to their content as output arrives.
+      term.write(lines(20, 25));
+      expect(term.getSelection()).toBe([14, 15, 16, 17].map(line).join('\n'));
+    }));
+
+  test('getSelectionPosition reports viewport rows and follows the content', () =>
+    withTerminal({ cols: 20, rows: 4 }, (term) => {
+      term.write('alpha\r\nbravo\r\ncharlie');
+      term.select(0, 1, 5);
+      expect(term.getSelectionPosition()).toEqual({ start: { x: 0, y: 1 }, end: { x: 4, y: 1 } });
+      term.write('\r\none\r\ntwo\r\nthree');
+      // Output scrolled the selected row above the viewport (history row 1).
+      expect(term.getSelection()).toBe('bravo');
+      expect(term.getSelectionPosition()).toBeUndefined();
+      term.scrollLines(-2);
+      expect(term.getSelectionPosition()).toEqual({ start: { x: 0, y: 1 }, end: { x: 4, y: 1 } });
+    }));
+
+  test('copy text unwraps soft wraps and keeps wide characters and graphemes whole', () =>
+    withTerminal({ cols: 10, rows: 4 }, (term) => {
+      term.write('\u4e2d\u6587e\u0301x abcdefghij\r\n');
+      term.select(0, 0, 20);
+      expect(term.getSelection()).toBe('\u4e2d\u6587e\u0301x abcdefghij');
+      // Ending on the spacer of a wide character includes the character once.
+      term.select(0, 0, 4);
+      expect(term.getSelection()).toBe('\u4e2d\u6587');
+    }));
+
+  test('selectAll selects the whole buffer including history and always fires', () =>
+    withTerminal({ cols: 20, rows: 4 }, (term) => {
+      let events = 0;
+      term.onSelectionChange(() => events++);
+      term.selectAll();
+      // A blank buffer is still selected; its copy text is empty.
+      expect([term.hasSelection(), term.getSelection(), events]).toEqual([true, '', 1]);
+      for (let i = 0; i < 12; i++) term.write(`line${i}\r\n`);
+      term.write('line12');
+      term.selectAll();
+      expect(term.getSelectionPosition()).toEqual({ start: { x: 0, y: 0 }, end: { x: 19, y: 3 } });
+      const text = term.getSelection().split('\n');
+      expect([text[0], text.at(-1), text.length, events]).toEqual(['line0', 'line12', 13, 2]);
+    }));
+
+  test('a selection follows its content through reflow', () =>
+    withTerminal({ cols: 20, rows: 4 }, (term) => {
+      term.write('0123456789abcdefghij\r\nsecond\r\nthird');
+      term.select(0, 1, 6);
+      expect(term.getSelection()).toBe('second');
+      term.resize(10, 4);
+      expect(bufferText(term, 2)).toBe('second');
+      expect(term.getSelection()).toBe('second');
+    }));
+
+  test('a drag anchor stays on its content when history is pruned mid-drag', () =>
+    withTerminal({ cols: 80, rows: 8, scrollback: 100 }, (term, canvas) => {
+      term.write(lines(0, 678));
+      const anchored = term
+        .wasmTerm!.getLine(2)!
+        .map((c) => String.fromCodePoint(c.codepoint || 32));
+      mouseAtCell(term, 'mousedown', canvas, 0, 2);
+      mouseAtCell(term, 'mousemove', canvas, 3, 3);
+      // Output prunes the oldest history page; absolute row indices shift.
+      term.write(lines(678, 700));
+      mouseAtCell(term, 'mousemove', canvas, 5, 7);
+      mouseAtCell(term, 'mouseup', document, 5, 7);
+      const text = term.getSelection().split('\n');
+      expect(text[0]).toBe(anchored.join('').trimEnd());
+      expect(text.at(-1)).toBe(line(699).slice(0, 6));
+    }));
+
+  test('endpoints on pruned or erased rows move to the oldest retained row', () =>
+    // 80 columns with a 100-line limit: the first page holds ~670 rows and is
+    // pruned as a whole once the history grows past it.
+    withTerminal({ cols: 80, rows: 8, scrollback: 100 }, (term, canvas) => {
+      /** Drags from history row 1, column 2 to the last written screen row. */
+      const dragFromHistory = () => {
+        term.scrollToTop();
+        mouseAtCell(term, 'mousedown', canvas, 2, 1);
+        mouseAtCell(term, 'mousemove', canvas, 3, 2);
+        term.scrollToBottom();
+        mouseAtCell(term, 'mousemove', canvas, 5, 6);
+        mouseAtCell(term, 'mouseup', document, 5, 6);
+      };
+      term.write(lines(0, 678));
+      dragFromHistory();
+      expect(term.getSelection().split('\n')[0]).toBe('0001');
+      expect(term.getSelection().split('\n').at(-1)).toBe(line(677));
+
+      term.write(lines(678, 700));
+      const oldest = bufferText(term, 0);
+      expect(Number(oldest.slice(1))).toBeGreaterThan(1); // the start row is gone
+      let text = term.getSelection().split('\n');
+      expect([text[0], text.at(-1)]).toEqual([oldest, line(677)]);
+
+      // ED3 erases the history: the start moves to the top screen row.
+      dragFromHistory();
+      term.write('\x1b[3J');
+      expect(term.getScrollbackLength()).toBe(0);
+      text = term.getSelection().split('\n');
+      expect([text[0], text.at(-1)]).toEqual([line(693), line(699)]);
+
+      // Both endpoints pruned: one cell at the oldest row remains.
+      term.write(lines(700, 1000));
+      term.scrollToTop();
+      term.selectLines(1, 2);
+      expect(term.getSelection()).toBe(`${bufferText(term, 1)}\n${bufferText(term, 2)}`);
+      term.write(lines(1000, 1700));
+      expect(term.getSelection()).toBe('R');
+    }));
+
+  test('a selection moved by output marks its previously painted row for redraw', () =>
+    withTerminal({ cols: 20, rows: 4 }, (term) => {
+      const manager = (
+        term as unknown as {
+          selectionManager: {
+            getSelectionCoords(): unknown;
+            getDirtySelectionRows(): Set<number>;
+            clearDirtySelectionRows(): void;
+          };
+        }
+      ).selectionManager;
+      term.write('a\r\nb\r\nc\r\nd');
+      term.select(0, 3, 1);
+      manager.getSelectionCoords();
+      manager.clearDirtySelectionRows();
+      term.write('\r\nnext');
+      expect(manager.getSelectionCoords()).toEqual({
+        startCol: 0,
+        startRow: 2,
+        endCol: 0,
+        endRow: 2,
+      });
+      expect([...manager.getDirtySelectionRows()]).toEqual([3]);
+    }));
+
+  test('bell and title listeners see the selection as of the end of the write', () =>
+    withTerminal({ cols: 20, rows: 4 }, (term) => {
+      term.write('alpha\r\nbravo');
+      term.selectLines(1, 1);
+      const seen: unknown[] = [];
+      term.onBell(() => seen.push(['bell', term.getSelectionPosition(), term.getSelection()]));
+      term.onTitleChange(() => seen.push(['title', term.hasSelection()]));
+      // Here the selected row has scrolled to the top...
+      term.write('\r\none\r\ntwo\r\nthree\x07');
+      // ...and here the alternate screen has dropped the selection.
+      term.write('\x1b[?1049h\x1b]2;t\x07');
+      expect(seen).toEqual([
+        ['bell', { start: { x: 0, y: 0 }, end: { x: 19, y: 0 } }, 'bravo'],
+        ['title', false],
+      ]);
+    }));
+
+  test('switching screens, reset, clearSelection and dispose leave no selection', () =>
+    withTerminal({ cols: 10, rows: 4 }, (term) => {
+      const wasm = term.wasmTerm!;
+      term.write('hello');
+      term.select(0, 0, 5);
+      term.write('\x1b[?1049h');
+      expect([term.hasSelection(), term.getSelection()]).toEqual([false, '']);
+      term.write('\x1b[?1049l');
+      expect(term.hasSelection()).toBe(false);
+      term.select(0, 0, 5);
+      term.reset();
+      expect([term.hasSelection(), wasm.getSelectionRange()]).toEqual([false, null]);
+      term.write('again');
+      term.select(0, 0, 5);
+      term.clearSelection();
+      expect(wasm.getSelectionRange()).toBeNull();
+      term.select(0, 0, 5);
+      (term as unknown as { selectionManager: { dispose(): void } }).selectionManager.dispose();
+      expect(wasm.getSelectionRange()).toBeNull();
+    }));
+});
+
+describe('Auto-scroll', () => {
+  test('a near-edge drag on a viewport without history keeps its selected cells', () =>
+    withTerminal({ cols: 30, rows: 6 }, async (term, canvas) => {
+      term.write('alpha one\r\nbravo two\r\ncharlie three');
+      const { width, height } = term.renderer!.getMetrics();
+      const setHeight = (value: number) =>
+        Object.defineProperty(canvas, 'clientHeight', { configurable: true, value });
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 75)); // > one interval
+      mouseAt('mousedown', canvas, 3.5 * width, 1.5 * height);
+      // Row 1, inside the 30px top edge zone, then inside the bottom one: each
+      // starts auto-scroll, which is clamped and must not move the endpoint.
+      for (const canvasHeight of [6 * height, 2 * height]) {
+        setHeight(canvasHeight);
+        mouseAt('mousemove', canvas, 7.5 * width, height + 1);
+        await tick();
+        expect(term.getViewportY()).toBe(0);
+        expect(term.getSelection()).toBe('vo tw');
+      }
+      mouseAt('mouseup', document, 7.5 * width, height + 1);
+    }));
 });

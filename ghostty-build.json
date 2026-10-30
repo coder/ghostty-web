@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for Ghostty WASM builds (scripts/build-wasm.sh, scripts/build-legacy-wasm.sh). Moving a pin: change ghosttyCommit, set wasmSha256 to null, build once with --allow-unverified (pin discovery only, never into the repo root, not for release), review, then record the printed sha256. A null wasmSha256 means unverified: normal builds refuse it.",
+  "$comment": "Single source of truth for the Ghostty WASM build (scripts/build-wasm.sh). Moving a pin: change ghosttyCommit, set wasmSha256 to null, build once with --allow-unverified (pin discovery only, never into the repo root, not for release), review, then record the printed sha256. A null wasmSha256 means unverified: normal builds refuse it.",
   "schema": 1,
   "gitUrl": "https://github.com/ghostty-org/ghostty",
   "targets": {
@@ -9,27 +9,11 @@
       "zigVersion": "0.16.0",
       "zigEnv": "ZIG_0_16_BIN",
       "buildArgs": ["-Demit-lib-vt", "-Dtarget=wasm32-freestanding", "-Doptimize=ReleaseSmall"],
-      "patch": null,
-      "patchSha256": null,
       "artifact": "ghostty-vt.wasm",
       "wasmSha256": "8b218c0c750fc74e63f3ebf4005fb6967c7b1fba2f2a84d19a08bd4ca5812f49",
       "maxWasmBytes": 1048576,
       "envPrefix": "GHOSTTY_REFERENCE",
       "envFile": "reference.env"
-    },
-    "legacy": {
-      "description": "Pre-migration engine: 5714ed07 + patches/legacy/ghostty-wasm-api.patch (custom ABI, page-zeroing backport of 420de124f).",
-      "ghosttyCommit": "5714ed07a1012573261b7b7e3ed2add9c1504496",
-      "zigVersion": "0.15.2",
-      "zigEnv": "ZIG_0_15_BIN",
-      "buildArgs": ["lib-vt", "-Dtarget=wasm32-freestanding", "-Doptimize=ReleaseSmall"],
-      "patch": "patches/legacy/ghostty-wasm-api.patch",
-      "patchSha256": "f2cebf119983c454d0fee20a465c389e11334466bf62a77d60600b08523dfcb5",
-      "artifact": "ghostty-vt-legacy.wasm",
-      "wasmSha256": "0789394612a79e22abc37ecf952e360aecfa7ec737d416ef3d664d1b9277fdbd",
-      "maxWasmBytes": 524288,
-      "envPrefix": "GHOSTTY_LEGACY",
-      "envFile": "legacy.env"
     }
   }
 }

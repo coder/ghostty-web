@@ -1,6 +1,6 @@
 # Vendored test font
 
-The browser regression lane renders with exactly one pinned font so pixel probes do not depend on
+The browser tests render with exactly one pinned font so pixel probes do not depend on
 whatever fonts the CI image or a developer machine happens to have.
 
 | Field        | Value                                                                                                                                                      |

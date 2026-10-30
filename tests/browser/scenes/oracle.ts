@@ -1,5 +1,5 @@
 /**
- * Independent glyph and colour oracles for the option/appearance lane.
+ * Independent glyph and colour oracles for the option and appearance tests.
  *
  * A glyph probe draws the expected text with the requested font straight onto
  * a fresh canvas (harness `glyphOracle`, no terminal code) and compares the

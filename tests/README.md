@@ -20,8 +20,7 @@ bun run test:package               # packed-package consumers
 Each file in `tests/integration/` is an ordinary `bun:test` file. Shared helpers live in
 `tests/integration/support/`: `terminal.ts` opens terminals on a fresh WASM instance and
 provides input, observation and resource-tracking helpers; `payloads.ts` holds generated
-input; `native-reference.ts` drives the raw libghostty-vt C ABI so a few tests (and
-`lib/native-viewport.test.ts`) can compare ghostty-web against it.
+input.
 
 ## Browser tests
 
@@ -31,5 +30,5 @@ Specs are `tests/browser/*.pw.ts` (the suffix keeps them out of `bun test`). The
 per terminal. See [browser/README.md](browser/README.md) and
 [browser/scenes/README.md](browser/scenes/README.md) for pixel comparison and visual baselines.
 
-Tests target the shipping engine (`ghostty-vt.wasm`). Known limitations are documented in
+Tests run against the pinned `ghostty-vt.wasm`. Known limitations are documented in
 [the migration notes](../docs/migration-libghostty-vt.md) rather than kept as failing tests.

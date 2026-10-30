@@ -112,20 +112,6 @@ describe('FitAddon', () => {
   // Integration Tests
   // ==========================================================================
 
-  test('full workflow: activate → fit → observeResize → dispose', () => {
-    // Activate
-    addon.activate(terminal as any);
-
-    // Initial fit (no-op without element)
-    addon.fit();
-
-    // Setup auto-resize (no-op without element)
-    addon.observeResize();
-
-    // Dispose
-    addon.dispose();
-  });
-
   test('fit() after dispose does nothing', () => {
     addon.activate(terminal as any);
     addon.dispose();
@@ -137,28 +123,6 @@ describe('FitAddon', () => {
 
     expect(terminal.cols).toBe(originalCols);
     expect(terminal.rows).toBe(originalRows);
-  });
-
-  test('fit() prevents feedback loops by tracking dimensions', () => {
-    addon.activate(terminal as any);
-
-    // Track how many times resize is called
-    let resizeCallCount = 0;
-    const originalResize = terminal.resize.bind(terminal);
-    terminal.resize = (cols: number, rows: number) => {
-      resizeCallCount++;
-      originalResize(cols, rows);
-    };
-
-    // First fit() should call resize
-    addon.fit();
-    expect(resizeCallCount).toBe(0); // No element, so no resize
-
-    // Calling fit() multiple times without dimension change should not resize again
-    addon.fit();
-    addon.fit();
-    addon.fit();
-    expect(resizeCallCount).toBe(0); // Still 0 because no element
   });
 });
 

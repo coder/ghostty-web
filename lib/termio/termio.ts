@@ -3,8 +3,8 @@
  * 246f7028. Parsing is native. Copied effects are dispatched only after parsing,
  * in FIFO order, never by reentering vt_write from a native callback.
  */
-import type { NativeHostEvent } from '../backends/types';
 import type { GhosttyTerminal } from '../ghostty';
+import type { NativeHostEvent } from '../vt/types';
 
 const FOCUS_REPORT = Object.freeze({ type: 'focus-report' as const });
 type Effect = NativeHostEvent | typeof FOCUS_REPORT;
@@ -31,21 +31,11 @@ export class Termio {
   ) {}
 
   processOutput(data: string | Uint8Array): void {
-    const native = this.terminal.backend === 'libghostty-vt';
-    const focusWasEnabled = native && this.terminal.hasFocusEvents();
+    const focusWasEnabled = this.terminal.hasFocusEvents();
     this.terminal.write(data);
-    if (native) {
-      this.collect();
-      if (!focusWasEnabled && this.terminal.hasFocusEvents()) this.queue.push(FOCUS_REPORT);
-      this.dispatch();
-    } else {
-      this.flush();
-      if (
-        (typeof data === 'string' && data.includes('\x07')) ||
-        (data instanceof Uint8Array && data.includes(7))
-      )
-        this.host.bell();
-    }
+    this.collect();
+    if (!focusWasEnabled && this.terminal.hasFocusEvents()) this.queue.push(FOCUS_REPORT);
+    this.dispatch();
   }
 
   suspend(): void {
@@ -61,19 +51,8 @@ export class Termio {
 
   flush(): void {
     if (this.closed || this.host.disposed()) return;
-    if (this.terminal.backend === 'libghostty-vt') {
-      this.collect();
-      this.dispatch();
-      return;
-    }
-    // Legacy keeps replies in its native response buffer until resize observers
-    // finish, just as native dispatch keeps copied effects queued while suspended.
-    if (this.suspended) return;
-    while (!this.closed && !this.host.disposed()) {
-      const response = this.terminal.readResponse();
-      if (response === null) break;
-      if (this.host.inputEnabled()) this.host.data(response);
-    }
+    this.collect();
+    this.dispatch();
   }
 
   private dispatch(): void {

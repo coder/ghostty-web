@@ -183,10 +183,10 @@ try {
     console.log(`PASS packed ${mode} browser initialization, WASM loading and public buffer API`);
   }
   passed = true;
-  console.log('Package regression: 6 checks passed');
+  console.log('Package checks: 6 passed');
 } finally {
   await browser?.close();
   if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
   if (passed) await rm(work, { recursive: true, force: true });
-  else console.error(`Package regression artifacts retained at ${work}`);
+  else console.error(`Package check artifacts retained at ${work}`);
 }

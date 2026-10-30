@@ -10,4 +10,4 @@ ghostty/
 test-results/
 playwright-report/
 playwright-report-*/
-.regression-reference/
+.wasm-build/

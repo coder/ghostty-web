@@ -7,29 +7,16 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Ghostty, type GhosttyTerminal, type ITheme, Terminal } from '../../../lib/index';
-import type { GhosttyCell, GhosttyTerminalConfig } from '../../../lib/types';
 
-export const NATIVE_WASM_PATH = fileURLToPath(new URL('../../../ghostty-vt.wasm', import.meta.url));
+const NATIVE_WASM_PATH = fileURLToPath(new URL('../../../ghostty-vt.wasm', import.meta.url));
 
 let wasmModule: WebAssembly.Module | undefined;
-const instances = new WeakMap<Ghostty, WebAssembly.Instance>();
 
 /** A brand-new WASM instance (own linear memory) wrapped in the public `Ghostty` class. */
 export function freshGhostty(): Ghostty {
   wasmModule ??= new WebAssembly.Module(readFileSync(NATIVE_WASM_PATH));
   const instance = new WebAssembly.Instance(wasmModule, {});
-  const ghostty = new Ghostty(instance);
-  instances.set(ghostty, instance);
-  return ghostty;
-}
-
-/** Linear memory of an instance created by freshGhostty(). */
-export function wasmMemory(ghostty: Ghostty): WebAssembly.Memory {
-  const memory = instances.get(ghostty)?.exports.memory;
-  if (!(memory instanceof WebAssembly.Memory)) {
-    throw new Error('wasmMemory() needs a Ghostty created by freshGhostty()');
-  }
-  return memory;
+  return new Ghostty(instance);
 }
 
 /** Split `bytes` at the given offsets (out-of-range and duplicate offsets are ignored). */
@@ -53,80 +40,6 @@ const encoder = new TextEncoder();
 
 export function utf8(data: string | Uint8Array): Uint8Array {
   return typeof data === 'string' ? encoder.encode(data) : data;
-}
-
-export function hex(data: string | Uint8Array): string {
-  return [...utf8(data)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** One hex string per emitted chunk, as the transport would see it (UTF-8 encoded). */
-export function hexChunks(chunks: readonly (string | Uint8Array)[]): string[] {
-  return chunks.map(hex);
-}
-
-// ---------------------------------------------------------------------------
-// Screen observation (GhosttyTerminal level)
-// ---------------------------------------------------------------------------
-
-export interface Observation {
-  lines: string[];
-  cursor: { x: number; y: number };
-}
-
-function cellText(term: GhosttyTerminal, y: number, x: number, cell: GhosttyCell): string {
-  if (cell.width === 0) return ''; // spacer cell of a wide character
-  if (cell.codepoint === 0) return ' ';
-  if (cell.grapheme_len > 0) return term.getGraphemeString(y, x);
-  return String.fromCodePoint(cell.codepoint);
-}
-
-/** Visible rows as text (wide-char spacers removed, trailing blanks trimmed). */
-export function visibleLines(term: GhosttyTerminal): string[] {
-  const lines: string[] = [];
-  for (let y = 0; y < term.rows; y++) {
-    const cells = term.getLine(y) ?? [];
-    lines.push(
-      cells
-        .map((cell, x) => cellText(term, y, x, cell))
-        .join('')
-        .replace(/ +$/, '')
-    );
-  }
-  return lines;
-}
-
-export function cellsOf(term: GhosttyTerminal, y: number): Array<[number, number]> {
-  return (term.getLine(y) ?? []).map((cell) => [cell.codepoint, cell.width]);
-}
-
-export function observe(term: GhosttyTerminal): Observation {
-  const cursor = term.getCursor();
-  return { lines: visibleLines(term), cursor: { x: cursor.x, y: cursor.y } };
-}
-
-export interface RawSession {
-  ghostty: Ghostty;
-  term: GhosttyTerminal;
-  write(data: string | Uint8Array): void;
-  observe(): Observation;
-  free(): void;
-}
-
-/** A bare `GhosttyTerminal` on a fresh (or explicitly shared) instance. */
-export function rawSession(
-  cols: number,
-  rows: number,
-  ghostty = freshGhostty(),
-  config?: GhosttyTerminalConfig
-): RawSession {
-  const term = ghostty.createTerminal(cols, rows, config);
-  return {
-    ghostty,
-    term,
-    write: (data) => term.write(data),
-    observe: () => observe(term),
-    free: () => term.free(),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -222,10 +135,7 @@ export function guarded<T>(body: () => T, teardown: () => void): T {
   return result;
 }
 
-export async function guardedAsync<T>(
-  body: () => T | Promise<T>,
-  teardown: () => void
-): Promise<T> {
+async function guardedAsync<T>(body: () => T | Promise<T>, teardown: () => void): Promise<T> {
   let result: T;
   try {
     result = await body();
@@ -270,59 +180,6 @@ export function bufferLines(term: Terminal, trimRight = true): string[] {
 export function keydown(target: EventTarget, init: KeyboardEventInit): KeyboardEvent {
   const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
   target.dispatchEvent(event);
-  return event;
-}
-
-export function keyup(target: EventTarget, init: KeyboardEventInit): KeyboardEvent {
-  const event = new KeyboardEvent('keyup', { bubbles: true, cancelable: true, ...init });
-  target.dispatchEvent(event);
-  return event;
-}
-
-/** Dispatch a mouse event at the centre (or `fraction`) of a 1-based cell. */
-export function mouseAt(
-  session: WebSession,
-  type: string,
-  col: number,
-  row: number,
-  init: MouseEventInit = {},
-  fraction = 0.5
-): MouseEvent {
-  const renderer = (
-    session.term as unknown as { renderer: { charWidth: number; charHeight: number } }
-  ).renderer;
-  const event = new MouseEvent(type, {
-    clientX: (col - 1 + fraction) * renderer.charWidth,
-    clientY: (row - 1 + 0.5) * renderer.charHeight,
-    bubbles: true,
-    cancelable: true,
-    ...init,
-  });
-  session.container.dispatchEvent(event);
-  return event;
-}
-
-export function wheelAt(session: WebSession, col: number, row: number, deltaY: number): WheelEvent {
-  const renderer = (
-    session.term as unknown as { renderer: { charWidth: number; charHeight: number } }
-  ).renderer;
-  const canvas = (session.term as unknown as { canvas: HTMLCanvasElement }).canvas;
-  const event = new WheelEvent('wheel', {
-    clientX: (col - 1 + 0.5) * renderer.charWidth,
-    clientY: (row - 1 + 0.5) * renderer.charHeight,
-    deltaY,
-    deltaMode: 0,
-    bubbles: true,
-    cancelable: true,
-  });
-  // Happy DOM's WheelEvent omits MouseEventInit coordinates in this version.
-  // Real browsers inherit these fields; supply them so the fixture reaches the
-  // same canvas cell instead of testing an undefined/NaN pointer position.
-  Object.defineProperties(event, {
-    clientX: { value: (col - 1 + 0.5) * renderer.charWidth },
-    clientY: { value: (row - 1 + 0.5) * renderer.charHeight },
-  });
-  canvas.dispatchEvent(event);
   return event;
 }
 

@@ -19,23 +19,14 @@ async function shapeAt(
   return { shape: cursorShape(image, grid, row, col, THEME.cursor), image, grid };
 }
 
-// Options-driven shapes (renderer).
-test('cursor.option-block', async ({ harness }) => {
-  const { shape, image } = await shapeAt(harness, 'block', '', 0, 0);
-  await expectProbe('block-shape', shape, 'block', image);
+test('the cursorStyle option draws a block, bar or underline cursor', async ({ harness }) => {
+  for (const style of ['block', 'bar', 'underline'] as const) {
+    const { shape, image } = await shapeAt(harness, style, '', 0, 0);
+    await expectProbe(`${style}-shape`, shape, style, image);
+  }
 });
 
-test('cursor.option-bar', async ({ harness }) => {
-  const { shape, image } = await shapeAt(harness, 'bar', '', 0, 0);
-  await expectProbe('bar-shape', shape, 'bar', image);
-});
-
-test('cursor.option-underline', async ({ harness }) => {
-  const { shape, image } = await shapeAt(harness, 'underline', '', 0, 0);
-  await expectProbe('underline-shape', shape, 'underline', image);
-});
-
-test('cursor.moves-with-output', async ({ harness }) => {
+test('the cursor moves with output and leaves no trace behind', async ({ harness }) => {
   const { shape, image, grid } = await shapeAt(harness, 'block', 'ab', 0, 2);
   await expectProbe('cursor-at-new-position', shape, 'block', image);
   await expectProbe(
@@ -46,18 +37,17 @@ test('cursor.moves-with-output', async ({ harness }) => {
   );
 });
 
-// Application-driven shapes (DECSCUSR) and visibility (DECTCEM).
-test('cursor.decscusr-steady-bar', async ({ harness }) => {
-  const { shape, image } = await shapeAt(harness, 'block', '\x1b[6 q', 0, 0);
-  await expectProbe('decscusr-6-shape', shape, 'bar', image);
+test('DECSCUSR replaces the configured cursor shape', async ({ harness }) => {
+  for (const [sequence, expected] of [
+    ['\x1b[6 q', 'bar'],
+    ['\x1b[4 q', 'underline'],
+  ] as const) {
+    const { shape, image } = await shapeAt(harness, 'block', sequence, 0, 0);
+    await expectProbe(`decscusr-${expected}-shape`, shape, expected, image);
+  }
 });
 
-test('cursor.decscusr-steady-underline', async ({ harness }) => {
-  const { shape, image } = await shapeAt(harness, 'block', '\x1b[4 q', 0, 0);
-  await expectProbe('decscusr-4-shape', shape, 'underline', image);
-});
-
-test('review.runtime-cursor-style-erases-previous-shape', async ({ harness }) => {
+test('a runtime cursorStyle change erases the previous shape', async ({ harness }) => {
   const term = await harness.create({ cols: 10, rows: 3, cursorBlink: false });
   await term.writeAndSettle('cursor');
   await term.park();
@@ -71,13 +61,12 @@ test('review.runtime-cursor-style-erases-previous-shape', async ({ harness }) =>
   }
 });
 
-test('cursor.dectcem-hide-erases-cursor', async ({ harness }) => {
+test('hiding the cursor (DECTCEM) erases it in place', async ({ harness }) => {
   const { shape, image } = await shapeAt(harness, 'block', '\x1b[?25l', 0, 0);
   await expectProbe('hidden-cursor-shape', shape, 'none', image);
 });
 
-test('cursor.dectcem-hide-with-output-on-row', async ({ harness }) => {
-  // Control for the case above: when output also dirties the row, hiding works.
+test('a hidden cursor stays hidden while output moves it', async ({ harness }) => {
   const term = await harness.create({ cols: 6, rows: 2 });
   await term.writeAndSettle('\x1b[?25lab');
   const { image, grid } = await term.capture();

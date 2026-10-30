@@ -6,8 +6,26 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { Terminal as XtermTerminal } from '@xterm/headless';
+import type { ITerminalOptions } from './interfaces';
 import type { Terminal } from './terminal';
 import { createIsolatedTerminal } from './test-helpers';
+
+async function session(
+  options: Omit<ITerminalOptions, 'ghostty'>,
+  body: (term: Terminal) => void | Promise<void>
+): Promise<void> {
+  const term = await createIsolatedTerminal(options);
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  try {
+    term.open(host);
+    await body(term);
+  } finally {
+    term.dispose();
+    host.remove();
+  }
+}
 
 describe('Buffer API', () => {
   let term: Terminal | null = null;
@@ -36,26 +54,8 @@ describe('Buffer API', () => {
   });
 
   describe('BufferNamespace', () => {
-    test('should have buffer property', () => {
-      expect(term.buffer).toBeDefined();
-    });
-
-    test('should have active, normal, and alternate buffers', () => {
-      expect(term.buffer.active).toBeDefined();
-      expect(term.buffer.normal).toBeDefined();
-      expect(term.buffer.alternate).toBeDefined();
-    });
-
     test('active buffer should be normal by default', () => {
       expect(term.buffer.active.type).toBe('normal');
-    });
-
-    test('should switch to alternate buffer', () => {
-      // Enter alternate screen (smcup)
-      term.write('\x1b[?1049h');
-
-      // Active buffer should now be alternate
-      expect(term.buffer.active.type).toBe('alternate');
     });
 
     test('should switch back to normal buffer', () => {
@@ -163,15 +163,6 @@ describe('Buffer API', () => {
   });
 
   describe('BufferCell', () => {
-    test('should get cell from line', () => {
-      term.write('Hello');
-      const buffer = term.buffer.active;
-      const line = buffer.getLine(0);
-      const cell = line!.getCell(0);
-
-      expect(cell).toBeDefined();
-    });
-
     test('should return undefined for out of bounds cell', () => {
       term.write('Hello');
       const buffer = term.buffer.active;
@@ -416,6 +407,95 @@ describe('Buffer API', () => {
       expect(cell!.isBold()).toBe(1);
       expect(cell!.isItalic()).toBe(1);
       expect(cell!.isUnderline()).toBe(1);
+    });
+  });
+});
+
+describe('Buffer text', () => {
+  test('column extraction matches xterm while retaining the established trimRight policy', async () => {
+    for (const text of ['a\x1b[3Cb  ', 'e\u0301界x', 'a\u00a0\u3000', '\x1b[42m\x1b[2K']) {
+      await session({ cols: 16, rows: 3 }, async (term) => {
+        const oracle = new XtermTerminal({ cols: 16, rows: 3, allowProposedApi: true });
+        try {
+          await new Promise<void>((resolve) => oracle.write(text, resolve));
+          term.write(text);
+          const actual = term.buffer.active.getLine(0)!;
+          const expected = oracle.buffer.active.getLine(0)!;
+          for (const trim of [false, true]) {
+            for (const [start, end] of [
+              [0, 16],
+              [0, 2],
+              [2, 5],
+              [3, 9],
+              [6, 16],
+            ]) {
+              // The column oracle is xterm; ghostty-web's established trimRight
+              // also trims explicit whitespace, as pinned by the scene contracts.
+              const columns = expected.translateToString(false, start, end);
+              expect(actual.translateToString(trim, start, end)).toBe(
+                trim ? columns.trimEnd() : columns
+              );
+            }
+          }
+        } finally {
+          oracle.dispose();
+        }
+      });
+    }
+  });
+
+  test('getChars and translation retain full active-row graphemes after later writes', async () => {
+    await session({ cols: 16, rows: 3 }, (term) => {
+      term.write('e\u0301界');
+      const oldLine = term.buffer.active.getLine(0)!;
+      const oldCell = oldLine.getCell(0)!;
+      expect(oldCell.getChars()).toBe('e\u0301');
+      term.write('\r\x1b[2Knew');
+      expect(oldCell.getChars()).toBe('e\u0301');
+      expect(oldLine.translateToString(true)).toBe('e\u0301界');
+      expect(term.buffer.active.getLine(0)!.translateToString(true)).toBe('new');
+    });
+  });
+
+  test('history rows capture their own graphemes rather than the active screen', async () => {
+    await session({ cols: 16, rows: 3 }, (term) => {
+      term.write('e\u0301界\r\nsecond\r\nthird\r\nACTIVE');
+      expect(term.getScrollbackLength()).toBe(1);
+      const history = term.buffer.normal.getLine(0)!;
+      expect(history.getCell(0)!.getChars()).toBe('e\u0301');
+      expect(history.translateToString(true)).toBe('e\u0301界');
+      term.write('\r\nmore');
+      term.resize(10, 3);
+      expect(history.getCell(0)!.getChars()).toBe('e\u0301');
+      expect(history.translateToString(true)).toBe('e\u0301界');
+    });
+  });
+});
+
+describe('Buffer offsets', () => {
+  test('baseY and viewportY track history, scrolling, the alternate screen and reset', async () => {
+    await session({ cols: 20, rows: 4, scrollback: 1000 }, (term) => {
+      term.write(Array.from({ length: 30 }, (_, i) => `line ${i}\r\n`).join('') + 'PROMPT$ ');
+      const buffer = term.buffer.active;
+      expect(buffer.baseY).toBe(27);
+      expect(buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true)).toBe(
+        'PROMPT$'
+      );
+      term.scrollLines(-5);
+      expect(buffer.viewportY).toBe(22);
+      expect(buffer.getLine(buffer.viewportY)?.translateToString(true)).toBe('line 22');
+      term.viewportY = 5.75; // fractional offsets are floored
+      expect(buffer.viewportY).toBe(22);
+      term.scrollToTop();
+      expect(buffer.viewportY).toBe(0);
+      term.scrollToBottom();
+      expect(buffer.viewportY).toBe(buffer.baseY);
+      term.write('\x1b[?1049h');
+      expect([term.buffer.active.baseY, term.buffer.active.viewportY]).toEqual([0, 0]);
+      term.write('\x1b[?1049l');
+      expect(term.buffer.active.baseY).toBe(27);
+      term.reset();
+      expect([term.buffer.active.baseY, term.buffer.active.viewportY]).toEqual([0, 0]);
     });
   });
 });

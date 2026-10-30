@@ -1,5 +1,5 @@
 /**
- * Page-side harness for the browser regression lane (test-only; served by
+ * Page-side harness for the browser tests (test-only; served by
  * Vite from tests/browser/harness.html). It drives the real `Terminal`
  * through `Terminal.write` — no PTY, no demo page, no production hooks.
  *
@@ -32,7 +32,6 @@ interface Entry {
   host: HTMLElement;
   events: TerminalEvents;
   resizes: number;
-  viewportDecodes: number;
 }
 
 const entries = new Map<number, Entry>();
@@ -163,16 +162,7 @@ function nextFrame(): Promise<void> {
 }
 
 function emptyEvents(): TerminalEvents {
-  return {
-    data: [],
-    binary: [],
-    titles: [],
-    bells: 0,
-    resizes: [],
-    cursorMoves: 0,
-    selectionChanges: 0,
-    scrolls: [],
-  };
+  return { data: [], resizes: [] };
 }
 
 const api: HarnessApi = {
@@ -201,20 +191,11 @@ const api: HarnessApi = {
       cursorStyle: options.cursorStyle ?? 'block',
       theme: (options.theme ?? {}) as ITheme,
       ...(options.scrollback === undefined ? {} : { scrollback: options.scrollback }),
-      ...(options.smoothScrollDuration === undefined
-        ? {}
-        : { smoothScrollDuration: options.smoothScrollDuration }),
     });
     term.open(host);
-    const entry: Entry = { term, host, events: emptyEvents(), resizes: 0, viewportDecodes: 0 };
+    const entry: Entry = { term, host, events: emptyEvents(), resizes: 0 };
     term.onData((d) => entry.events.data.push(d));
-    term.onBinary((d) => entry.events.binary.push(d));
-    term.onTitleChange((t) => entry.events.titles.push(t));
-    term.onBell(() => entry.events.bells++);
     term.onResize((size) => entry.events.resizes.push(size));
-    term.onCursorMove(() => entry.events.cursorMoves++);
-    term.onSelectionChange(() => entry.events.selectionChanges++);
-    term.onScroll((y) => entry.events.scrolls.push(y));
     const id = nextId++;
     entries.set(id, entry);
     return id;
@@ -222,10 +203,6 @@ const api: HarnessApi = {
 
   write(id, data) {
     get(id).term.write(data);
-  },
-
-  writeBytes(id, data) {
-    get(id).term.write(Uint8Array.from(data));
   },
 
   async settle(id) {
@@ -307,26 +284,6 @@ const api: HarnessApi = {
     return get(id).resizes;
   },
 
-  spyViewportDecode(id) {
-    const entry = get(id);
-    const wasm = entry.term.wasmTerm;
-    if (!wasm) fail('NOT_OPEN', 'terminal has no WASM terminal');
-    entry.viewportDecodes = 0;
-    // The public getter returns a cached pool; count actual snapshot refreshes,
-    // not cheap cache reads. This test-only reach-in is explicit.
-    const impl = (wasm as unknown as { impl: { refresh?: () => void } }).impl;
-    if (typeof impl?.refresh !== 'function') fail('NO_REFRESH', 'native snapshot refresh spy');
-    const refresh = impl.refresh.bind(impl);
-    impl.refresh = () => {
-      entry.viewportDecodes++;
-      refresh();
-    };
-  },
-
-  viewportDecodeCount(id) {
-    return get(id).viewportDecodes;
-  },
-
   spyWindowOpen() {
     opened.length = 0;
     window.open = ((url?: string | URL) => {
@@ -343,30 +300,6 @@ const api: HarnessApi = {
     return get(id).term.getSelection();
   },
 
-  paste(id, text) {
-    get(id).term.paste(text);
-  },
-
-  clear(id) {
-    get(id).term.clear();
-  },
-
-  navigateOnNextScroll(id, line) {
-    const term = get(id).term;
-    const listener = term.onScroll(() => {
-      listener.dispose();
-      term.scrollToLine(line);
-    });
-  },
-
-  resizeOnNextResize(id, cols, rows) {
-    const term = get(id).term;
-    const listener = term.onResize(() => {
-      listener.dispose();
-      term.resize(cols, rows);
-    });
-  },
-
   resize(id, cols, rows) {
     get(id).term.resize(cols, rows);
   },
@@ -377,10 +310,6 @@ const api: HarnessApi = {
 
   mode(id, mode) {
     return get(id).term.getMode(mode);
-  },
-
-  hostChildCount(id) {
-    return get(id).host.childElementCount;
   },
 
   dispose(id) {
@@ -478,32 +407,8 @@ const api: HarnessApi = {
     get(id).term.scrollLines(amount);
   },
 
-  scrollPages(id, amount) {
-    get(id).term.scrollPages(amount);
-  },
-
-  scrollToTop(id) {
-    get(id).term.scrollToTop();
-  },
-
-  scrollToBottom(id) {
-    get(id).term.scrollToBottom();
-  },
-
-  scrollToLine(id, line) {
-    get(id).term.scrollToLine(line);
-  },
-
   select(id, column, row, length) {
     get(id).term.select(column, row, length);
-  },
-
-  selectLines(id, start, end) {
-    get(id).term.selectLines(start, end);
-  },
-
-  selectAll(id) {
-    get(id).term.selectAll();
   },
 
   clearSelection(id) {
@@ -512,13 +417,6 @@ const api: HarnessApi = {
 
   hasSelection(id) {
     return get(id).term.hasSelection();
-  },
-
-  selectionPosition(id) {
-    const range = get(id).term.getSelectionPosition();
-    return range
-      ? { start: { x: range.start.x, y: range.start.y }, end: { x: range.end.x, y: range.end.y } }
-      : undefined;
   },
 
   bufferLineText(id, y, trimRight = true) {
@@ -547,4 +445,4 @@ const api: HarnessApi = {
   },
 };
 
-window.__ghosttyRegression = api;
+window.__ghosttyHarness = api;

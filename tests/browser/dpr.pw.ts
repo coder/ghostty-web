@@ -43,7 +43,7 @@ async function expectNoSeams(harness: Harness, dpr: number): Promise<void> {
   await expectProbe('seam-boundaries', result.seams, [], result.image);
 }
 
-test('dpr.display-change-updates-backing-size-once', async ({ harness }) => {
+test('a display scale change resizes the canvas backing store once', async ({ harness }) => {
   const term = await harness.create({ cols: 81, rows: 5 });
   await term.writeAndSettle('display-scale change');
   await term.spyResize();
@@ -72,21 +72,12 @@ test('dpr.display-change-updates-backing-size-once', async ({ harness }) => {
   }
 });
 
-test.describe('dpr 1', () => {
-  test.use({ deviceScaleFactor: 1 });
-  test('dpr.idle-renders-do-not-resize-at-1', ({ harness }) => expectNoIdleResizes(harness, 1));
-  test('dpr.background-run-has-no-seams-at-1', ({ harness }) => expectNoSeams(harness, 1));
-});
-
-test.describe('dpr 1.25', () => {
-  test.use({ deviceScaleFactor: 1.25 });
-  test('dpr.idle-renders-do-not-resize-at-1-25', ({ harness }) =>
-    expectNoIdleResizes(harness, 1.25));
-  test('dpr.background-run-has-no-seams-at-1-25', ({ harness }) => expectNoSeams(harness, 1.25));
-});
-
-test.describe('dpr 2', () => {
-  test.use({ deviceScaleFactor: 2 });
-  test('dpr.idle-renders-do-not-resize-at-2', ({ harness }) => expectNoIdleResizes(harness, 2));
-  test('dpr.background-run-has-no-seams-at-2', ({ harness }) => expectNoSeams(harness, 2));
-});
+for (const dpr of [1, 1.25, 2]) {
+  test.describe(`at DPR ${dpr}`, () => {
+    test.use({ deviceScaleFactor: dpr });
+    test('idle renders do not resize the canvas', ({ harness }) =>
+      expectNoIdleResizes(harness, dpr));
+    test('a background run has no seams between cells', ({ harness }) =>
+      expectNoSeams(harness, dpr));
+  });
+}

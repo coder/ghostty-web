@@ -2,12 +2,11 @@
  * Low-level access to an upstream libghostty-vt WASM module (the C ABI from
  * include/ghostty/vt/*.h, built with `-Demit-lib-vt` for wasm32-freestanding).
  *
- * Detection and validation are strict: a module exporting `ghostty_type_json`
- * IS a libghostty-vt build, and any missing export, unsupported ABI, or
- * missing/mis-sized struct field or enum name throws. There is no fallback to
- * the legacy engine. Struct layouts, packed-cell bit positions and enum values
- * come from the binary's own `ghostty_type_json()` manifest; only the wasm32
- * C ABI conventions are assumed:
+ * Validation is strict: any missing export (including `ghostty_type_json`),
+ * wrong arity, unsupported ABI, or missing/mis-sized struct field or enum
+ * name throws. Struct layouts, packed-cell bit positions and enum values come
+ * from the binary's own `ghostty_type_json()` manifest; only the wasm32 C ABI
+ * conventions are assumed:
  *  - by-value structs are passed by pointer, `GhosttyCell`/`GhosttyRow` are i64;
  *  - opaque handles are created through `ghostty_wasm_alloc_opaque` out-slots;
  *  - callbacks are function-table indices in the exported growable table;
@@ -536,11 +535,6 @@ function resolveLayout(r: Resolver) {
 
 export type NativeLayout = ReturnType<typeof resolveLayout>;
 
-/** True when the module claims to be a libghostty-vt build (it then must validate). */
-export function hasNativeManifest(exports: RawExports): boolean {
-  return 'ghostty_type_json' in exports;
-}
-
 /**
  * Validated handle to one libghostty-vt instance: exports, manifest-derived
  * layout, memory views, scratch allocation and callback trampolines.
@@ -687,9 +681,7 @@ export class NativeAbi {
 }
 
 function abiError(problems: string[]): Error {
-  return new Error(
-    `Malformed libghostty-vt WASM (ghostty_type_json present): ${problems.join('; ')}`
-  );
+  return new Error(`Malformed libghostty-vt WASM: ${problems.join('; ')}`);
 }
 
 function uleb(n: number): number[] {

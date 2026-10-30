@@ -13,7 +13,7 @@ Eight small DPR-1 scenes supplement the analytic pixel and interaction tests:
 | `bar-cursor`          | Expected text and an independently specified bar rectangle/color                       |
 | `resized-grid`        | Text preservation after resize, background and whole-grid layout                       |
 
-These are **finding-free positive examples**, not screenshots of known bugs promoted to expected behavior. Known font clipping, runtime-theme, Unicode-selection and fractional-DPR seam defects remain separate tests, tracked outside these baselines. All scene glyphs are in the vendored fonts; system-font CJK/emoji fallback is not part of the goldens.
+These are **finding-free positive examples**, not screenshots of known bugs promoted to expected behavior. Font clipping, runtime themes, Unicode selection and fractional-DPR seams are covered by separate analytic tests, not by these baselines. All scene glyphs are in the vendored fonts; system-font CJK/emoji fallback is not part of the goldens.
 
 ## Environment and comparisons
 

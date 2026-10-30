@@ -119,7 +119,6 @@ export class Terminal implements ITerminalCore {
   // Lifecycle state
   private isOpen = false;
   private isDisposed = false;
-  private focusTimeout?: ReturnType<typeof setTimeout>;
   private awaitingEcho = false;
 
   // Addons
@@ -214,9 +213,7 @@ export class Terminal implements ITerminalCore {
         if (this.renderer) {
           this.renderer.setCursorStyle(this.options.cursorStyle);
           this.renderer.setCursorBlink(this.options.cursorBlink);
-          if (this.wasmTerm?.backend === 'libghostty-vt') {
-            this.wasmTerm.setDefaultCursorStyle(this.options.cursorStyle, this.options.cursorBlink);
-          }
+          this.wasmTerm?.setDefaultCursorStyle(this.options.cursorStyle, this.options.cursorBlink);
         }
         break;
 
@@ -269,7 +266,7 @@ export class Terminal implements ITerminalCore {
 
   /**
    * Apply `options.theme` in place, with the same policy as the constructor
-   * (missing entries fall back to the defaults). libghostty-vt updates its
+   * (missing entries fall back to the defaults). The terminal updates its
    * default colors and palette without touching the buffer, history,
    * selection, parser or active SGR state; the renderer repaints with the new
    * theme on its next live frame (a synchronized-output frame being presented
@@ -277,16 +274,6 @@ export class Terminal implements ITerminalCore {
    */
   private handleThemeChange(): void {
     if (!this.renderer || !this.wasmTerm) return;
-    if (this.wasmTerm.backend !== 'libghostty-vt') {
-      // The legacy engine resolves cell colors from its construction config
-      // and has no way to change them; repainting only the renderer's colors
-      // would mix two themes.
-      console.warn(
-        'ghostty-web: theme changes after open() need the libghostty-vt engine; ' +
-          'the legacy engine keeps its construction theme'
-      );
-      return;
-    }
     this.wasmTerm.setColors(this.buildWasmConfig());
     this.renderer.setTheme(this.options.theme ?? {});
     this.renderer.render(this.wasmTerm, false, this.viewportY, this, this.scrollbarOpacity);
@@ -294,7 +281,7 @@ export class Terminal implements ITerminalCore {
 
   /** Browser reports use CSS pixels, matching layout and mouse coordinates. */
   private syncNativeCellSize(drainResponses = true): void {
-    if (this.wasmTerm?.backend !== 'libghostty-vt' || !this.renderer) return;
+    if (!this.wasmTerm || !this.renderer) return;
     const { width, height } = this.renderer.getMetrics();
     this.wasmTerm.setCellPixelSize(width, height);
     // Resize reports (mode 2048) must wait until the host's onResize listeners
@@ -447,13 +434,11 @@ export class Terminal implements ITerminalCore {
       // Create WASM terminal with current dimensions and config
       const config = this.buildWasmConfig();
       this.wasmTerm = this.ghostty!.createTerminal(this.cols, this.rows, config);
-      // Native bells/titles replace the legacy byte/regex heuristics.
-      if (this.wasmTerm.backend === 'libghostty-vt') {
-        this.wasmTerm.enableHostEvents();
-        // Synchronized output (2026): the renderer presents the frame each hold
-        // began with (see GhosttyTerminal.getPresentation); buffer reads stay live.
-        this.wasmTerm.enableRenderHold();
-      }
+      // Bells and titles come from the parser (host events), in output order.
+      this.wasmTerm.enableHostEvents();
+      // Synchronized output (2026): the renderer presents the frame each hold
+      // began with (see GhosttyTerminal.getPresentation); buffer reads stay live.
+      this.wasmTerm.enableRenderHold();
 
       this.termio = new Termio(this.wasmTerm, {
         disposed: () => this.isDisposed || !this.isOpen,
@@ -527,9 +512,7 @@ export class Terminal implements ITerminalCore {
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
       this.syncNativeCellSize();
-      if (this.wasmTerm.backend === 'libghostty-vt') {
-        this.wasmTerm.setDefaultCursorStyle(this.options.cursorStyle, this.options.cursorBlink);
-      }
+      this.wasmTerm.setDefaultCursorStyle(this.options.cursorStyle, this.options.cursorBlink);
 
       // Create mouse tracking configuration
       const canvas = this.canvas;
@@ -646,9 +629,7 @@ export class Terminal implements ITerminalCore {
       this.startRenderLoop();
 
       // Focus belongs to the whole terminal, not its internal textarea alone.
-      if (this.wasmTerm.backend === 'libghostty-vt') {
-        this.browserSurface.observeFocus(parent, (focused) => this.surface?.focusCallback(focused));
-      }
+      this.browserSurface.observeFocus(parent, (focused) => this.surface?.focusCallback(focused));
       // Focus input (auto-focus so user can start typing immediately)
       this.focus();
     } catch (error) {
@@ -681,7 +662,6 @@ export class Terminal implements ITerminalCore {
     // preserve selection when new data arrives. Selection is cleared by user actions
     // like clicking or typing, not by incoming data.
 
-    const native = this.wasmTerm!.backend === 'libghostty-vt';
     let failed = false;
     let firstError: unknown;
     try {
@@ -692,7 +672,6 @@ export class Terminal implements ITerminalCore {
     }
     // Poll native state after effects, including a throwing or reentrant listener.
     if (!this.isDisposed) {
-      this.surface!.afterWrite();
       this.linkDetector?.invalidateCache();
       try {
         this.surface!.sync();
@@ -702,8 +681,6 @@ export class Terminal implements ITerminalCore {
           firstError = error;
         }
       }
-      if (!native && typeof data === 'string' && data.includes('\x1b]'))
-        this.checkForTitleChange(data);
     }
     if (failed) throw firstError;
     if (this.isDisposed) return;
@@ -761,23 +738,9 @@ export class Terminal implements ITerminalCore {
       return;
     }
 
-    if (this.wasmTerm!.backend === 'libghostty-vt') {
-      const bytes = this.wasmTerm!.encodePaste(data);
-      if (bytes.length && this.prepareUserInput()) {
-        this.dataEmitter.fire(new TextDecoder().decode(bytes));
-      }
-      return;
-    }
-
-    this.awaitingEcho = true;
-
-    // Legacy retains its existing bracketed-paste behavior.
-    if (this.wasmTerm!.hasBracketedPaste()) {
-      // Wrap with bracketed paste sequences (DEC mode 2004)
-      this.dataEmitter.fire('\x1b[200~' + data + '\x1b[201~');
-    } else {
-      // Send data directly
-      this.dataEmitter.fire(data);
+    const bytes = this.wasmTerm!.encodePaste(data);
+    if (bytes.length && this.prepareUserInput()) {
+      this.dataEmitter.fire(new TextDecoder().decode(bytes));
     }
   }
 
@@ -837,7 +800,7 @@ export class Terminal implements ITerminalCore {
       this.cols = cols;
       this.rows = rows;
       generation = ++this.resizeGeneration;
-      // Native PageList owns reflow; the legacy snapshot clamps its own offset.
+      // Native PageList owns reflow; only the wheel remainder is host state.
       this.surface!.resetWheel();
       this.renderer!.resize(cols, rows);
       this.syncNativeCellSize(false);
@@ -889,10 +852,9 @@ export class Terminal implements ITerminalCore {
   clear(): void {
     this.assertOpen();
     // ED2 at a semantic shell prompt can append the active screen to history.
-    // Use the native host path so its anchor, scroll events and caches agree
-    // with write() of the same bytes; retain legacy's established clear policy.
-    if (this.wasmTerm!.backend === 'libghostty-vt') this.writeInternal('\x1b[2J\x1b[H');
-    else this.wasmTerm!.write('\x1b[2J\x1b[H');
+    // Use the host write path so its anchor, scroll events and caches agree
+    // with write() of the same bytes.
+    this.writeInternal('\x1b[2J\x1b[H');
   }
 
   /**
@@ -917,7 +879,7 @@ export class Terminal implements ITerminalCore {
 
     // Host state first, so nothing renders against the pre-reset buffer.
     this.inputHandler?.resetMouseState();
-    this.surface!.resetInput();
+    this.surface!.resetWheel();
     this.selectionManager?.clearSelection();
     this.currentHoveredLink?.hover?.(false);
     this.currentHoveredLink = undefined;
@@ -936,7 +898,7 @@ export class Terminal implements ITerminalCore {
     }
     // Native bells/titles not yet dispatched belong to the discarded state
     // (also when a listener resets mid-dispatch).
-    if (this.wasmTerm!.backend === 'libghostty-vt') this.wasmTerm!.takeHostEvents();
+    this.wasmTerm!.takeHostEvents();
     this.termio?.clear();
     this.lastCursorY = 0;
 
@@ -951,19 +913,10 @@ export class Terminal implements ITerminalCore {
    */
   focus(): void {
     if (this.isOpen && this.element) {
-      // Focus immediately for immediate keyboard/wheel event handling
+      // Focus synchronously and only once: focus reporting is synchronous, so
+      // a delayed refocus would steal focus back after blur() or a click
+      // elsewhere and emit a spurious report.
       this.element.focus();
-      // Native focus reporting is synchronous. A delayed refocus would steal
-      // focus back after blur() or a click elsewhere and emit a spurious report.
-      if (this.wasmTerm?.backend === 'libghostty-vt') return;
-
-      // Also schedule a delayed focus as backup to ensure it sticks
-      // (some browsers may need this if DOM isn't fully settled)
-      if (this.focusTimeout !== undefined) clearTimeout(this.focusTimeout);
-      this.focusTimeout = setTimeout(() => {
-        this.focusTimeout = undefined;
-        this.element?.focus();
-      }, 0);
     }
   }
 
@@ -972,15 +925,11 @@ export class Terminal implements ITerminalCore {
    */
   blur(): void {
     if (this.isOpen && this.element) {
-      if (this.wasmTerm?.backend === 'libghostty-vt') {
-        if (this.focusTimeout !== undefined) clearTimeout(this.focusTimeout);
-        this.focusTimeout = undefined;
-        const active = this.activeElement();
-        // A clicked terminal focuses its textarea, so blurring only the outer
-        // contenteditable element would leave terminal input focused.
-        if (active !== this.element && this.element.contains(active)) {
-          (active as HTMLElement | null)?.blur?.();
-        }
+      const active = this.activeElement();
+      // A clicked terminal focuses its textarea, so blurring only the outer
+      // contenteditable element would leave terminal input focused.
+      if (active !== this.element && this.element.contains(active)) {
+        (active as HTMLElement | null)?.blur?.();
       }
       this.element.blur();
     }
@@ -1218,8 +1167,6 @@ export class Terminal implements ITerminalCore {
     if (this.mouseMoveThrottleTimeout) clearTimeout(this.mouseMoveThrottleTimeout);
     this.mouseMoveThrottleTimeout = undefined;
     this.pendingMouseMove = undefined;
-    if (this.focusTimeout !== undefined) clearTimeout(this.focusTimeout);
-    this.focusTimeout = undefined;
   }
 
   private activeElement(): Element | null {
@@ -1580,7 +1527,7 @@ export class Terminal implements ITerminalCore {
   private handleClick = async (e: MouseEvent): Promise<void> => {
     // Native-tracked clicks belong to the TUI, not local hyperlink activation.
     if (
-      this.wasmTerm?.backend === 'libghostty-vt' &&
+      this.wasmTerm &&
       !this.options.disableStdin &&
       this.wasmTerm.hasMouseTracking() &&
       !e.shiftKey
@@ -1648,31 +1595,6 @@ export class Terminal implements ITerminalCore {
 
   private processTerminalResponses(): void {
     this.termio?.flush();
-  }
-
-  /**
-   * Check for title changes in written data (OSC sequences)
-   * Simplified implementation - looks for OSC 0, 1, 2
-   */
-  private checkForTitleChange(data: string): void {
-    // OSC sequences: ESC ] Ps ; Pt BEL or ESC ] Ps ; Pt ST
-    // OSC 0 = icon + title, OSC 1 = icon, OSC 2 = title
-    const oscRegex = /\x1b\]([012]);([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
-    let match: RegExpExecArray | null = null;
-
-    // biome-ignore lint/suspicious/noAssignInExpressions: Standard regex pattern
-    while ((match = oscRegex.exec(data)) !== null) {
-      const ps = match[1];
-      const pt = match[2];
-
-      // OSC 0 and OSC 2 set the title
-      if (ps === '0' || ps === '2') {
-        if (pt !== this.currentTitle) {
-          this.currentTitle = pt;
-          this.titleChangeEmitter.fire(pt);
-        }
-      }
-    }
   }
 
   // ============================================================================

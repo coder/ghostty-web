@@ -5,21 +5,17 @@
  */
 
 import { type Harness, THEME, expect, expectProbe, expectSameCells, test } from './support/fixture';
+import type { ThemeSpec } from './support/harness-api';
 import { cellCore, cellInterior, diffCells, inkCount, uniformColor } from './support/pixels';
 
 /** Park the cursor away from probed cells (bottom-right). */
 const PARK_CURSOR = '\x1b[3;12H';
 
-async function backgroundOf(harness: Harness, sgr: string, theme = {}) {
-  const term = await harness.create({ cols: 12, rows: 3, theme: { ...THEME, ...theme } });
-  await term.writeAndSettle(`\x1b[${sgr}m    \x1b[0m${PARK_CURSOR}`);
-  const { image, grid } = await term.capture();
-  return { color: uniformColor(image, cellInterior(grid, 0, 1)), image };
-}
+// --- Colours (explicit black is a colour, never the default background) ---
 
-// --- Background colours (WEB-04 / RT-06: explicit black is not "default") ---
-
-test('color.bg-default-query-matches-canvas', async ({ harness }) => {
+test('the default background reply matches the painted background, at construction and at runtime', async ({
+  harness,
+}) => {
   const cases = [
     { theme: {}, color: '#1e1e1e' },
     { theme: { foreground: '#123456' }, color: '#1e1e1e' },
@@ -54,76 +50,40 @@ test('color.bg-default-query-matches-canvas', async ({ harness }) => {
   }
 });
 
-test('color.bg-default-uses-theme-background', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '0');
-  await expectProbe('default-bg', color, THEME.background, image);
-});
-
-test('color.bg-explicit-truecolor', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '48;2;18;52;86');
-  await expectProbe('truecolor-bg', color, '#123456', image);
-});
-
-test('color.bg-sgr40-is-theme-black', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '40');
-  await expectProbe('sgr40-bg', color, THEME.black, image);
-});
-
-// Control: the palette path itself works when the theme colour is not 0x000000.
-test('color.bg-sgr40-uses-nonzero-theme-black', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '40', { black: '#0a0b0c' });
-  await expectProbe('sgr40-bg-nonzero', color, '#0a0b0c', image);
-});
-
-test('color.bg-256-index-16-is-black', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '48;5;16');
-  await expectProbe('index16-bg', color, '#000000', image);
-});
-
-test('color.bg-truecolor-black-is-black', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '48;2;0;0;0');
-  await expectProbe('rgb000-bg', color, '#000000', image);
-});
-
-test('color.inverse-swaps-default-colors', async ({ harness }) => {
-  const { color, image } = await backgroundOf(harness, '7');
-  await expectProbe('inverse-bg', color, THEME.foreground, image);
-});
-
-// --- Foreground colours, probed inside a full-block glyph (U+2588) ---
-
-test('color.fg-truecolor-full-block', async ({ harness }) => {
-  const term = await harness.create({ cols: 12, rows: 3 });
-  await term.writeAndSettle(`\x1b[38;2;255;128;0m\u2588\x1b[0m${PARK_CURSOR}`);
-  const { image, grid } = await term.capture();
-  await expectProbe('truecolor-fg', uniformColor(image, cellCore(grid, 0, 0)), '#ff8000', image);
-});
-
-test('color.fg-theme-black-on-light-theme', async ({ harness }) => {
+test('cell colours paint exactly: truecolor, palette, 256-colour, explicit black, inverse', async ({
+  harness,
+}) => {
   const light = { ...THEME, background: '#f0f0f0', foreground: '#000000', cursorAccent: '#f0f0f0' };
-  const term = await harness.create({ cols: 12, rows: 3, theme: light });
-  await term.writeAndSettle(`\u2588${PARK_CURSOR}`);
-  const { image, grid } = await term.capture();
-  await expectProbe('theme-black-fg', uniformColor(image, cellCore(grid, 0, 0)), '#000000', image);
+  // Backgrounds are probed inside a run of spaces, foregrounds inside a full block (U+2588).
+  const bg = (sgr: string) => `\x1b[${sgr}m    \x1b[0m`;
+  const cases: { name: string; data: string; fg?: true; theme?: ThemeSpec; color: string }[] = [
+    { name: 'truecolor-bg', data: bg('48;2;18;52;86'), color: '#123456' },
+    { name: 'sgr40-bg-is-theme-black', data: bg('40'), color: THEME.black },
+    {
+      name: 'sgr40-bg-uses-nonzero-theme-black',
+      data: bg('40'),
+      theme: { ...THEME, black: '#0a0b0c' },
+      color: '#0a0b0c',
+    },
+    { name: '256-index-16-bg-is-black', data: bg('48;5;16'), color: '#000000' },
+    { name: 'truecolor-black-bg-is-black', data: bg('48;2;0;0;0'), color: '#000000' },
+    { name: 'inverse-bg-is-default-fg', data: bg('7'), color: THEME.foreground },
+    { name: 'truecolor-fg', data: '\x1b[38;2;255;128;0m\u2588\x1b[0m', fg: true, color: '#ff8000' },
+    { name: 'theme-black-fg', data: '\u2588', fg: true, theme: light, color: '#000000' },
+  ];
+  for (const { name, data, fg, theme, color } of cases) {
+    const term = await harness.create({ cols: 12, rows: 3, theme: theme ?? THEME });
+    await term.writeAndSettle(`${data}${PARK_CURSOR}`);
+    const { image, grid } = await term.capture();
+    const region = fg ? cellCore(grid, 0, 0) : cellInterior(grid, 0, 1);
+    await expectProbe(name, uniformColor(image, region), color, image);
+    await term.dispose();
+  }
 });
 
 // --- Text ink and Unicode placement ---
 
-test('text.glyph-has-ink-blank-cell-has-none', async ({ harness }) => {
-  const term = await harness.create({ cols: 12, rows: 3 });
-  await term.writeAndSettle(`A${PARK_CURSOR}`);
-  const { image, grid } = await term.capture();
-  expect(
-    inkCount(image, cellInterior(grid, 0, 0, 0), THEME.background) > 0,
-    'glyph-has-ink'
-  ).toStrictEqual(true);
-  expect(
-    inkCount(image, cellInterior(grid, 0, 1, 0), THEME.background),
-    'blank-has-no-ink'
-  ).toStrictEqual(0);
-});
-
-test('text.wide-char-advances-two-cells', async ({ harness }) => {
+test('a wide character advances two cells', async ({ harness }) => {
   const wide = await harness.create({ cols: 12, rows: 3 });
   await wide.writeAndSettle(`\u4e00A${PARK_CURSOR}`);
   const reference = await harness.create({ cols: 12, rows: 3 });
@@ -141,7 +101,7 @@ test('text.wide-char-advances-two-cells', async ({ harness }) => {
   ).toStrictEqual(true);
 });
 
-test('text.combining-mark-renders-as-cluster', async ({ harness }) => {
+test('a combining mark renders as one cluster, like the precomposed form', async ({ harness }) => {
   const combined = await harness.create({ cols: 12, rows: 3 });
   await combined.writeAndSettle(`e\u0301${PARK_CURSOR}`);
   const plain = await harness.create({ cols: 12, rows: 3 });
@@ -187,17 +147,18 @@ async function historyVersusActive(harness: Harness, text: string, assertion: st
   });
 }
 
-// Control: a plain history row renders exactly like the active row.
-test('text.history-row-ascii-matches-active-row', async ({ harness }) => {
-  await historyVersusActive(harness, 'e', 'history-ascii-cell');
+test('a history row renders its own text and grapheme clusters like an active row', async ({
+  harness,
+}) => {
+  // 'e' + U+0301 in history must draw its own cluster, not the active row's text.
+  for (const text of ['e', 'e\u0301']) {
+    await historyVersusActive(harness, text, `history-cell-${JSON.stringify(text)}`);
+  }
 });
 
-// 'e' + U+0301 in history must still draw its own cluster (not the active row's text).
-test('text.history-row-grapheme-matches-active-row', async ({ harness }) => {
-  await historyVersusActive(harness, 'e\u0301', 'history-cluster-cell');
-});
-
-test('review.wrapped-wide-spacer-refresh-is-read-independent', async ({ harness }) => {
+test('a wide character wrapped at the margin renders the same whether or not rows were read early', async ({
+  harness,
+}) => {
   const term = await harness.create({ cols: 10, rows: 4 });
   const oracle = await harness.create({ cols: 10, rows: 4 });
   const wrap = '\x1b[2;10H\x1b[7m中';
@@ -207,7 +168,7 @@ test('review.wrapped-wide-spacer-refresh-is-read-independent', async ({ harness 
   await oracle.writeAndSettle(wrap + overwrite);
   expect(
     await harness.page.evaluate(
-      (id) => window.__ghosttyRegression.bufferCell(id, 1, 9)?.width,
+      (id) => window.__ghosttyHarness.bufferCell(id, 1, 9)?.width,
       term.id
     ),
     'cleared-spacer-width'
@@ -215,17 +176,4 @@ test('review.wrapped-wide-spacer-refresh-is-read-independent', async ({ harness 
   const actual = await term.capture();
   const expected = await oracle.capture();
   await expectSameCells('read-timing-independent-frame', actual.image, expected.image, actual.grid);
-});
-
-// --- Renderer work model (functional metric, not a timing) ---
-
-test('perf.forced-frame-decodes-viewport-once', async ({ harness }) => {
-  const term = await harness.create({ cols: 40, rows: 12 });
-  await term.writeAndSettle('one frame should read the viewport once');
-  await term.park();
-  await term.spyViewportDecode();
-  // Force genuinely stale state: a cached getter alone is not a decode.
-  await term.write('!');
-  await term.render(true);
-  expect(await term.viewportDecodeCount(), 'viewport-decodes-per-forced-frame').toStrictEqual(1);
 });

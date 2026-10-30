@@ -3,15 +3,15 @@
 The host follows Ghostty **246f702876b924a1cb7cade1e99274d1470302fc**. This is a
 port of the relevant scrolling, I/O-effect and lifecycle boundaries, not a clone
 of Ghostty's desktop application, PTY implementation or GPU renderer. The shipped
-native source and WASM are unpatched. Legacy is an explicit comparison backend;
-an invalid native ABI never silently falls back to it.
+native source and WASM are unpatched; a WASM whose ABI does not validate against its
+own type manifest is rejected.
 
 ## Owners and dependencies
 
 | Responsibility                                                                       | Owner                                              | Relationship to upstream                                                                   |
 | ------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Viewport, following, content anchors, pruning, reset, reflow, per-screen restoration | Native `Terminal` / `Screen` / `PageList`          | Delegate to the existing WASM, never mirror a mutable native reading position in JS        |
-| Visible rows, cursor, dirty state                                                    | Native `RenderState`, via `lib/backends/native.ts` | Native visible view; public active-buffer reads use separate grid refs                     |
+| Visible rows, cursor, dirty state                                                    | Native `RenderState`, via `lib/vt/bridge.ts`       | Native visible view; public active-buffer reads use separate grid refs                     |
 | Wheel remainder/routing, binding actions, follow-on-input, focus state               | `lib/surface.ts`                                   | Port of the corresponding `Surface` subset, with documented compatibility differences      |
 | Parse and copied reply/title/bell/focus-enable effects                               | `lib/termio/termio.ts`                             | Browser counterpart of `termio.Termio` and ordered host mailboxes                          |
 | Coherent frame access                                                                | `lib/renderer/state.ts`                            | Browser counterpart of `renderer.State`; synchronous access replaces the native mutex      |
@@ -33,12 +33,13 @@ No independent wheel router, viewport controller or scroll animation owns positi
 ## Ordering and compatibility
 
 - **Native state remains installed.** Writes and refreshes no longer park the
-  viewport at the bottom. Renderer history stitching exists only for legacy.
+  viewport at the bottom. Renderer history stitching remains only for generic
+  `IRenderable`s drawn by `CanvasRenderer` directly.
   Public active-buffer rows/cursor retain their old meaning while scrolled; render
   rows/cursor describe the visible native viewport. Graphemes, styles, width,
   hyperlinks, logical cursor visibility and holds are tested separately.
 - **Logical scrolling is immediate and whole-row.** `smoothScrollDuration` is
-  deprecated and accepted only for source compatibility on both backends. Fractional
+  deprecated and accepted only for source compatibility. Fractional
   public `viewportY` assignments are floored. There is no presentation-only smoother
   in this implementation. Existing bottom-relative navigation/events and absolute
   buffer getters remain; the separately deferred coordinate-documentation items
@@ -85,7 +86,6 @@ Other intentionally unchanged policies:
 - Browser clipboard/public selection conventions stay intact. The selection manager's
   existing gesture/autoscroll clock remains outside `RendererThread` pending the
   native gesture compatibility decision; not every host timer is claimed removed.
-- Legacy keeps its explicit JS offset shim and jump-to-bottom-on-output policy.
 
 ## Shutdown
 
@@ -115,17 +115,12 @@ changing the pin, review the mapped source changes and run the actual native,
 reentrancy, input and visual behavior tests. The upstream-only reference runner and
 harness self-tests are also removed; see the [current test guide](../tests/README.md).
 
-On 2026-10-15 validation passed: **1,255 Bun tests**, **398 native / 351 legacy core
-entry-point checks**, **134 native / 100 legacy canonical Chromium checks**, **157
-independent reference checks**, **6 packaged-consumer checks**, format/lint/types,
-workflow lint, 12 trace mappings and the full shipping build. Core counts include
-controls and overlap the Bun total. Reviewed images and native WASM hash are unchanged.
 Tests cover real continuous Chromium wheel progress, native output/reset/clear/reflow
 sequences, held-thumb changes, reentrant/throwing/disposal callbacks and hold/live
-presentation. No required case was demoted or golden regenerated.
+presentation.
 
 Firefox, WebKit, physical trackpads, OS IME and cross-platform parity are unverified.
 General inactive-normal-screen reads and exact repeated/in-write focus-enable reports
 remain C-API limits. App-specific pre-ED2 follow hooks, pin/prompt scrolling and desktop
-clear helpers are not recreated with a JS VT parser. See the [migration evidence](./migration-libghostty-vt.md)
-for the earlier non-reproduced baseline WASM trap and other retained limitations.
+clear helpers are not recreated with a JS VT parser. See the
+[migration notes](./migration-libghostty-vt.md) for other known limitations.

@@ -1,5 +1,5 @@
 /**
- * Node-side pixel helpers for the browser lane. Everything works on decoded
+ * Node-side pixel helpers for the browser tests. Everything works on decoded
  * RGBA, never on encoded PNG bytes: PNG length or compression differences
  * are irrelevant to comparisons of terminal rendering.
  */
@@ -45,10 +45,6 @@ export function decodeCapture(capture: Capture): { image: Image; grid: Grid } {
   };
 }
 
-export function cloneImage(image: Image): Image {
-  return { width: image.width, height: image.height, data: new Uint8Array(image.data) };
-}
-
 /**
  * Pixels owned by a cell. Boundaries are floored so the cells partition the
  * canvas exactly: every pixel belongs to one cell (used by the comparator).
@@ -74,7 +70,7 @@ export function hexAt(image: Image, x: number, y: number): string {
   return toHex(image.data[i], image.data[i + 1], image.data[i + 2]);
 }
 
-export function toHex(r: number, g: number, b: number): string {
+function toHex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
@@ -83,7 +79,7 @@ export function parseHex(hex: string): [number, number, number] {
 }
 
 /** Every distinct colour in a rect, most frequent first. */
-export function colorsIn(image: Image, rect: Rect): string[] {
+function colorsIn(image: Image, rect: Rect): string[] {
   const counts = new Map<string, number>();
   for (let y = rect.y0; y < rect.y1; y++) {
     for (let x = rect.x0; x < rect.x1; x++) {
@@ -130,9 +126,6 @@ export interface CompareOptions {
 
 /** Exact: for metamorphic checks two renders of the same state must be identical. */
 export const EXACT: CompareOptions = { channelTolerance: 0, maxPixelsPerCell: 0 };
-/** The most lenient setting the lane allows; comparator self-tests prove it still catches edits. */
-export const LENIENT: CompareOptions = { channelTolerance: 16, maxPixelsPerCell: 2 };
-
 /**
  * Per-cell comparison. Returns `row:col` of every changed cell, row-major.
  * There is deliberately no global percentage threshold: one erased glyph in a
@@ -243,9 +236,8 @@ export function cursorShape(
 }
 
 // ---------------------------------------------------------------------------
-// Minimal PNG codec (RGBA8, filter 0) for failure artifacts and the
-// "PNG bytes are irrelevant" self-test. Decoding supports only this encoder's
-// output, which is all the lane ever decodes.
+// Minimal PNG codec (RGBA8, filter 0) for failure artifacts and the reviewed
+// scene baselines. Decoding supports only this encoder's output.
 // ---------------------------------------------------------------------------
 
 const CRC_TABLE = (() => {

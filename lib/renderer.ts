@@ -10,20 +10,24 @@
  * - Dirty line optimization for 60 FPS
  */
 
-import type { NativeScrollState } from './backends/types';
 import type { ITheme } from './interfaces';
 import { readState } from './renderer/state';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink } from './types';
 import { CellFlags } from './types';
+import type { NativeScrollState } from './vt/types';
 
 // Interface for objects that can be rendered
 export interface IRenderable {
-  readonly backend?: 'legacy' | 'libghostty-vt';
-  /** Native visible viewport, distinct from the public active-buffer facade. */
+  /**
+   * Native visible viewport, distinct from the public active-buffer facade.
+   * When present the renderer draws it (and its `getScrollState()`) instead
+   * of stitching history from a scrollback provider.
+   */
   getRenderView?(): IRenderable;
   getScrollState?(): NativeScrollState;
   getLine(y: number): GhosttyCell[] | null;
+  /** `style`/`blinking`, when reported, override the renderer's cursor options. */
   getCursor(): {
     x: number;
     y: number;
@@ -141,7 +145,7 @@ export class CanvasRenderer {
   private cursorBlinkSince?: number;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
   private lastCursorVisible = true;
-  private lastNativeCursorStyle: 'block' | 'bar' | 'underline' = 'block';
+  private lastCursorStyle: 'block' | 'bar' | 'underline' = 'block';
 
   // Viewport tracking (for scrolling)
   private lastViewportY: number = 0;
@@ -414,8 +418,8 @@ export class CanvasRenderer {
       forceAll = true; // Force full render after resize
     }
 
-    // Native RenderState owns viewport invalidation. Legacy presentation still
-    // uses the compatibility history compositor.
+    // A render view's dirty state covers viewport moves (native RenderState).
+    // A generic renderable is stitched from history, so a move repaints all.
     if (!nativeViewport && viewportY !== this.lastViewportY) {
       forceAll = true;
       this.lastViewportY = viewportY;
@@ -435,12 +439,10 @@ export class CanvasRenderer {
       this.lastScrollbarState = scrollbarState;
     }
 
-    // Check if cursor position changed or if blinking (need to redraw cursor line)
-    const nativeCursor = buffer.backend === 'libghostty-vt';
-    const effectiveCursorStyle = nativeCursor
-      ? (cursor.style ?? this.cursorStyle)
-      : this.cursorStyle;
-    if (nativeCursor && cursor.blinking !== undefined && cursor.blinking !== this.cursorBlink) {
+    // Check if cursor position changed or if blinking (need to redraw cursor line).
+    // A reported style/blink (the terminal's DECSCUSR state) wins over the options.
+    const effectiveCursorStyle = cursor.style ?? this.cursorStyle;
+    if (cursor.blinking !== undefined && cursor.blinking !== this.cursorBlink) {
       this.setCursorBlink(cursor.blinking);
     }
     // RendererThread is the only frame/clock owner. Keep the existing 530ms
@@ -449,11 +451,8 @@ export class CanvasRenderer {
       this.cursorVisible =
         Math.floor(Math.max(0, timestamp - this.cursorBlinkSince) / 530) % 2 === 0;
     }
-    // Visibility (DECTCEM) is reported by both engines; the reported style is
-    // native-only policy (legacy draws the cursorStyle option).
     const cursorAppearanceChanged =
-      cursor.visible !== this.lastCursorVisible ||
-      effectiveCursorStyle !== this.lastNativeCursorStyle;
+      cursor.visible !== this.lastCursorVisible || effectiveCursorStyle !== this.lastCursorStyle;
     const cursorMoved =
       cursor.x !== this.lastCursorPosition.x ||
       cursor.y !== this.lastCursorPosition.y ||
@@ -609,7 +608,7 @@ export class CanvasRenderer {
     // Update last cursor position
     this.lastCursorPosition = { x: cursor.x, y: cursor.y };
     this.lastCursorVisible = cursor.visible;
-    this.lastNativeCursorStyle = effectiveCursorStyle;
+    this.lastCursorStyle = effectiveCursorStyle;
 
     // ALWAYS clear dirty flags after rendering, regardless of forceAll.
     // This is critical - if we don't clear after a full redraw, the dirty
@@ -635,7 +634,7 @@ export class CanvasRenderer {
       if (y < viewportY && scrollbackProvider) {
         // This row is from scrollback (upper part of viewport)
         // Get from end of scrollback buffer
-        // Defensive quantization for legacy callers of the renderer
+        // Defensive quantization for callers passing a fractional viewportY
         const scrollbackOffset = scrollbackLength - Math.floor(viewportY) + y;
         return scrollbackProvider.getScrollbackLine(scrollbackOffset);
       }
@@ -833,8 +832,9 @@ export class CanvasRenderer {
     }
 
     // The native API distinguishes an explicit black cell from a default.
-    // Legacy cells lack this metadata and retain their historical RGB sentinel.
-    // Inverse foreground is always a real background color on the native path.
+    // Cells without this metadata (generic renderables) keep the historical
+    // black-means-default sentinel. Inverse foreground is always a real
+    // background color when the metadata is present.
     const black = bg_r === 0 && bg_g === 0 && bg_b === 0;
     const inverse = (cell.flags & CellFlags.INVERSE) !== 0;
     const isDefaultBg =

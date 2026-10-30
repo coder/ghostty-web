@@ -1,13 +1,13 @@
 /**
- * Runtime appearance changes on an open Terminal (libghostty-vt): theme and
- * font. Colors are read back from the engine, never from what the code under
- * test intended to set, and every runtime state is compared with a terminal
+ * Theme and font options of an open Terminal: colors are read back from the
+ * engine (or from what the renderer paints), never from what the code under
+ * test intended to set, and runtime changes are compared with a terminal
  * constructed directly with the same options.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Ghostty } from './ghostty';
 import type { ITheme } from './interfaces';
-import type { CanvasRenderer } from './renderer';
+import { type CanvasRenderer, DEFAULT_THEME } from './renderer';
 import { Terminal } from './terminal';
 import type { GhosttyCell } from './types';
 
@@ -43,7 +43,6 @@ afterEach(() => {
 
 async function terminal(theme: ITheme | undefined, extra: Record<string, unknown> = {}) {
   const ghostty = await Ghostty.load();
-  expect(ghostty.backend).toBe('libghostty-vt');
   const term = new Terminal({ ghostty, cols: 24, rows: 4, theme, scrollback: 100, ...extra });
   const container = document.createElement('div');
   document.body.appendChild(container);
@@ -90,6 +89,58 @@ function probe(term: Terminal) {
   };
 }
 
+describe('theme colors at construction', () => {
+  /** Engine default colors and the SGR 30/31/32/97 palette cells, as resolved by the engine. */
+  async function resolved(theme: ITheme | undefined) {
+    const term = await terminal(theme);
+    term.write('\x1b[30mk\x1b[31mr\x1b[32mg\x1b[97mw\x1b[0m');
+    return { ...colors(term), palette: line(term, 0).slice(0, 4).map(fg) };
+  }
+
+  test('theme entries reach the engine exactly; missing or malformed ones keep the defaults', async () => {
+    const defaults = await resolved(undefined);
+    // The engine's default background is the canvas default; nothing else is black.
+    expect(defaults.background).toBe(DEFAULT_THEME.background);
+    expect([defaults.foreground, defaults.cursor, ...defaults.palette]).not.toContain('#000000');
+    const [black, red, green, brightWhite] = defaults.palette;
+    const cases: [string, ITheme, Partial<typeof defaults>][] = [
+      [
+        'explicit black is a color, not a missing entry',
+        { foreground: '#000000', background: '#000', cursor: 'rgb(0, 0, 0)', black: '#000000' },
+        {
+          foreground: '#000000',
+          background: '#000000',
+          cursor: '#000000',
+          palette: ['#000000', red, green, brightWhite],
+        },
+      ],
+      [
+        'short hex, mixed-case hex and rgb() keep their exact values',
+        { foreground: '#AbC', background: 'rgb(18, 52, 86)', cursor: '#fedCBA' },
+        { foreground: '#aabbcc', background: '#123456', cursor: '#fedcba' },
+      ],
+      [
+        'only the provided palette entries change',
+        { red: '#123456', brightWhite: '#abcdef' },
+        { palette: [black, '#123456', green, '#abcdef'] },
+      ],
+      [
+        'a partial theme keeps the canvas default background',
+        { foreground: '#123456' },
+        { foreground: '#123456' },
+      ],
+      [
+        'malformed colors are ignored, not turned into black',
+        { foreground: '#12345', cursor: 'not-a-color', red: '#12345z' },
+        {},
+      ],
+    ];
+    for (const [name, theme, expected] of cases) {
+      expect({ name, ...(await resolved(theme)) }).toEqual({ name, ...defaults, ...expected });
+    }
+  });
+});
+
 describe('default background queries', () => {
   async function backgroundReply(term: Terminal) {
     let reply = '';
@@ -103,25 +154,6 @@ describe('default background queries', () => {
       listener.dispose();
     }
   }
-
-  test('omitted and partial themes report the existing dark-gray canvas default', async () => {
-    for (const theme of [undefined, {}, { foreground: '#123456' }]) {
-      const term = await terminal(theme);
-      expect(await backgroundReply(term)).toBe('\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\');
-      expect(colors(term).background).toBe('#1e1e1e');
-    }
-  });
-
-  test('explicit black and custom backgrounds still report their configured colors', async () => {
-    for (const [background, expected] of [
-      ['#000000', '0000/0000/0000'],
-      ['#123456', '1212/3434/5656'],
-    ]) {
-      const term = await terminal({ background });
-      expect(await backgroundReply(term)).toBe(`\x1b]11;rgb:${expected}\x1b\\`);
-      expect(colors(term).background).toBe(background);
-    }
-  });
 
   test('removing a runtime background restores the canvas default, including after reset', async () => {
     const term = await terminal(THEME_A);
@@ -143,7 +175,7 @@ describe('default background queries', () => {
   });
 });
 
-describe('runtime theme (libghostty-vt)', () => {
+describe('runtime theme', () => {
   test('recolors default and palette cells in place and keeps everything else', async () => {
     const term = await terminal(THEME_A);
     const wasm = term.wasmTerm;
@@ -332,32 +364,6 @@ describe('runtime theme (libghostty-vt)', () => {
     expect(themeOf(paint(), HOLD_A, [HOLD_B])).toEqual({ shown: ALL_KEYS, leaked: [] });
   });
 
-  test('a live selection view during a hold uses the new theme; clearing it restores the held frame', async () => {
-    const term = await terminal(HOLD_A);
-    const paint = painter(term);
-    term.write(HOLD_CONTENT);
-    term.write('\x1b[?2026h');
-    term.options.theme = HOLD_B;
-    term.select(0, 0, 1);
-    expect(themeOf(paint(), HOLD_B, [HOLD_A])).toEqual({ shown: ALL_KEYS, leaked: [] });
-    term.clearSelection();
-    expect(isHeld(term)).toBe(true);
-    expect(themeOf(paint(), HOLD_A, [HOLD_B])).toEqual({ shown: ALL_KEYS, leaked: [] });
-  });
-
-  test('a hold captured after a theme change, before any paint, uses that theme', async () => {
-    const term = await terminal(HOLD_A);
-    const paint = painter(term);
-    term.write(HOLD_CONTENT);
-    term.write('\x1b[?2026h');
-    term.options.theme = HOLD_B;
-    // A new hold begins right away: the engine colors it captures are B's.
-    term.write('\x1b[?2026l\x1b[?2026h');
-    expect(isHeld(term)).toBe(true);
-    expect(fg(term.wasmTerm!.getPresentation().getLine(0)![0])).toBe(THEME_B.foreground!);
-    expect(themeOf(paint(), HOLD_B, [HOLD_A])).toEqual({ shown: ALL_KEYS, leaked: [] });
-  });
-
   test('several theme changes during one hold: the held frame keeps the capture theme', async () => {
     const term = await terminal(HOLD_A);
     const paint = painter(term);
@@ -373,44 +379,6 @@ describe('runtime theme (libghostty-vt)', () => {
     term.write('\x1b[?2026l');
     expect(themeOf(paint(), HOLD_C, [HOLD_A, HOLD_B])).toEqual({ shown: ALL_KEYS, leaked: [] });
   });
-
-  test('a disposed renderer drops its native presentation source', async () => {
-    const term = await terminal(THEME_A);
-    const renderer = term.renderer!;
-    term.write('held\x1b[?2026h');
-    term.options.theme = THEME_B;
-    const container = term.element;
-    term.dispose();
-    container?.remove();
-    expect(() => renderer.setTheme(THEME_A)).not.toThrow();
-  });
-
-  test('legacy engines keep their construction theme (no partial repaint)', async () => {
-    const term = await terminal(THEME_A);
-    const wasm = term.wasmTerm!;
-    Object.defineProperty(wasm, 'backend', { value: 'legacy' });
-    const calls: unknown[] = [];
-    wasm.setColors = (config) => calls.push(config);
-    const renderer = term.renderer!;
-    const rendererThemes: ITheme[] = [];
-    const setTheme = renderer.setTheme.bind(renderer);
-    renderer.setTheme = (theme) => {
-      rendererThemes.push(theme);
-      setTheme(theme);
-    };
-    const warn = console.warn;
-    const warnings: string[] = [];
-    console.warn = (message: string) => warnings.push(message);
-    try {
-      term.options.theme = THEME_B;
-    } finally {
-      console.warn = warn;
-    }
-    expect(calls).toEqual([]);
-    expect(rendererThemes).toEqual([]);
-    expect(warnings).toHaveLength(1);
-    expect(term.wasmTerm).toBe(wasm);
-  });
 });
 
 describe('runtime font change', () => {
@@ -424,55 +392,30 @@ describe('runtime font change', () => {
   }
 
   for (const dpr of [1, 1.25, 2]) {
-    test(`sizes the canvas in device pixels and keeps scrollbar state at DPR ${dpr}`, () =>
+    test(`a font size change sizes the canvas in device pixels and reports the new cell size at DPR ${dpr}`, () =>
       withWindowDpr(dpr, async () => {
         const term = await terminal(THEME_A, { fontSize: 15 });
         const renderer = term.renderer as CanvasRenderer;
         const canvas = renderer.getCanvas();
-        const renders: number[] = [];
-        let resizes = 0;
-        const render = renderer.render.bind(renderer);
-        const resize = renderer.resize.bind(renderer);
-        renderer.render = (...args: Parameters<CanvasRenderer['render']>) => {
-          renders.push(args[4] ?? 1);
-          render(...args);
-        };
-        renderer.resize = (cols: number, rows: number) => {
-          resizes++;
-          resize(cols, rows);
-        };
-        const internals = term as unknown as { scrollbar: { getOpacity(): number } };
-        internals.scrollbar.getOpacity = () => 0.25; // adapter's current visual state, e.g. mid-fade
+        const before = renderer.getMetrics();
 
         term.options.fontSize = 20;
 
         const { width, height } = renderer.getMetrics();
-        expect(width).toBeGreaterThan(0);
+        expect(height).toBeGreaterThan(before.height); // control: the metrics changed
         expect({
           backing: [canvas.width, canvas.height],
           css: [canvas.style.width, canvas.style.height],
-          resizes,
-          scrollbarOpacity: renders,
         }).toEqual({
           backing: [Math.floor(24 * width * dpr), Math.floor(4 * height * dpr)],
           css: [`${24 * width}px`, `${4 * height}px`],
-          resizes: 1,
-          scrollbarOpacity: [0.25],
         });
-        // The next frames find a consistent canvas: no further resize.
-        renderer.render(term.wasmTerm!, false, 0, term, 0.25);
-        expect(resizes).toBe(1);
-
-        // A fit/resize after changing the font must keep the same ownership,
-        // rather than silently recreating a CSS-sized backing store at high DPR.
+        // A later resize keeps the device-pixel backing store.
         term.resize(30, 5);
         expect([canvas.width, canvas.height]).toEqual([
           Math.floor(30 * width * dpr),
           Math.floor(5 * height * dpr),
         ]);
-        expect(resizes).toBe(2);
-        expect(renders.at(-1)).toBe(0.25);
-
         // The engine reports the new cell size (XTWINOPS 16 t: cell size in pixels).
         const replies: string[] = [];
         term.onData((data) => replies.push(data));

@@ -164,13 +164,6 @@ describe('URL Detection', () => {
     expect(links).toBeUndefined();
   });
 
-  test('link has activate function', async () => {
-    const links = await getLinks('https://example.com');
-    expect(links).toBeDefined();
-    expect(links?.length).toBe(1);
-    expect(typeof links?.[0].activate).toBe('function');
-  });
-
   test('detects tel: URLs', async () => {
     const links = await getLinks('Call tel:+1234567890');
     expect(links).toBeDefined();

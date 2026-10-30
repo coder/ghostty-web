@@ -36,7 +36,7 @@ function fingerprint(scene: Scene): string {
 }
 
 for (const scene of SCENES) {
-  test(`scene.${scene.id}`, async ({ harness }) => {
+  test(`scene ${scene.id} matches its reviewed baseline`, async ({ harness }) => {
     const font = harness.info.fonts[scene.fontRole ?? 'primary'];
     const fontSize = scene.fontSize ?? 15;
     const theme = { ...THEME, ...scene.theme };
@@ -48,7 +48,6 @@ for (const scene of SCENES) {
       theme,
       cursorStyle: scene.cursorStyle,
       cursorBlink: false,
-      smoothScrollDuration: 0,
     });
     await term.writeAndSettle(scene.input);
     if (scene.action?.kind === 'selection') {
@@ -58,7 +57,7 @@ for (const scene of SCENES) {
     } else if (scene.action?.kind === 'history') {
       await term.scrollLines(scene.action.lines);
       await harness.page.waitForFunction(
-        (id) => window.__ghosttyRegression.scrollbarState(id).opacity === 1,
+        (id) => window.__ghosttyHarness.scrollbarState(id).opacity === 1,
         term.id
       );
       await term.settle();

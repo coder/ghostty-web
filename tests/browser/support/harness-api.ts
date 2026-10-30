@@ -66,8 +66,6 @@ export interface CreateOptions {
   fontFamily?: string;
   /** Defaults to the primary font lock size. */
   fontSize?: number;
-  /** Forwarded to the Terminal constructor (0 = instant scrolling). */
-  smoothScrollDuration?: number;
 }
 
 /** Options changed at runtime through the public `terminal.options` proxy. */
@@ -80,7 +78,7 @@ export interface RuntimeOptions {
 }
 
 export interface ViewportState {
-  /** Raw `Terminal.getViewportY()` (may be fractional during smooth scrolling). */
+  /** Raw `Terminal.getViewportY()`. */
   viewportY: number;
   scrollbackLength: number;
   rows: number;
@@ -92,12 +90,6 @@ export interface CssRect {
   top: number;
   width: number;
   height: number;
-}
-
-/** `IBufferRange` from `Terminal.getSelectionPosition()`. */
-export interface SelectionRange {
-  start: { x: number; y: number };
-  end: { x: number; y: number };
 }
 
 /** Public `IBufferCell` view of one buffer cell. */
@@ -137,7 +129,7 @@ export interface GlyphOracleCapture extends Capture {
 }
 
 export interface ScrollbarState {
-  /** Test-only reach-in (capability 'scrollbar-state'): current fade opacity. */
+  /** Test-only reach-in: current fade opacity. */
   opacity: number;
   visible: boolean;
 }
@@ -158,13 +150,7 @@ export interface Capture {
 
 export interface TerminalEvents {
   data: string[];
-  binary: string[];
-  titles: string[];
-  bells: number;
   resizes: { cols: number; rows: number }[];
-  cursorMoves: number;
-  selectionChanges: number;
-  scrolls: number[];
 }
 
 export interface PagePoint {
@@ -172,12 +158,11 @@ export interface PagePoint {
   y: number;
 }
 
-/** Shape of `window.__ghosttyRegression`. */
+/** Shape of `window.__ghosttyHarness`. */
 export interface HarnessApi {
   ready: Promise<ReadyInfo>;
   create(options: CreateOptions): Promise<number>;
   write(id: number, data: string): void;
-  writeBytes(id: number, data: number[]): void;
   /** Resolve once two consecutive animation frames leave the canvas unchanged. */
   settle(id: number): Promise<number>;
   /** Stop the live render loop; frames are then produced only by `render`. */
@@ -190,22 +175,12 @@ export interface HarnessApi {
   /** Count CanvasRenderer.resize calls from now on. */
   spyResize(id: number): void;
   resizeCount(id: number): number;
-  /** Count native render-state refreshes from now on. */
-  spyViewportDecode(id: number): void;
-  viewportDecodeCount(id: number): number;
   spyWindowOpen(): void;
   openedUrls(): string[];
   selection(id: number): string;
-  paste(id: number, text: string): void;
-  clear(id: number): void;
-  /** Reentrant public-API regression: navigate once from the next scroll observer. */
-  navigateOnNextScroll(id: number, line: number): void;
-  /** Reentrant public-API regression: resize once from the next resize observer. */
-  resizeOnNextResize(id: number, cols: number, rows: number): void;
   resize(id: number, cols: number, rows: number): void;
   scrollbackLength(id: number): number;
   mode(id: number, mode: number): boolean;
-  hostChildCount(id: number): number;
   /** Dispose the terminal; returns how many child elements it left in its host. */
   dispose(id: number): number;
   disposeAll(): void;
@@ -220,16 +195,9 @@ export interface HarnessApi {
   viewport(id: number): ViewportState;
   canvasRect(id: number): CssRect;
   scrollLines(id: number, amount: number): void;
-  scrollPages(id: number, amount: number): void;
-  scrollToTop(id: number): void;
-  scrollToBottom(id: number): void;
-  scrollToLine(id: number, line: number): void;
   select(id: number, column: number, row: number, length: number): void;
-  selectLines(id: number, start: number, end: number): void;
-  selectAll(id: number): void;
   clearSelection(id: number): void;
   hasSelection(id: number): boolean;
-  selectionPosition(id: number): SelectionRange | undefined;
   /** `buffer.active.getLine(y)?.translateToString(trimRight)`; y is absolute (0 = oldest). */
   bufferLineText(id: number, y: number, trimRight?: boolean): string | undefined;
   bufferCell(id: number, y: number, x: number): BufferCellInfo | undefined;
@@ -238,6 +206,6 @@ export interface HarnessApi {
 
 declare global {
   interface Window {
-    __ghosttyRegression: HarnessApi;
+    __ghosttyHarness: HarnessApi;
   }
 }

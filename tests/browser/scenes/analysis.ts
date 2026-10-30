@@ -1,5 +1,5 @@
 /**
- * Pixel analysis for the option/appearance lane (Node side). Everything works
+ * Pixel analysis for the option and appearance tests (Node side). Everything works
  * on decoded RGBA; nothing here knows how ghostty-web draws.
  */
 

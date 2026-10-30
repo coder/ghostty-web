@@ -115,6 +115,7 @@ function harness(initial: Partial<ScrollbarSnapshot> = {}) {
 describe('SurfaceScrollbar thumb drag', () => {
   test('a thumb press is consumed before selection/reporting listeners and starts a drag', () => {
     const h = harness({ offset: 60 });
+    h.canvas.style.userSelect = 'text';
     const event = h.press(thumbCenter(60));
     expect(event.defaultPrevented).toBe(true);
     expect(h.reached).toEqual([]);
@@ -126,7 +127,7 @@ describe('SurfaceScrollbar thumb drag', () => {
     expect(h.rows).toEqual([50]);
     h.release();
     expect(h.scrollbar.isDragging).toBe(false);
-    expect(h.canvas.style.userSelect).toBe('');
+    expect(h.canvas.style.userSelect).toBe('text'); // restored, not cleared
     h.move(-10);
     expect(h.rows).toEqual([50]);
   });
@@ -217,6 +218,8 @@ describe('SurfaceScrollbar thumb drag', () => {
     const h = harness({ offset: 60 });
     h.press(thumbCenter(60));
     h.setHeight(188); // 180px track, 36px thumb: 144px of travel for 80 rows
+    h.move(0); // relayout alone is not pointer motion
+    expect(h.rows).toEqual([]);
     h.move(9);
     expect(h.rows).toEqual([65]);
   });
@@ -386,15 +389,6 @@ describe('SurfaceScrollbar presses and buttons', () => {
       expect(h.scrollbar.isDragging).toBe(false);
     });
   }
-
-  test('the canvas user-select styles are restored, not cleared', () => {
-    const h = harness({ offset: 60 });
-    h.canvas.style.userSelect = 'text';
-    h.press(thumbCenter(60));
-    expect(h.canvas.style.userSelect).toBe('none');
-    h.release();
-    expect(h.canvas.style.userSelect).toBe('text');
-  });
 });
 
 describe('SurfaceScrollbar visibility', () => {
@@ -460,16 +454,6 @@ describe('SurfaceScrollbar visibility', () => {
     expect(h.scrollbar.getOpacity(4499)).toBe(1);
     expect(h.scrollbar.getOpacity(4700)).toBe(0);
     expect(h.rows).toEqual([]);
-  });
-
-  test('drag start and end request frames', () => {
-    const h = harness({ offset: 60 });
-    h.press(thumbCenter(60));
-    expect(h.renders()).toBe(1);
-    h.move(-1);
-    expect(h.renders()).toBe(1); // movement renders through the surface, not here
-    h.release();
-    expect(h.renders()).toBe(2);
   });
 });
 

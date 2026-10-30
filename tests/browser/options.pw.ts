@@ -1,11 +1,10 @@
 /**
- * Option/appearance lane: constructor colours, font family/size, runtime
+ * Options and appearance: constructor colours, font family/size, runtime
  * option changes. Fonts are checked against an independent canvas oracle (the
  * requested vendored font drawn directly, no terminal code) with positive
  * controls proving the two vendored fonts — and two sizes — really differ, so
  * two wrong paths cannot both pass. Font cases use bare family names (no
  * fallback): the primary DejaVu Sans Mono may also be the system `monospace`.
-
  */
 
 import {
@@ -26,7 +25,7 @@ import {
 import type { CreateOptions, RuntimeOptions, ThemeSpec } from './support/harness-api';
 import { cellCore, diffCells, uniformColor } from './support/pixels';
 
-/** Two unrelated, non-default themes; no colour is #000000 (WEB-04 sentinel). */
+/** Two unrelated, non-default themes; no colour is #000000 (explicit black must not look like a default). */
 const THEME_A = {
   background: '#14213d',
   foreground: '#fca311',
@@ -54,7 +53,7 @@ const THEME_B = {
 /**
  * Probe glyphs, each separated by two blank cells (overflow stays in the probe
  * region). Three blank columns on the right keep content out of the 14px
- * scrollbar strip, which a font change blanks (OPT-01, its own case below).
+ * scrollbar strip, which a font change once blanked (its own case below).
  */
 const GLYPHS = ['A', 'g', '@', 'W', 'm', '0', 'Q', 'k'] as const;
 const GLYPH_ROW = ` ${GLYPHS.join('  ')}`;
@@ -135,7 +134,7 @@ async function probeThemeColors(harness: Harness, theme: typeof THEME_A | typeof
   };
 }
 
-test('options.ctor-theme-colors', async ({ harness }) => {
+test('constructor themes paint every themed colour', async ({ harness }) => {
   for (const [label, theme] of [
     ['a', THEME_A],
     ['b', THEME_B],
@@ -194,8 +193,10 @@ async function expectFamily(harness: Harness, family: 'primary' | 'alternate') {
   expect(matchingOther, 'glyphs-differ-from-other-family').toStrictEqual([]);
 }
 
-test('options.font-family-alternate-bare', ({ harness }) => expectFamily(harness, 'alternate'));
-test('options.font-family-primary-bare', ({ harness }) => expectFamily(harness, 'primary'));
+test('fontFamily draws the requested font, not the other one', async ({ harness }) => {
+  await expectFamily(harness, 'alternate');
+  await expectFamily(harness, 'primary');
+});
 
 // --- Font size -----------------------------------------------------------------------
 
@@ -204,7 +205,7 @@ test('options.font-family-primary-bare', ({ harness }) => expectFamily(harness, 
  * proven by size: the cell pitch must be the advance rounded up to whole CSS
  * pixels, every probe glyph must match the oracle at that size and fit its cell.
  */
-test('options.font-size-remeasures', async ({ harness }) => {
+test('fontSize re-measures the cell from the font advance', async ({ harness }) => {
   const { primary } = families(harness);
   const oracles = new GlyphOracles(harness);
   const dpr = harness.info.dpr;
@@ -324,7 +325,7 @@ async function expectRuntimeMatchesFresh(
   }
 }
 
-test('options.runtime-font-size-matches-fresh', async ({ harness }) => {
+test('a runtime fontSize change matches a terminal created with it', async ({ harness }) => {
   const { primary } = families(harness);
   await expectRuntimeMatchesFresh(harness, { fontFamily: primary, fontSize: 15 }, [
     { fontFamily: primary, fontSize: 24 },
@@ -332,7 +333,7 @@ test('options.runtime-font-size-matches-fresh', async ({ harness }) => {
   ]);
 });
 
-test('options.runtime-font-family-matches-fresh', async ({ harness }) => {
+test('a runtime fontFamily change matches a terminal created with it', async ({ harness }) => {
   const { primary, alternate } = families(harness);
   await expectRuntimeMatchesFresh(harness, { fontFamily: primary, fontSize: 15 }, [
     { fontFamily: alternate, fontSize: 15 },
@@ -340,11 +341,11 @@ test('options.runtime-font-family-matches-fresh', async ({ harness }) => {
   ]);
 });
 
-test.describe('device scale factor 2', () => {
-  // handleFontChange rewrites the canvas size without DPR; the result must still
-  // equal a fresh terminal at an integer DPR (fractional DPR is covered by dpr.pw.ts).
+test.describe('at DPR 2', () => {
+  // A font change resizes the canvas; its backing store must stay in device
+  // pixels and equal a fresh terminal's (fractional DPR is covered by dpr.pw.ts).
   test.use({ deviceScaleFactor: 2 });
-  test('options.runtime-font-size-matches-fresh-at-2x', async ({ harness }) => {
+  test('a runtime font change matches a terminal created with it', async ({ harness }) => {
     expect(harness.info.dpr, 'dpr').toStrictEqual(2);
     const { primary, alternate } = families(harness);
     await expectRuntimeMatchesFresh(harness, { fontFamily: primary, fontSize: 15 }, [
@@ -354,11 +355,11 @@ test.describe('device scale factor 2', () => {
 });
 
 /**
- * OPT-01: handleFontChange renders without the scrollbar opacity, so the
- * renderer's scrollbar pass blanks the right 14 CSS px of every row; rows that
- * are not redrawn afterwards keep the hole. Content reaches the last column.
+ * The repaint after a font change must keep the scrollbar's state: rendering it
+ * hidden made the scrollbar pass blank the right 14 CSS px of every row, and
+ * rows not redrawn afterwards kept the hole. Content reaches the last column.
  */
-test('options.runtime-font-change-keeps-right-edge', async ({ harness }) => {
+test('a runtime font change keeps content at the right edge', async ({ harness }) => {
   const { primary } = families(harness);
   const text = 'edge-to-edge 0123456789';
   const write = (term: BrowserTerminal) => term.writeAndSettle(`${text}\r\n`);
@@ -375,11 +376,11 @@ test('options.runtime-font-change-keeps-right-edge', async ({ harness }) => {
 });
 
 /**
- * OPT-02: cell height comes from the ink box of 'M', so at some sizes glyphs
- * taller than 'M' (the dot of j, |, parentheses) are clipped by the canvas
- * edge or the next row. 15px (the lane default) happens to fit.
+ * Glyphs taller than 'M' (the dot of j, |, parentheses) must fit the cell: a
+ * cell measured from 'M' alone clips them at 13px. 15px (the default here)
+ * happens to fit either way.
  */
-test('options.font-size-13-tall-glyphs-fit-cell', async ({ harness }) => {
+test('glyphs taller than M fit the cell at 13px', async ({ harness }) => {
   const { primary } = families(harness);
   const oracles = new GlyphOracles(harness);
   const tall = ['j', 'g', '|', '('];
@@ -412,7 +413,9 @@ test('options.font-size-13-tall-glyphs-fit-cell', async ({ harness }) => {
   ).toStrictEqual([]);
 });
 
-test('options.runtime-theme-keeps-held-frame-isolated', async ({ harness }) => {
+test('a runtime theme change keeps the synchronized-output frame; a selection view shows the new theme', async ({
+  harness,
+}) => {
   const term = await harness.create({ cols: 12, rows: 3, theme: THEME_A });
   await term.writeAndSettle('\u2588 \x1b[31m\u2588\x1b[0m\x1b[3;12H');
   const before = await term.capture();
@@ -433,7 +436,9 @@ test('options.runtime-theme-keeps-held-frame-isolated', async ({ harness }) => {
   await expectSameCells('held-theme-restored', restored.image, before.image, restored.grid);
 });
 
-test('options.runtime-theme-follows-a-new-hold-without-live-paint', async ({ harness }) => {
+test('a hold that starts after a runtime theme change shows the new theme without a live paint', async ({
+  harness,
+}) => {
   const term = await harness.create({ cols: 12, rows: 3, theme: THEME_A });
   const oracle = await harness.create({ cols: 12, rows: 3, theme: THEME_B });
   const contents = '\u2588 \x1b[31m\u2588\x1b[0m\x1b[3;12H';
@@ -448,9 +453,9 @@ test('options.runtime-theme-follows-a-new-hold-without-live-paint', async ({ har
   await expectSameCells('new-hold-captures-new-theme', actual.image, expected.image, actual.grid);
 });
 
-// --- Runtime theme (desired behaviour; currently only console.warn) -----------------
+// --- Runtime theme ----------------------------------------------------------------
 
-test('options.runtime-theme-applies', async ({ harness }) => {
+test('a runtime theme change matches a terminal created with it', async ({ harness }) => {
   const write = (term: BrowserTerminal) =>
     term.writeAndSettle('\u2588 \x1b[31m\u2588\x1b[0m\x1b[3;12H');
   const live = await harness.create({ cols: 12, rows: 3, theme: THEME_A });

@@ -49,8 +49,6 @@
     "prebuild": "bun install",
     "build": "bun run clean && bun run build:wasm && bun run build:lib && bun run build:wasm-copy",
     "build:wasm": "./scripts/build-wasm.sh",
-    "build:wasm:legacy": "./scripts/build-legacy-wasm.sh",
-    "build:wasm:all": "./scripts/build-wasm.sh all",
     "build:lib": "vite build",
     "build:wasm-copy": "cp ghostty-vt.wasm dist/",
     "clean": "rm -rf dist",

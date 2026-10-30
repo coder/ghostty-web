@@ -1,6 +1,6 @@
 /**
- * Support for the scrollback / selection interaction lane
- * (`scrollback.pw.ts`, `selection-history.pw.ts`).
+ * Scrollback and selection helpers for `scrollback.pw.ts` and
+ * `selection-history.pw.ts`.
  *
  * Oracles here are derived from the fixture and the user actions, never from
  * the private state under test:
@@ -10,12 +10,6 @@
  *   (selection colour vs theme background), so glyph ink never matters;
  * - expected highlight regions follow the linear (stream) selection rule from
  *   the drag's anchor and end cells.
- *
- * Finding ids are the research report's (WEB-08/09, SW-07) plus two found by this lane:
- * - IX-01: scrollbar drag stops tracking once the pointer leaves the terminal
- *   element (mousemove is not captured on the document), so it never clamps.
- * - IX-02: a fractional viewportY (pixel wheel deltas that are not whole rows)
- *   makes the renderer read the boundary row past the end of scrollback.
  */
 
 import { type BrowserTerminal, type Harness, THEME } from './fixture';
@@ -30,7 +24,7 @@ const MARK_BASE = 64;
 const MARK_STEP = 12;
 
 /** Unique truecolor per line (0..4095); never black, the theme or the selection colour. */
-export function markerRgb(line: number): [number, number, number] {
+function markerRgb(line: number): [number, number, number] {
   return [
     MARK_BASE + (line % 16) * MARK_STEP,
     MARK_BASE + ((line >> 4) % 16) * MARK_STEP,
@@ -38,7 +32,7 @@ export function markerRgb(line: number): [number, number, number] {
   ];
 }
 
-export function lineLabel(line: number): string {
+function lineLabel(line: number): string {
   return `L${String(line).padStart(4, '0')}`;
 }
 
@@ -48,7 +42,7 @@ export function lineText(line: number): string {
 }
 
 /** VT bytes for one fixture line: a 2-cell marker, then the numbered text. */
-export function lineBytes(line: number): string {
+function lineBytes(line: number): string {
   const [r, g, b] = markerRgb(line);
   return `\x1b[48;2;${r};${g};${b}m  \x1b[0m${lineText(line).slice(2)}`;
 }
@@ -59,7 +53,7 @@ export function linesBytes(count: number, from = 0): string {
 }
 
 /** Decode a marker colour back to its line number, or describe what is there instead. */
-export function decodeMarker(hex: string): number | string {
+function decodeMarker(hex: string): number | string {
   const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
   const index = (v: number) => (v - MARK_BASE) / MARK_STEP;
   const parts = [r, g, b].map(index);
@@ -113,15 +107,11 @@ export async function historyFixture(
     rows: number;
     total: number;
     minHistory: number;
-    smooth?: number;
-    limit?: number;
   }
 ): Promise<HistoryFixture> {
   const term = await harness.create({
     cols: options.cols,
     rows: options.rows,
-    smoothScrollDuration: options.smooth ?? 0,
-    ...(options.limit === undefined ? {} : { scrollback: options.limit }),
   });
   await term.writeAndSettle(linesBytes(options.total));
   const { scrollbackLength, viewportY } = await term.viewport();

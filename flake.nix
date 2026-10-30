@@ -15,11 +15,9 @@
           overlays = [ zig-overlay.overlays.default ];
         };
         zig = pkgs.zigpkgs."0.16.0";
-        legacyZig = pkgs.zigpkgs."0.15.2";
       in {
         devShells.default = pkgs.mkShell {
           ZIG_0_16_BIN = "${zig}/bin/zig";
-          ZIG_0_15_BIN = "${legacyZig}/bin/zig";
           buildInputs = [
             pkgs.bun
             pkgs.nodejs_22

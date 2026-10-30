@@ -6,7 +6,7 @@
 
 ```bash
 bun install                          # Install dependencies
-bun test                            # Run test suite (95 tests)
+bun test                            # Run unit and integration tests
 bun run dev                         # Start Vite dev server (http://localhost:8000)
 ```
 
@@ -66,7 +66,7 @@ This is a **fully functional terminal emulator** (MVP complete) that uses Ghostt
             └─► SelectionManager (lib/selection-manager.ts)
                 └─ Text selection + clipboard
 
-Ghostty WASM Bridge (lib/ghostty.ts)
+Ghostty WASM Bridge (lib/ghostty.ts, over lib/vt/)
 ├─ Ghostty - WASM loader
 ├─ GhosttyTerminal - Terminal instance wrapper
 └─ KeyEncoder - Keyboard event encoding
@@ -78,6 +78,7 @@ Ghostty WASM Bridge (lib/ghostty.ts)
 | --------------------------- | ----- | ----------------------------------- |
 | `lib/terminal.ts`           | 427   | Main Terminal class, xterm.js API   |
 | `lib/ghostty.ts`            | 552   | WASM bridge, memory management      |
+| `lib/vt/`                   | 3589  | libghostty-vt ABI checks and bridge |
 | `lib/renderer.ts`           | 610   | Canvas renderer with font metrics   |
 | `lib/input-handler.ts`      | 438   | Keyboard → escape sequences         |
 | `lib/selection-manager.ts`  | 442   | Text selection + clipboard          |
@@ -123,7 +124,7 @@ Ghostty WASM Bridge (lib/ghostty.ts)
 bun run fmt                           # Check formatting (Prettier)
 bun run lint                          # Run linter (Biome)
 bun run typecheck                     # Type check (TypeScript)
-bun test                              # Run tests (95 tests)
+bun test                              # Run unit and integration tests
 bun run build                         # Build library
 ```
 
@@ -140,7 +141,9 @@ bun test --watch                      # Watch mode (may hang - use Ctrl+C and re
 bun test -t "test name pattern"       # Run matching tests
 ```
 
-**Test files:** `*.test.ts` in `lib/` (terminal, renderer, input-handler, selection-manager, fit)
+**Test files:** unit tests colocated as `lib/**/*.test.ts`; whole-`Terminal` behavior in
+`tests/integration/*.test.ts`; Chromium pixel/input tests in `tests/browser/*.pw.ts`
+(`bun run test:browser:container`). See `tests/README.md`.
 
 ### Running Demos
 

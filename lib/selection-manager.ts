@@ -52,25 +52,23 @@ export class SelectionManager {
   // Selection state - coordinates are in ABSOLUTE buffer space (viewportY + viewportRow)
   // This ensures selection persists correctly when scrolling.
   //
-  // On libghostty-vt the terminal owns the selection: `selectionStart` (the
-  // anchor) and `selectionEnd` are accessors over the native, tracked
-  // selection. Reads re-query its endpoints (they move with content through
-  // output, history pruning and reflow, and a screen switch or reset clears
-  // them), so every consumer - renderer, API callers, event listeners - sees
-  // the current native state; writes install the new range natively. Only
-  // the anchoring and the copy text are native: which rows the public API and
-  // gestures select (the absolute rows computed below) is unchanged host
-  // policy. The legacy engine keeps the plain JS fields.
+  // The terminal owns the selection: `selectionStart` (the anchor) and
+  // `selectionEnd` are accessors over the native, tracked selection. Reads
+  // re-query its endpoints (they move with content through output, history
+  // pruning and reflow, and a screen switch or reset clears them), so every
+  // consumer - renderer, API callers, event listeners - sees the current
+  // native state; writes install the new range natively. Only the anchoring
+  // and the copy text are native: which rows the public API and gestures
+  // select (the absolute rows computed below) is unchanged host policy.
   private start: SelectionPoint | null = null;
   private end: SelectionPoint | null = null;
-  private readonly nativeSelection: boolean;
   /**
-   * Native only: exactly one endpoint has been assigned (e.g. between the two
+   * Exactly one endpoint has been assigned (e.g. between the two
    * assignments that start a selection). The terminal holds no selection then,
    * so the JS half must not be overwritten by a re-read until it is completed.
    */
   private halfAssigned = false;
-  /** The viewport rows painted for the selection last frame (both engines). */
+  /** The viewport rows painted for the selection last frame. */
   private paintedCoords: SelectionCoordinates | null = null;
   private isSelecting: boolean = false;
   private mouseDownX: number = 0;
@@ -144,7 +142,6 @@ export class SelectionManager {
     this.renderer = renderer;
     this.wasmTerm = wasmTerm;
     this.textarea = textarea;
-    this.nativeSelection = wasmTerm.backend === 'libghostty-vt';
 
     // Attach mouse event listeners
     this.attachEventListeners();
@@ -172,17 +169,16 @@ export class SelectionManager {
     this.pushNative();
   }
 
-  /** Native: re-read the terminal-owned endpoints (never reuse ones read before a mutation). */
+  /** Re-read the terminal-owned endpoints (never reuse ones read before a mutation). */
   private syncNative(): void {
-    if (!this.nativeSelection || this.halfAssigned) return;
+    if (this.halfAssigned) return;
     const range = this.wasmTerm.getSelectionRange();
     this.start = range ? { col: range.start.x, absoluteRow: range.start.y } : null;
     this.end = range ? { col: range.end.x, absoluteRow: range.end.y } : null;
   }
 
-  /** Native: install the JS endpoints (clamped to the active screen), or clear. */
+  /** Install the JS endpoints (clamped to the active screen), or clear. */
   private pushNative(): void {
-    if (!this.nativeSelection) return;
     this.halfAssigned = (this.start === null) !== (this.end === null);
     if (!this.start || !this.end) {
       this.wasmTerm.clearSelection();
@@ -225,92 +221,9 @@ export class SelectionManager {
    * Get the selected text as a string
    */
   getSelection(): string {
-    // Native: Ghostty's own copy text (soft wraps unwrapped, wide spacers and
-    // trailing blanks dropped, full graphemes) of the terminal-owned selection.
-    if (this.nativeSelection) return this.wasmTerm.getSelectionText();
-
-    if (!this.selectionStart || !this.selectionEnd) return '';
-
-    // Get absolute row coordinates (not clamped to viewport)
-    let { col: startCol, absoluteRow: startAbsRow } = this.selectionStart;
-    let { col: endCol, absoluteRow: endAbsRow } = this.selectionEnd;
-
-    // Swap if selection goes backwards
-    if (startAbsRow > endAbsRow || (startAbsRow === endAbsRow && startCol > endCol)) {
-      [startCol, endCol] = [endCol, startCol];
-      [startAbsRow, endAbsRow] = [endAbsRow, startAbsRow];
-    }
-
-    const scrollbackLength = this.wasmTerm.getScrollbackLength();
-    let text = '';
-
-    for (let absRow = startAbsRow; absRow <= endAbsRow; absRow++) {
-      // Fetch line based on absolute row position
-      // Absolute row < scrollbackLength means it's in scrollback
-      // Absolute row >= scrollbackLength means it's in the screen buffer
-      let line: GhosttyCell[] | null = null;
-
-      if (absRow < scrollbackLength) {
-        // Row is in scrollback
-        line = this.wasmTerm.getScrollbackLine(absRow);
-      } else {
-        // Row is in screen buffer
-        const screenRow = absRow - scrollbackLength;
-        line = this.wasmTerm.getLine(screenRow);
-      }
-
-      if (!line) continue;
-
-      // Track the last non-empty column for trimming trailing spaces
-      let lastNonEmpty = -1;
-
-      // Determine column range for this row
-      const colStart = absRow === startAbsRow ? startCol : 0;
-      const colEnd = absRow === endAbsRow ? endCol : line.length - 1;
-
-      // Build the line text
-      let lineText = '';
-      for (let col = colStart; col <= colEnd; col++) {
-        const cell = line[col];
-        if (cell && cell.codepoint !== 0) {
-          // Use grapheme lookup for cells with multi-codepoint characters
-          let char: string;
-          if (cell.grapheme_len > 0) {
-            // Row is in scrollback or screen - determine which and use appropriate method
-            if (absRow < scrollbackLength) {
-              char = this.wasmTerm.getScrollbackGraphemeString(absRow, col);
-            } else {
-              const screenRow = absRow - scrollbackLength;
-              char = this.wasmTerm.getGraphemeString(screenRow, col);
-            }
-          } else {
-            char = String.fromCodePoint(cell.codepoint);
-          }
-          lineText += char;
-          if (char.trim()) {
-            lastNonEmpty = lineText.length;
-          }
-        } else {
-          lineText += ' ';
-        }
-      }
-
-      // Trim trailing spaces from each line
-      if (lastNonEmpty >= 0) {
-        lineText = lineText.substring(0, lastNonEmpty);
-      } else {
-        lineText = '';
-      }
-
-      text += lineText;
-
-      // Add newline between rows (but not after the last row)
-      if (absRow < endAbsRow) {
-        text += '\n';
-      }
-    }
-
-    return text;
+    // Ghostty's own copy text (soft wraps unwrapped, wide spacers and trailing
+    // blanks dropped, full graphemes) of the terminal-owned selection.
+    return this.wasmTerm.getSelectionText();
   }
 
   /**
@@ -375,24 +288,16 @@ export class SelectionManager {
    */
   selectAll(): void {
     const dims = this.wasmTerm.getDimensions();
-    if (this.nativeSelection) {
-      // Host policy: the whole grid, every column of every row (as before),
-      // extended to the whole history. Always selects and fires, even when the
-      // buffer is blank. The copy text comes from Ghostty's formatter, which
-      // trims trailing blanks and blank trailing rows. (Upstream
-      // ghostty_terminal_select_all would instead trim the range itself.)
-      this.selectionStart = { col: 0, absoluteRow: 0 };
-      this.selectionEnd = {
-        col: dims.cols - 1,
-        absoluteRow: this.wasmTerm.getScrollbackLength() + dims.rows - 1,
-      };
-      this.requestRender();
-      this.selectionChangedEmitter.fire();
-      return;
-    }
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: 0, absoluteRow: viewportY };
-    this.selectionEnd = { col: dims.cols - 1, absoluteRow: viewportY + dims.rows - 1 };
+    // Host policy: the whole grid, every column of every row, extended to the
+    // whole history. Always selects and fires, even when the buffer is blank.
+    // The copy text comes from Ghostty's formatter, which trims trailing
+    // blanks and blank trailing rows. (Upstream ghostty_terminal_select_all
+    // would instead trim the range itself.)
+    this.selectionStart = { col: 0, absoluteRow: 0 };
+    this.selectionEnd = {
+      col: dims.cols - 1,
+      absoluteRow: this.wasmTerm.getScrollbackLength() + dims.rows - 1,
+    };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }
@@ -402,11 +307,10 @@ export class SelectionManager {
    * xterm.js compatible API
    */
   select(column: number, row: number, length: number): void {
-    // Row mapping is ghostty-web's established public behavior on both engines
-    // (absolute row = viewportY + row, clamped to the viewport height); it is
-    // not xterm.js's absolute buffer row. On libghostty-vt the resulting range
-    // is installed as the terminal-owned selection, which then follows its
-    // content.
+    // Row mapping is ghostty-web's established public behavior (absolute row =
+    // viewportY + row, clamped to the viewport height); it is not xterm.js's
+    // absolute buffer row. The resulting range is installed as the
+    // terminal-owned selection, which then follows its content.
 
     // Clamp to valid ranges
     const dims = this.wasmTerm.getDimensions();
@@ -439,9 +343,9 @@ export class SelectionManager {
    * xterm.js compatible API
    */
   selectLines(start: number, end: number): void {
-    // `start`/`end` are viewport rows on both engines (established public
-    // behavior, not xterm.js's absolute buffer rows); on libghostty-vt the
-    // resulting rows become the terminal-owned selection.
+    // `start`/`end` are viewport rows (established public behavior, not
+    // xterm.js's absolute buffer rows); the resulting rows become the
+    // terminal-owned selection.
     const dims = this.wasmTerm.getDimensions();
 
     // Clamp to valid row ranges
@@ -531,14 +435,12 @@ export class SelectionManager {
   dispose(): void {
     this.selectionChangedEmitter.dispose();
 
-    // Native: release the terminal-owned selection (its tracked pins) with us.
-    if (this.nativeSelection) {
-      this.start = null;
-      this.end = null;
-      this.halfAssigned = false;
-      this.isSelecting = false;
-      this.wasmTerm.clearSelection();
-    }
+    // Release the terminal-owned selection (its tracked pins) with us.
+    this.start = null;
+    this.end = null;
+    this.halfAssigned = false;
+    this.isSelecting = false;
+    this.wasmTerm.clearSelection();
 
     // Stop auto-scroll if active
     this.stopAutoScroll();
@@ -604,10 +506,7 @@ export class SelectionManager {
   /** Native tracking owns pointer input unless the host's Shift-selection policy applies. */
   private applicationOwnsMouse(event: MouseEvent): boolean {
     return (
-      this.wasmTerm.backend === 'libghostty-vt' &&
-      !this.terminal.options.disableStdin &&
-      this.wasmTerm.hasMouseTracking() &&
-      !event.shiftKey
+      !this.terminal.options.disableStdin && this.wasmTerm.hasMouseTracking() && !event.shiftKey
     );
   }
 

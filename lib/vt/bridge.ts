@@ -1,5 +1,7 @@
 /**
- * libghostty-vt engine: upstream Ghostty's public C API compiled to WASM.
+ * The libghostty-vt bridge: upstream Ghostty's public C API compiled to WASM,
+ * driven through the validated ABI in ./abi.ts. The public facades in
+ * lib/ghostty.ts wrap these classes and add use-after-free checks.
  *
  * The native viewport (upstream `PageList.viewport`, one per screen) is the
  * only authority for what the active screen shows. `scrollViewport()` moves
@@ -35,10 +37,9 @@ import {
   type RenderStateColors,
   type RenderStateCursor,
 } from '../types';
-import { type NativeAbi, type NativeLayout, bitsOf } from './native-abi';
+import { type NativeAbi, type NativeLayout, bitsOf } from './abi';
 import type {
   HeldFrameView,
-  KeyEncoderBackend,
   NativeHostEvent,
   NativeMouseEvent,
   NativeRenderView,
@@ -46,13 +47,11 @@ import type {
   NativeScrollState,
   ScreenPoint,
   ScreenSelection,
-  TerminalBackend,
-  VtBackend,
 } from './types';
 
-/** Defaults the legacy engine rendered when no theme color was configured. */
-const LEGACY_DEFAULT_FOREGROUND = 0xcccccc;
-const LEGACY_DEFAULT_BACKGROUND = 0x000000;
+/** ghostty-web's default colors when no theme color is configured. */
+const DEFAULT_FOREGROUND = 0xcccccc;
+const DEFAULT_BACKGROUND = 0x000000;
 const DEFAULT_SCROLLBACK_LINES = 10_000;
 /** Mode 2027 (grapheme clustering) is ghostty-web's default, kept across RIS. */
 const GRAPHEME_CLUSTER_MODE = 2027;
@@ -66,7 +65,7 @@ const WRITE_CHUNK = 64 * 1024;
  * the grid instead of by all hyperlinked output ever decoded.
  */
 const LINK_ID_SLACK = 1024;
-/** `readResponse()` returns at most this many bytes per call, as the legacy engine did. */
+/** `readResponse()` returns at most this many bytes per call (ghostty-web's established chunking). */
 const RESPONSE_CHUNK = 256;
 /**
  * Native mouse positions and screen sizes are f32, exact for integers below
@@ -99,7 +98,7 @@ const MOUSE_BUTTONS = {
   keyof NativeLayout['mouseButton']
 >;
 
-/** Optional presence bits added to the public config (legacy ignores them). */
+/** Optional presence bits of the public config (`GhosttyTerminalConfig.colorPresence`). */
 type ColorPresence = {
   foreground?: boolean;
   background?: boolean;
@@ -141,8 +140,12 @@ interface HeldFrame {
 /** Shared (immutable) bell event, so a bell flood queues no per-bell objects. */
 const BELL_EVENT: NativeHostEvent = Object.freeze({ type: 'bell' });
 
-export class NativeBackend implements VtBackend {
-  readonly kind = 'libghostty-vt' as const;
+/**
+ * One loaded libghostty-vt WASM instance: the validated ABI, the registry the
+ * shared callback trampolines dispatch through, and the instance-wide
+ * reentrancy guard. Shared by every terminal and key encoder created from it.
+ */
+export class NativeInstance {
   private readonly terminals = new Map<number, NativeTerminal>();
   private writePtyIndex = 0;
   private sizeIndex = 0;
@@ -482,7 +485,12 @@ interface CellSource {
   hyperlinkId(x: number): number;
 }
 
-export class NativeTerminal implements TerminalBackend {
+/**
+ * One terminal. The facade (`GhosttyTerminal`) owns use-after-free checks,
+ * size bookkeeping and empty-write elision: `write()` only gets nonempty
+ * bytes, `resize()` only real size changes, and `free()` runs at most once.
+ */
+export class NativeTerminal {
   private readonly abi: NativeAbi;
   private readonly L: NativeLayout;
   private handle = 0;
@@ -528,8 +536,8 @@ export class NativeTerminal implements TerminalBackend {
   private dirty: DirtyState = DirtyState.FULL;
   private rowDirty = new Uint8Array(0);
   private readonly palette = new Uint8Array(768);
-  private background = LEGACY_DEFAULT_BACKGROUND;
-  private foreground = LEGACY_DEFAULT_FOREGROUND;
+  private background = DEFAULT_BACKGROUND;
+  private foreground = DEFAULT_FOREGROUND;
   private cursorColor: number | null = null;
   /** Viewport-relative cursor of the pool (the render view's cursor). */
   private viewCursor: RenderStateCursor = {
@@ -598,13 +606,13 @@ export class NativeTerminal implements TerminalBackend {
   private canvasCurrent = true;
 
   constructor(
-    private readonly backend: NativeBackend,
+    private readonly instance: NativeInstance,
     cols: number,
     rows: number,
     config?: GhosttyTerminalConfig
   ) {
     checkSize(cols, rows);
-    this.abi = backend.abi;
+    this.abi = instance.abi;
     this.L = this.abi.layout;
     this.cols = cols;
     this.rows = rows;
@@ -616,7 +624,7 @@ export class NativeTerminal implements TerminalBackend {
     const ex = this.abi.exports;
     try {
       this.handle = this.abi.newHandle(ex.ghostty_terminal_new, 'ghostty_terminal_new', cols, rows);
-      this.backend.register(this.handle, this);
+      this.instance.register(this.handle, this);
       this.renderState = this.abi.newHandle(
         ex.ghostty_render_state_new,
         'ghostty_render_state_new'
@@ -634,8 +642,8 @@ export class NativeTerminal implements TerminalBackend {
       view.setUint32(this.scratch.iterRef, this.rowIterator, true);
       view.setUint32(this.scratch.cellsRef, this.rowCells, true);
       this.configure(config);
-      this.set('WRITE_PTY', this.backend.writePtyCallback());
-      this.set('SIZE', this.backend.sizeCallback());
+      this.set('WRITE_PTY', this.instance.writePtyCallback());
+      this.set('SIZE', this.instance.sizeCallback());
       this.allocatePool();
     } catch (error) {
       this.release();
@@ -648,11 +656,11 @@ export class NativeTerminal implements TerminalBackend {
   // ==========================================================================
 
   write(bytes: Uint8Array): void {
-    if (this.backend.writing) {
+    if (this.instance.writing) {
       throw new Error('libghostty-vt: reentrant write while another write is in progress');
     }
     const ex = this.abi.exports;
-    this.backend.writing = true;
+    this.instance.writing = true;
     try {
       for (let start = 0; start < bytes.length; start += WRITE_CHUNK) {
         const chunk = bytes.subarray(start, Math.min(bytes.length, start + WRITE_CHUNK));
@@ -674,7 +682,7 @@ export class NativeTerminal implements TerminalBackend {
         }
       }
     } finally {
-      this.backend.writing = false;
+      this.instance.writing = false;
       this.stale = true;
       // Any write may change mouse modes (set/reset, RIS, ...); re-read them
       // before the next mouse event. Dedup survives between writes.
@@ -685,7 +693,7 @@ export class NativeTerminal implements TerminalBackend {
       // when a callback error aborted the write.
       if (this.activeHold) this.endHoldIfSyncOff();
     }
-    this.backend.rethrowCallbackError();
+    this.instance.rethrowCallbackError();
   }
 
   resize(cols: number, rows: number): void {
@@ -722,7 +730,7 @@ export class NativeTerminal implements TerminalBackend {
     );
     this.stale = true;
     // Replies (mode 2048 reports) and callback errors raised during the resize.
-    this.backend.rethrowCallbackError();
+    this.instance.rethrowCallbackError();
   }
 
   /**
@@ -791,13 +799,13 @@ export class NativeTerminal implements TerminalBackend {
   }
 
   /** @internal */
-  get owner(): NativeBackend {
-    return this.backend;
+  get owner(): NativeInstance {
+    return this.instance;
   }
 
   private release(): void {
     const ex = this.abi.exports;
-    if (this.handle) this.backend.unregister(this.handle);
+    if (this.handle) this.instance.unregister(this.handle);
     if (this.mouseProbeEvent) ex.ghostty_mouse_event_free(this.mouseProbeEvent);
     if (this.mouseProbe) ex.ghostty_mouse_encoder_free(this.mouseProbe);
     this.mouseProbe = this.mouseProbeEvent = 0;
@@ -911,7 +919,6 @@ export class NativeTerminal implements TerminalBackend {
 
   private createRenderView(): NativeRenderView {
     return {
-      backend: 'libghostty-vt',
       getDimensions: () => ({ cols: this.cols, rows: this.rows }),
       getScrollState: () => this.getScrollState(),
       getScrollbackLength: () => this.getScrollbackLength(),
@@ -1142,7 +1149,7 @@ export class NativeTerminal implements TerminalBackend {
   /** Encode a host focus state only while DEC mode 1004 is active. */
   encodeFocus(focused: boolean): Uint8Array {
     if (!this.getMode(1004, false)) return new Uint8Array(0);
-    const { abi } = this.backend;
+    const { abi } = this.instance;
     const s = this.scratch!;
     abi.check(
       abi.exports.ghostty_focus_encode(
@@ -1174,13 +1181,13 @@ export class NativeTerminal implements TerminalBackend {
    * touched and never included.
    */
   encodePaste(data: Uint8Array): Uint8Array {
-    if (this.backend.writing) {
+    if (this.instance.writing) {
       throw new Error('libghostty-vt: paste while a write is in progress');
     }
     if (data.length === 0) return new Uint8Array(0);
     const abi = this.abi;
     const L = this.L;
-    const reader = this.backend.pasteReaderCallback();
+    const reader = this.instance.pasteReaderCallback();
     const s = this.scratch!;
     const P = L.paste;
     const S = L.string;
@@ -1202,7 +1209,7 @@ export class NativeTerminal implements TerminalBackend {
 
     let result: number;
     let output: Uint8Array[];
-    this.backend.writing = true;
+    this.instance.writing = true;
     this.pasteText = data;
     this.pasteOutput = [];
     try {
@@ -1211,11 +1218,11 @@ export class NativeTerminal implements TerminalBackend {
       output = this.pasteOutput;
       this.pasteText = null;
       this.pasteOutput = null;
-      this.backend.writing = false;
+      this.instance.writing = false;
     }
     // A reader/WRITE_PTY failure explains a failed result best; upstream
     // writes nothing on any error.
-    this.backend.rethrowCallbackError();
+    this.instance.rethrowCallbackError();
     abi.check(result, 'ghostty_terminal_paste');
     if (output.length === 1) return output[0];
     const out = new Uint8Array(output.reduce((n, chunk) => n + chunk.length, 0));
@@ -1485,7 +1492,7 @@ export class NativeTerminal implements TerminalBackend {
           `libghostty-vt: unknown scroll command ${String((command as { kind?: unknown })?.kind)}`
         );
     }
-    if (this.backend.writing) {
+    if (this.instance.writing) {
       throw new Error('libghostty-vt: scrollViewport while a write is in progress');
     }
     const ptr = this.scratch!.scrollViewport;
@@ -1509,7 +1516,7 @@ export class NativeTerminal implements TerminalBackend {
 
   getScrollbackLine(offset: number): GhosttyCell[] | null {
     if (!this.validHistory(offset)) return null;
-    // Default colors and palette come from the render state, as in the legacy engine.
+    // Default colors and palette come from the render state.
     this.ensureFresh();
     const tag = this.L.pointTag.HISTORY;
     const source = this.gridSource(tag, offset);
@@ -1597,8 +1604,8 @@ export class NativeTerminal implements TerminalBackend {
   }
 
   /**
-   * Pending reply bytes in order, at most 256 bytes per call like the legacy
-   * engine, never splitting a UTF-8 sequence across calls.
+   * Pending reply bytes in order, at most RESPONSE_CHUNK (256) bytes per
+   * call, never splitting a UTF-8 sequence across calls.
    */
   readResponse(): string | null {
     if (this.replies.length === 0) return null;
@@ -1645,7 +1652,7 @@ export class NativeTerminal implements TerminalBackend {
    */
   enableRenderHold(): void {
     if (this.renderHoldEnabled) return;
-    this.set('RENDER_HOLD', this.backend.renderHoldCallback());
+    this.set('RENDER_HOLD', this.instance.renderHoldCallback());
     this.renderHoldEnabled = true;
   }
 
@@ -1797,7 +1804,6 @@ export class NativeTerminal implements TerminalBackend {
       (this.presentedHold !== frame.id &&
         !(this.canvasCurrent && frame.cleanSeq === this.cleanSeq));
     return {
-      backend: 'libghostty-vt',
       getDimensions: () => ({ cols: frame.cols, rows: frame.rows }),
       getScrollbackLength: () => frame.scrollbackLength,
       getLine: (y) => {
@@ -1837,8 +1843,8 @@ export class NativeTerminal implements TerminalBackend {
    */
   enableHostEvents(): void {
     if (this.hostEventsEnabled) return;
-    this.set('BELL', this.backend.bellCallback());
-    this.set('TITLE_CHANGED', this.backend.titleChangedCallback());
+    this.set('BELL', this.instance.bellCallback());
+    this.set('TITLE_CHANGED', this.instance.titleChangedCallback());
     this.hostEventsEnabled = true;
   }
 
@@ -1899,11 +1905,12 @@ export class NativeTerminal implements TerminalBackend {
    * Default colors and the 256-color palette, from the colour fields of
    * `config` (the rest is ignored). Used at construction and for runtime
    * theme changes, so both follow one policy: presence bits when given, else
-   * the documented 0 = default; an absent foreground/background uses the
-   * legacy defaults, an absent cursor color is unset, and palette entries not
-   * configured come from the built-in palette. Upstream keeps the program's
-   * OSC 4/10/11/12 overrides; existing cells keep their explicit RGB styles,
-   * while palette and default-colored cells resolve to the new colors.
+   * the documented 0 = default; an absent foreground/background uses
+   * DEFAULT_FOREGROUND/DEFAULT_BACKGROUND, an absent cursor color is unset,
+   * and palette entries not configured come from the built-in palette.
+   * Upstream keeps the program's OSC 4/10/11/12 overrides; existing cells
+   * keep their explicit RGB styles, while palette and default-colored cells
+   * resolve to the new colors.
    */
   setColors(config: GhosttyTerminalConfig | undefined): void {
     const s = this.scratch!;
@@ -1923,15 +1930,11 @@ export class NativeTerminal implements TerminalBackend {
     };
     setRgb(
       'COLOR_FOREGROUND',
-      present(presence?.foreground, config?.fgColor)
-        ? (config?.fgColor ?? 0)
-        : LEGACY_DEFAULT_FOREGROUND
+      present(presence?.foreground, config?.fgColor) ? (config?.fgColor ?? 0) : DEFAULT_FOREGROUND
     );
     setRgb(
       'COLOR_BACKGROUND',
-      present(presence?.background, config?.bgColor)
-        ? (config?.bgColor ?? 0)
-        : LEGACY_DEFAULT_BACKGROUND
+      present(presence?.background, config?.bgColor) ? (config?.bgColor ?? 0) : DEFAULT_BACKGROUND
     );
     setRgb(
       'COLOR_CURSOR',
@@ -2614,7 +2617,7 @@ function rgbOf(value: number): RGB {
   return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
 }
 
-export class NativeKeyEncoder implements KeyEncoderBackend {
+export class NativeKeyEncoder {
   private encoder: number;
 
   constructor(private readonly abi: NativeAbi) {
@@ -2703,8 +2706,8 @@ export class NativeKeyEncoder implements KeyEncoderBackend {
    * flags from the terminal (ghostty_key_encoder_setopt_from_terminal). This
    * also resets the macOS option-as-alt option to false.
    */
-  syncFromTerminal(terminal: TerminalBackend): void {
-    if (!(terminal instanceof NativeTerminal) || terminal.owner.abi !== this.abi) {
+  syncFromTerminal(terminal: NativeTerminal): void {
+    if (terminal.owner.abi !== this.abi) {
       throw new Error('libghostty-vt: syncFromTerminal needs a terminal from the same instance');
     }
     this.abi.exports.ghostty_key_encoder_setopt_from_terminal(this.encoder, terminal.nativeHandle);

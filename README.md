@@ -82,20 +82,19 @@ with a hidden JavaScript clamp.
 
 ## Runtime appearance and viewport input
 
-On the native backend, assigning `term.options.theme` updates the renderer and
-Ghostty's default colors/palette in place, preserving content, history and active
-terminal state. A synchronized-output frame keeps its capture theme until released;
-live history/selection views use the newest theme. The legacy backend retains its
-construction theme because its ABI has no runtime color setter. Omitted backgrounds
-use the existing `#1e1e1e` canvas default for native OSC 11 queries too; explicit
+Assigning `term.options.theme` updates the renderer and Ghostty's default
+colors/palette in place, preserving content, history and active terminal state. A
+synchronized-output frame keeps its capture theme until released; live
+history/selection views use the newest theme. Omitted backgrounds use the existing
+`#1e1e1e` canvas default for native OSC 11 queries too; explicit
 backgrounds and program color overrides retain their normal behavior. Opaque named
 CSS colors and forms such as `rgba(..., 1)` and `hsl(...)` are resolved by the browser
 before configuring native colors, so their queries match the painted colors too.
 
 Font changes preserve DPR-scaled canvas sizing and scrollbar state. Local wheel
 input accumulates sub-line deltas and scrolls whole rows; scrollbar drags continue
-outside the canvas. On the native backend, new output preserves the content you
-are reading while scrolled back, including through history pruning. If that content
+outside the canvas. New output preserves the content you are reading while scrolled
+back, including through history pruning. If that content
 is discarded, the view clamps to the oldest retained row. At the bottom, the view
 continues to follow new output. Typing, pasting, or `input(data, true)` resumes
 following before the input is sent; modifier/release and pointer reports do not.
@@ -103,13 +102,13 @@ following before the input is sent; modifier/release and pointer reports do not.
 interleaved output. Thumb dragging also preserves the current reading anchor across
 output, pruning and resize. Logical scrolling is now immediate and whole-row,
 matching Ghostty's host policy. **`smoothScrollDuration` is deprecated:** it remains
-accepted for source compatibility but no longer adds time-based easing on either
-backend. Fractional assignments to `term.viewportY` are floored to a whole row.
+accepted for source compatibility but no longer adds time-based easing. Fractional
+assignments to `term.viewportY` are floored to a whole row.
 Ghostty continuously owns the native viewport, including reset/clear, reflow and
 per-screen reading positions; the host no longer parks it at the bottom after
-writes or reconstructs the visible screen. The archived legacy backend retains its
-jump-to-bottom-on-output policy. See [host architecture](./docs/upstream-host-architecture.md)
-for ownership, intentional browser adaptations and validation limits.
+writes or reconstructs the visible screen. See
+[host architecture](./docs/upstream-host-architecture.md) for ownership, intentional
+browser adaptations and validation limits.
 
 String writes can split a UTF-16 surrogate pair across chunks. Empty chunks preserve
 the pending half; a nonempty byte write flushes an unmatched half as U+FFFD before
@@ -118,8 +117,8 @@ replaying suppressed replies when re-enabled.
 
 ## Selection and synchronized output
 
-Native selection text comes from Ghostty's formatter, with complete graphemes,
-joined soft wraps and no wide-character spacer artifacts. Native anchors follow
+Selection text comes from Ghostty's formatter, with complete graphemes, joined
+soft wraps and no wide-character spacer artifacts. Selection anchors follow
 output and reflow; history pruning follows Ghostty's endpoint-clamping behavior.
 `selectAll()` includes history. Existing public selection-coordinate conventions
 are retained; see the [migration notes](./docs/migration-libghostty-vt.md).
@@ -131,7 +130,7 @@ and active selection show live content instead of mixing live and held rows.
 
 ## Native paste and focus input
 
-The native backend delegates paste sanitization and mode-2004 framing to Ghostty.
+Paste sanitization and mode-2004 framing are delegated to Ghostty.
 Unbracketed LF becomes CR (CRLF becomes CRCR); unsafe control bytes are replaced
 with spaces. Multiline paste remains automatic—there is no new confirmation UI,
 and newlines can still execute commands in an unbracketed shell.
@@ -142,7 +141,7 @@ behavior; see the [migration notes](./docs/migration-libghostty-vt.md).
 
 ## Mouse input
 
-The native backend uses Ghostty's mouse encoder for application tracking. Hold
+Application mouse tracking uses Ghostty's mouse encoder. Hold
 Shift while starting a drag to select locally instead; without tracking, normal
 history scrolling and the existing alternate-screen wheel behavior are retained.
 
@@ -153,8 +152,8 @@ binary WebSocket frames separately from its text/resize protocol.
 
 Without an `onBinary` subscriber, unsafe classic X10 reports remain withheld,
 preserving string-only integrations. SGR, URXVT, SGR-pixels and UTF8 mouse formats
-continue through `onData` without duplication. Legacy encoding is unchanged. See
-the [migration notes](./docs/migration-libghostty-vt.md) for remaining limitations.
+continue through `onData` without duplication. See the
+[migration notes](./docs/migration-libghostty-vt.md) for remaining limitations.
 
 ## Link activation safety
 
@@ -166,40 +165,29 @@ link provider with their own validation and activation policy.
 
 ## Development
 
-ghostty-web builds the upstream **libghostty-vt C/WASM API** without a production
-patch. Exact source revisions, compiler versions, hashes and size budgets live in
-[`ghostty-build.json`](./ghostty-build.json). The current target requires **Zig 0.16.0**
-and Bun. Builds use isolated owned directories and never modify the submodule checkout.
+ghostty-web builds the upstream **libghostty-vt C/WASM API**, unpatched. The exact
+source revision, compiler version, hash and size budget live in
+[`ghostty-build.json`](./ghostty-build.json). The build requires **Zig 0.16.0** and Bun.
+Builds use isolated owned directories and never modify the submodule checkout.
 
 ```bash
 bun install --frozen-lockfile
 bun run build
 ```
 
-The previous custom-ABI engine can still be built for explicit rollback; it is never
-selected silently and is not part of the test suites. It requires **Zig 0.15.2** and the
-archived [legacy patch](./patches/legacy/ghostty-wasm-api.patch):
-
-```bash
-export ZIG_0_15_BIN=/path/to/zig-0.15.2/zig
-bun run build:wasm:legacy
-```
-
-An explicit WASM path can require its backend:
+The WASM can also be loaded from an explicit path:
 
 ```typescript
 import { Ghostty, Terminal } from 'ghostty-web';
 
-const ghostty = await Ghostty.load('/ghostty-vt.wasm', { backend: 'libghostty-vt' });
+const ghostty = await Ghostty.load('/ghostty-vt.wasm'); // malformed/mismatched ABIs throw
 const term = new Terminal({ ghostty });
-console.log(ghostty.backend); // 'libghostty-vt'; mismatched/malformed ABIs throw
 ```
 
 `Ghostty`, `GhosttyTerminal`, `KeyEncoder` and the public cell/enumeration shapes remain
 compatible facades. Native layouts and enums are checked against the WASM's type manifest.
-Legacy public numeric key values are translated by semantic name on the native path.
-The default npm payload contains the native WASM only; hosts that need rollback can build
-and serve `ghostty-vt-legacy.wasm` separately and pass `{ backend: 'legacy' }`.
+ghostty-web's public numeric key values are kept and translated to upstream values by
+semantic name.
 
 See [the test guide](./tests/README.md) for running the tests and
 [the migration notes](./docs/migration-libghostty-vt.md) for behavior changes and limitations.

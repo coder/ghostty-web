@@ -6,7 +6,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ILink } from '../types';
 import { type ITerminalForOSC8Provider, OSC8LinkProvider } from './osc8-link-provider';
-import { UrlRegexProvider } from './url-regex-provider';
 
 /** One string per row; each cell is a URI (linked) or null (no hyperlink). */
 type Row = (string | null)[];
@@ -83,7 +82,7 @@ afterEach(() => {
   window.open = originalOpen;
 });
 
-/** The built-in protocols, in the exact form UrlRegexProvider recognises. */
+/** The built-in protocols (the same ones UrlRegexProvider detects in plain text). */
 const ALLOWED: [string, string][] = [
   ['https://', 'https://example.com/a?b=1#c'],
   ['http://', 'http://example.com/'],
@@ -99,16 +98,6 @@ const ALLOWED: [string, string][] = [
 ];
 
 describe('OSC8LinkProvider activation policy', () => {
-  test('allowed protocols are exactly the UrlRegexProvider protocols', () => {
-    const source = (UrlRegexProvider as unknown as { URL_REGEX: RegExp }).URL_REGEX.source;
-    const group = /^\(\?:([^)]*)\)/.exec(source)?.[1];
-    expect(group).toBeDefined();
-    const regexPrefixes = group!.split('|').map((alternative) => alternative.replace(/\\\//g, '/'));
-    const expand = (prefixes: string[]) =>
-      prefixes.flatMap((p) => (p === 'https?://' ? ['http://', 'https://'] : [p])).sort();
-    expect(expand(regexPrefixes)).toEqual(ALLOWED.map(([prefix]) => prefix).sort());
-  });
-
   test.each(ALLOWED)('opens %s with Ctrl+click', (_prefix, uri) => {
     single(uri).activate(CTRL());
     expect(opened).toEqual([[uri, '_blank', 'noopener,noreferrer']]);

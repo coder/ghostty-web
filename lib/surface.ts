@@ -2,10 +2,10 @@
  * Port of Ghostty Surface's scrolling/input policy (Surface.zig:scrollCallback,
  * scrollToBottom, performBindingAction, updateScrollbar) at 246f7028.
  * Native Terminal/Screen/PageList own position; this host owns input remainder
- * and public notification delivery only. Legacy position is an explicit shim.
+ * and public notification delivery only.
  */
-import type { NativeScrollCommand, NativeScrollState } from './backends/types';
 import type { GhosttyTerminal } from './ghostty';
+import type { NativeScrollCommand, NativeScrollState } from './vt/types';
 
 export interface SurfaceHost {
   disposed(): boolean;
@@ -28,7 +28,6 @@ export interface SurfaceWheelContext {
 export class Surface {
   // Corresponds to Surface.Mouse.pending_scroll_y, not a second viewport.
   private readonly mouse = { pendingScrollY: 0, cellHeight: 0 };
-  private legacyOffset = 0;
   private published: number;
   private notification = 0;
   private closed = false;
@@ -41,21 +40,8 @@ export class Surface {
     this.published = this.offset;
   }
 
-  get native(): boolean {
-    return this.terminal.backend === 'libghostty-vt';
-  }
-
   get snapshot(): NativeScrollState {
-    if (this.native) return this.terminal.getScrollState();
-    const history = this.terminal.getScrollbackLength();
-    this.legacyOffset = Math.max(0, Math.min(history, this.legacyOffset));
-    return {
-      screen: this.terminal.isAlternateScreen() ? 'alternate' : 'primary',
-      total: history + this.terminal.rows,
-      offset: history - this.legacyOffset,
-      len: this.terminal.rows,
-      following: this.legacyOffset === 0,
-    };
+    return this.terminal.getScrollState();
   }
 
   get offset(): number {
@@ -80,17 +66,7 @@ export class Surface {
     if (this.closed || this.host.disposed()) return;
     const before = this.offset;
     this.mouse.pendingScrollY = 0;
-    if (this.native) this.terminal.scrollViewport(command);
-    else {
-      const s = this.snapshot;
-      const history = s.total - s.len;
-      if (command.kind === 'bottom') this.legacyOffset = 0;
-      else if (command.kind === 'top') this.legacyOffset = history;
-      else if (command.kind === 'delta')
-        this.legacyOffset = Math.max(0, Math.min(history, this.legacyOffset - command.rows));
-      else if (command.kind === 'row')
-        this.legacyOffset = Math.max(0, Math.min(history, history - command.row));
-    }
+    this.terminal.scrollViewport(command);
     if (!notify) {
       // A compatibility field assignment is silent, not a deferred onScroll.
       // Only its own movement supersedes pending notifications: a no-op must not
@@ -110,20 +86,8 @@ export class Surface {
     if (!this.closed && !this.host.disposed()) this.host.queueRender();
   }
 
-  /** Native output updates PageList itself. The archived path still follows output. */
-  afterWrite(): void {
-    if (!this.native) {
-      this.legacyOffset = 0;
-      this.mouse.pendingScrollY = 0;
-    }
-  }
-
   resetWheel(): void {
     this.mouse.pendingScrollY = 0;
-  }
-  resetInput(): void {
-    this.resetWheel();
-    this.legacyOffset = 0;
   }
 
   /**
@@ -139,7 +103,7 @@ export class Surface {
   }
 
   reportFocus(): void {
-    if (this.closed || this.host.disposed() || !this.native || !this.host.inputEnabled()) return;
+    if (this.closed || this.host.disposed() || !this.host.inputEnabled()) return;
     const bytes = this.terminal.encodeFocus(this.focused);
     if (bytes.length) this.host.data(new TextDecoder().decode(bytes));
   }
@@ -147,7 +111,7 @@ export class Surface {
   /** Surface.keyCallback/scrollToBottom: follow accepted input on the active screen. */
   prepareUserInput(enabled: () => boolean): boolean {
     if (this.closed || this.host.disposed() || !enabled()) return false;
-    if (this.native) this.performBindingAction({ kind: 'bottom' });
+    this.performBindingAction({ kind: 'bottom' });
     return !this.closed && !this.host.disposed() && enabled();
   }
 
@@ -215,8 +179,7 @@ export class Surface {
     if (Math.abs(this.mouse.pendingScrollY) < 1e-9) this.mouse.pendingScrollY = 0;
     if (!whole) return;
     // Unlike the pinned upstream's untruncated subtraction, keep the remainder.
-    if (this.native) this.terminal.scrollViewport({ kind: 'delta', rows: whole });
-    else this.legacyOffset = Math.max(0, Math.min(s.total - s.len, this.legacyOffset - whole));
+    this.terminal.scrollViewport({ kind: 'delta', rows: whole });
     const next = this.snapshot;
     if (
       (next.following && this.mouse.pendingScrollY > 0) ||

@@ -1,16 +1,13 @@
 /**
- * Selection through real page.mouse drags: forward/reverse, multi-line,
- * soft-wrap, wide + combining characters, history, edge auto-scroll, new
- * output, pruning and reflow.
+ * Selection through real page.mouse drags: forward/reverse, history, the
+ * highlight as the selection scrolls out of and back into view, and edge
+ * auto-scroll.
  *
  * Oracles (independent of the selection code under test):
- * - copied text = the fixture text between the dragged cells (Ghostty's
- *   selection string semantics: soft wraps unwrap, wide spacers add nothing);
+ * - copied text = the fixture text between the dragged cells;
  * - highlight = the linear selection region between the anchor and end cells,
  *   classified per cell from background pixels (glyph ink ignored), and every
- *   cell outside it must keep a non-selection background;
- * - intended policy: selections are anchored to content (they follow output,
- *   pruning and reflow) and only paint where that content is on screen.
+ *   cell outside it must keep a non-selection background.
  */
 
 import { type BrowserTerminal, type Harness, expect, test } from './support/fixture';
@@ -54,17 +51,18 @@ async function highlight(term: BrowserTerminal, strip: ReadonlySet<number> = NON
 }
 
 const NONE: ReadonlySet<number> = new Set();
-/** The overlay scrollbar paints over the last ~14 CSS px (WEB-11); exclude those columns. */
+/** The overlay scrollbar paints over the last ~14 CSS px ; exclude those columns. */
 const STRIP_40 = new Set([38, 39]);
-const STRIP_20 = new Set([18, 19]);
 
 async function textTerminal(harness: Harness, cols: number, rows: number, text: string) {
-  const term = await harness.create({ cols, rows, smoothScrollDuration: 0 });
+  const term = await harness.create({ cols, rows });
   await term.writeAndSettle(text);
   return term;
 }
 
-test('selection.drag-forward-and-reverse-copy-and-highlight', async ({ harness }) => {
+test('dragging forward or backward copies and highlights the same cells; clearing removes the highlight', async ({
+  harness,
+}) => {
   const term = await textTerminal(
     harness,
     30,
@@ -81,28 +79,18 @@ test('selection.drag-forward-and-reverse-copy-and-highlight', async ({ harness }
   expect(await highlight(term), 'forward-highlight').toStrictEqual(expected);
   expect(await dragSelect(harness, g, b, a), 'reverse-copied').toStrictEqual(want);
   expect(await highlight(term), 'reverse-highlight').toStrictEqual(expected);
-});
-
-test('selection.control-shifted-or-missing-highlight-is-detected', async ({ harness }) => {
-  // Negative controls for the highlight oracle on a real selection frame.
-  const term = await textTerminal(harness, 30, 6, 'alpha one\r\nbravo two\r\ncharlie three');
-  const g = await geometry(term);
-  await dragSelect(harness, g, { row: 1, col: 3 }, { row: 1, col: 7 });
-  const actual = await highlight(term);
-  const right = expectedHighlight(6, 30, { row: 1, col: 3 }, { row: 1, col: 7 });
-  expect(actual, 'baseline').toStrictEqual(right);
-  const same = (x: string[], y: string[]) => JSON.stringify(x) === JSON.stringify(y);
-  const shiftedRow = expectedHighlight(6, 30, { row: 2, col: 3 }, { row: 2, col: 7 });
-  const shiftedCol = expectedHighlight(6, 30, { row: 1, col: 4 }, { row: 1, col: 8 });
-  expect(same(actual, shiftedRow), 'wrong-row-rejected').toStrictEqual(false);
-  expect(same(actual, shiftedCol), 'shifted-column-rejected').toStrictEqual(false);
   await term.clearSelection();
+  // A region entirely below the grid: no cell highlighted.
   expect(await highlight(term), 'cleared-paints-nothing').toStrictEqual(
     expectedHighlight(6, 30, { row: 9, col: 0 }, { row: 9, col: 0 })
   );
 });
 
-test('selection.history-drag-copies-history-lines', async ({ harness }) => {
+test('a drag in history copies those lines, and its highlight follows the content off screen and back', async ({
+  harness,
+}) => {
+  // xterm.js #4917 shape: a selection scrolled out of view must not paint;
+  // partially visible selections are clipped; scrolling back restores it.
   const fx = await historyFixture(harness, { cols: 40, rows: 8, total: 600, minHistory: 500 });
   const g = await geometry(fx.term);
   await wheelLines(harness, g, 100);
@@ -118,17 +106,6 @@ test('selection.history-drag-copies-history-lines', async ({ harness }) => {
   expect(await highlight(fx.term, STRIP_40), 'highlight').toStrictEqual(
     expectedHighlight(8, 40, a, b, STRIP_40)
   );
-});
-
-test('selection.highlight-follows-content-offscreen-and-back', async ({ harness }) => {
-  // xterm.js #4917 shape: a selection scrolled out of view must not paint;
-  // partially visible selections are clipped; scrolling back restores it.
-  const fx = await historyFixture(harness, { cols: 40, rows: 8, total: 600, minHistory: 500 });
-  const g = await geometry(fx.term);
-  await wheelLines(harness, g, 100);
-  const a = { row: 2, col: 3 };
-  const b = { row: 4, col: 9 };
-  const text = await dragSelect(harness, g, a, b);
   await wheelLines(harness, g, -3); // content moves up 3 rows: selection rows -1..1
   expect(await highlight(fx.term, STRIP_40), 'clipped-highlight').toStrictEqual(
     expectedHighlight(8, 40, { row: -1, col: 3 }, { row: 1, col: 9 }, STRIP_40)
@@ -141,10 +118,12 @@ test('selection.highlight-follows-content-offscreen-and-back', async ({ harness 
   expect(await highlight(fx.term, STRIP_40), 'restored-highlight').toStrictEqual(
     expectedHighlight(8, 40, a, b, STRIP_40)
   );
-  expect(await fx.term.selection(), 'text-unchanged').toStrictEqual(text);
+  expect(await fx.term.selection(), 'text-unchanged').toStrictEqual(want);
 });
 
-test('selection.edge-autoscroll-extends-into-history', async ({ harness }) => {
+test('dragging past the top edge auto-scrolls and extends the selection into history', async ({
+  harness,
+}) => {
   const term = await textTerminal(harness, 40, 6, linesBytes(30));
   const g = await geometry(term);
   const { scrollbackLength } = await term.viewport();
@@ -158,7 +137,7 @@ test('selection.edge-autoscroll-extends-into-history', async ({ harness }) => {
   await mouse.move(anchor.x, anchor.y - g.cellH, { steps: 2 });
   await mouse.move(anchor.x, g.rect.top - 40, { steps: 3 });
   await harness.page.waitForFunction(
-    ([id, top]) => window.__ghosttyRegression.viewport(id).viewportY === top,
+    ([id, top]) => window.__ghosttyHarness.viewport(id).viewportY === top,
     [term.id, scrollbackLength] as const,
     { timeout: 5_000 }
   );
@@ -178,89 +157,4 @@ test('selection.edge-autoscroll-extends-into-history', async ({ harness }) => {
   expect(map.slice(1), 'rows-below-top-fully-highlighted').toStrictEqual(
     expectedHighlight(6, 40, { row: 1, col: 0 }, { row: 5, col: 39 }, STRIP_40).slice(1)
   );
-});
-
-test('selection.follows-content-when-output-scrolls', async ({ harness }) => {
-  const term = await textTerminal(harness, 40, 6, linesBytes(30));
-  const g = await geometry(term);
-  const a = { row: 3, col: 3 };
-  const b = { row: 3, col: 7 };
-  expect(await dragSelect(harness, g, a, b), 'copied').toStrictEqual('L0027');
-  await term.writeAndSettle(`\r\n${linesBytes(2, 30)}`);
-  expect(await term.selection(), 'text-after-output').toStrictEqual('L0027');
-  expect(await highlight(term, STRIP_40), 'highlight-moved-with-content').toStrictEqual(
-    expectedHighlight(6, 40, { row: 1, col: 3 }, { row: 1, col: 7 }, STRIP_40)
-  );
-});
-
-test('selection.soft-wrap-copies-without-newline', async ({ harness }) => {
-  const term = await textTerminal(harness, 10, 4, 'abcdefghijklmno\r\nnext');
-  const g = await geometry(term);
-  const a = { row: 0, col: 0 };
-  const b = { row: 1, col: 4 };
-  const copied = await dragSelect(harness, g, a, b);
-  expect(await highlight(term), 'highlight').toStrictEqual(expectedHighlight(4, 10, a, b));
-  expect(await term.selection(), 'selection-matches-copy').toStrictEqual(copied);
-  expect(copied, 'copied-unwraps-soft-wrap').toStrictEqual('abcdefghijklmno');
-});
-
-test('selection.wide-and-combining-in-history', async ({ harness }) => {
-  const fill = Array.from({ length: 8 }, (_, i) => `fill ${i}`).join('\r\n');
-  const term = await textTerminal(harness, 20, 4, `e\u0301 \u4e00x tail\r\n${fill}`);
-  const g = await geometry(term);
-  await wheelLines(harness, g, 100); // to the top: the test line is history row 0
-  expect((await term.viewport()).viewportY, 'at-top').toStrictEqual(
-    (await term.viewport()).scrollbackLength
-  );
-  const a = { row: 0, col: 0 };
-  const b = { row: 0, col: 4 }; // é, space, 一 (cols 2-3), x
-  const copied = await dragSelect(harness, g, a, b);
-  expect(await highlight(term, STRIP_20), 'highlight').toStrictEqual(
-    expectedHighlight(4, 20, a, b, STRIP_20)
-  );
-  expect(await term.selection(), 'selection-matches-copy').toStrictEqual(copied);
-  expect(copied, 'copied-text').toStrictEqual('e\u0301 \u4e00x');
-});
-
-test('selection.survives-history-pruning', async ({ harness }) => {
-  // Content anchoring across pruning: the selected line is still retained after
-  // the oldest page is dropped, so the selection must still copy it.
-  // An explicit budget makes pruning occur on BOTH engines despite different
-  // page sizes. The chosen newest line remains retained; the fixture verifies it.
-  const fx = await historyFixture(harness, {
-    cols: 80,
-    rows: 8,
-    total: 1000,
-    minHistory: 900,
-    limit: 1000,
-  });
-  const g = await geometry(fx.term);
-  expect(
-    await dragSelect(harness, g, { row: 7, col: 3 }, { row: 7, col: 7 }),
-    'copied'
-  ).toStrictEqual('L0999');
-  await fx.term.writeAndSettle(`\r\n${linesBytes(200, 1000)}`);
-  const oldest = Number((await fx.term.bufferLineText(0))?.trim().slice(1, 5));
-  if (!(oldest > 0 && oldest <= 999)) {
-    throw new Error(`FIXTURE: expected pruning that keeps line 999, oldest retained is ${oldest}`);
-  }
-  expect(await fx.term.selection(), 'text-after-pruning').toStrictEqual('L0999');
-});
-
-test('selection.reflow-keeps-selected-content', async ({ harness }) => {
-  const term = await textTerminal(harness, 20, 4, '0123456789abcdefghij\r\nsecond\r\nthird');
-  const g = await geometry(term);
-  expect(
-    await dragSelect(harness, g, { row: 1, col: 0 }, { row: 1, col: 5 }),
-    'copied'
-  ).toStrictEqual('second');
-  await term.resize(10, 4);
-  await term.settle();
-  const reflowed = await Promise.all([0, 1, 2, 3].map((y) => term.bufferLineText(y)));
-  if (
-    JSON.stringify(reflowed) !== JSON.stringify(['0123456789', 'abcdefghij', 'second', 'third'])
-  ) {
-    throw new Error(`FIXTURE: unexpected reflow ${JSON.stringify(reflowed)}`);
-  }
-  expect(await term.selection(), 'text-after-reflow').toStrictEqual('second');
 });

@@ -6,7 +6,6 @@ dist/
 
 # WASM build output (built locally and in CI)
 ghostty-vt.wasm
-ghostty-vt-legacy.wasm
 
 # Playwright output
 /test-results/
@@ -15,3 +14,6 @@ ghostty-vt-legacy.wasm
 
 # Local planning and review notes
 /docs/research/
+
+# Default local WASM build work directory (scripts/build-wasm.sh)
+/.wasm-build/

@@ -21,7 +21,6 @@ import type {
   ReadyInfo,
   RuntimeOptions,
   ScrollbarState,
-  SelectionRange,
   TerminalEvents,
   ThemeSpec,
   ViewportState,
@@ -37,7 +36,7 @@ import {
   encodePng,
 } from './pixels';
 
-export const HARNESS_PATH = '/tests/browser/harness.html';
+const HARNESS_PATH = '/tests/browser/harness.html';
 
 /** Distinct colours so analytic probes can tell every layer apart. */
 export const THEME = {
@@ -61,7 +60,7 @@ export class BrowserTerminal {
   ) {}
 
   write(data: string): Promise<void> {
-    return this.page.evaluate(([id, d]) => window.__ghosttyRegression.write(id, d), [
+    return this.page.evaluate(([id, d]) => window.__ghosttyHarness.write(id, d), [
       this.id,
       data,
     ] as const);
@@ -74,35 +73,35 @@ export class BrowserTerminal {
   }
 
   settle(): Promise<number> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.settle(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.settle(id), this.id);
   }
 
   park(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.park(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.park(id), this.id);
   }
 
   render(force: boolean, viewportY?: number): Promise<void> {
     return this.page.evaluate(
-      ([id, f, v]) => window.__ghosttyRegression.render(id, f, v ?? undefined),
+      ([id, f, v]) => window.__ghosttyHarness.render(id, f, v ?? undefined),
       [this.id, force, viewportY ?? null] as const
     );
   }
 
   async capture(): Promise<{ image: Image; grid: Grid; raw: Capture }> {
-    const raw = await this.page.evaluate((id) => window.__ghosttyRegression.capture(id), this.id);
+    const raw = await this.page.evaluate((id) => window.__ghosttyHarness.capture(id), this.id);
     return { ...decodeCapture(raw), raw };
   }
 
   events(): Promise<TerminalEvents> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.events(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.events(id), this.id);
   }
 
   clearEvents(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.clearEvents(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.clearEvents(id), this.id);
   }
 
   cellCenter(row: number, col: number): Promise<PagePoint> {
-    return this.page.evaluate(([id, r, c]) => window.__ghosttyRegression.cellCenter(id, r, c), [
+    return this.page.evaluate(([id, r, c]) => window.__ghosttyHarness.cellCenter(id, r, c), [
       this.id,
       row,
       col,
@@ -116,34 +115,19 @@ export class BrowserTerminal {
   }
 
   spyResize(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.spyResize(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.spyResize(id), this.id);
   }
 
   resizeCount(): Promise<number> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.resizeCount(id), this.id);
-  }
-
-  spyViewportDecode(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.spyViewportDecode(id), this.id);
-  }
-
-  viewportDecodeCount(): Promise<number> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.viewportDecodeCount(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.resizeCount(id), this.id);
   }
 
   selection(): Promise<string> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.selection(id), this.id);
-  }
-
-  paste(text: string): Promise<void> {
-    return this.page.evaluate(([id, t]) => window.__ghosttyRegression.paste(id, t), [
-      this.id,
-      text,
-    ] as const);
+    return this.page.evaluate((id) => window.__ghosttyHarness.selection(id), this.id);
   }
 
   resize(cols: number, rows: number): Promise<void> {
-    return this.page.evaluate(([id, c, r]) => window.__ghosttyRegression.resize(id, c, r), [
+    return this.page.evaluate(([id, c, r]) => window.__ghosttyHarness.resize(id, c, r), [
       this.id,
       cols,
       rows,
@@ -151,74 +135,48 @@ export class BrowserTerminal {
   }
 
   scrollbackLength(): Promise<number> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.scrollbackLength(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.scrollbackLength(id), this.id);
   }
 
   mode(mode: number): Promise<boolean> {
-    return this.page.evaluate(([id, m]) => window.__ghosttyRegression.mode(id, m), [
+    return this.page.evaluate(([id, m]) => window.__ghosttyHarness.mode(id, m), [
       this.id,
       mode,
     ] as const);
   }
 
-  hostChildCount(): Promise<number> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.hostChildCount(id), this.id);
-  }
-
   // --- Options (public `terminal.options` proxy) ---
 
   setOptions(options: RuntimeOptions): Promise<void> {
-    return this.page.evaluate(([id, o]) => window.__ghosttyRegression.setOptions(id, o), [
+    return this.page.evaluate(([id, o]) => window.__ghosttyHarness.setOptions(id, o), [
       this.id,
       options,
     ] as const);
   }
 
   cellMetrics(): Promise<CellMetrics> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.cellMetrics(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.cellMetrics(id), this.id);
   }
 
   // --- Viewport, scrolling and selection (public Terminal API) ---
 
   viewport(): Promise<ViewportState> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.viewport(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.viewport(id), this.id);
   }
 
   canvasRect(): Promise<CssRect> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.canvasRect(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.canvasRect(id), this.id);
   }
 
   scrollLines(amount: number): Promise<void> {
-    return this.page.evaluate(([id, n]) => window.__ghosttyRegression.scrollLines(id, n), [
+    return this.page.evaluate(([id, n]) => window.__ghosttyHarness.scrollLines(id, n), [
       this.id,
       amount,
-    ] as const);
-  }
-
-  scrollPages(amount: number): Promise<void> {
-    return this.page.evaluate(([id, n]) => window.__ghosttyRegression.scrollPages(id, n), [
-      this.id,
-      amount,
-    ] as const);
-  }
-
-  scrollToTop(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.scrollToTop(id), this.id);
-  }
-
-  scrollToBottom(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.scrollToBottom(id), this.id);
-  }
-
-  scrollToLine(line: number): Promise<void> {
-    return this.page.evaluate(([id, l]) => window.__ghosttyRegression.scrollToLine(id, l), [
-      this.id,
-      line,
     ] as const);
   }
 
   select(column: number, row: number, length: number): Promise<void> {
-    return this.page.evaluate(([id, c, r, n]) => window.__ghosttyRegression.select(id, c, r, n), [
+    return this.page.evaluate(([id, c, r, n]) => window.__ghosttyHarness.select(id, c, r, n), [
       this.id,
       column,
       row,
@@ -226,52 +184,36 @@ export class BrowserTerminal {
     ] as const);
   }
 
-  selectLines(start: number, end: number): Promise<void> {
-    return this.page.evaluate(([id, a, b]) => window.__ghosttyRegression.selectLines(id, a, b), [
-      this.id,
-      start,
-      end,
-    ] as const);
-  }
-
-  selectAll(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.selectAll(id), this.id);
-  }
-
   clearSelection(): Promise<void> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.clearSelection(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.clearSelection(id), this.id);
   }
 
   hasSelection(): Promise<boolean> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.hasSelection(id), this.id);
-  }
-
-  selectionPosition(): Promise<SelectionRange | undefined> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.selectionPosition(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.hasSelection(id), this.id);
   }
 
   /** Absolute buffer line text (0 = oldest history line). */
   bufferLineText(y: number, trimRight = true): Promise<string | undefined> {
     return this.page.evaluate(
-      ([id, line, trim]) => window.__ghosttyRegression.bufferLineText(id, line, trim),
+      ([id, line, trim]) => window.__ghosttyHarness.bufferLineText(id, line, trim),
       [this.id, y, trimRight] as const
     );
   }
 
   bufferCell(y: number, x: number): Promise<BufferCellInfo | undefined> {
     return this.page.evaluate(
-      ([id, line, col]) => window.__ghosttyRegression.bufferCell(id, line, col),
+      ([id, line, col]) => window.__ghosttyHarness.bufferCell(id, line, col),
       [this.id, y, x] as const
     );
   }
 
   scrollbarState(): Promise<ScrollbarState> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.scrollbarState(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.scrollbarState(id), this.id);
   }
 
   /** Dispose; resolves to the number of elements left behind in the host. */
   dispose(): Promise<number> {
-    return this.page.evaluate((id) => window.__ghosttyRegression.dispose(id), this.id);
+    return this.page.evaluate((id) => window.__ghosttyHarness.dispose(id), this.id);
   }
 }
 
@@ -282,7 +224,7 @@ export class Harness {
   ) {}
 
   async create(options: CreateOptions): Promise<BrowserTerminal> {
-    const id = await this.page.evaluate((o) => window.__ghosttyRegression.create(o), {
+    const id = await this.page.evaluate((o) => window.__ghosttyHarness.create(o), {
       theme: THEME,
       ...options,
     } as CreateOptions);
@@ -292,18 +234,18 @@ export class Harness {
   }
 
   spyWindowOpen(): Promise<void> {
-    return this.page.evaluate(() => window.__ghosttyRegression.spyWindowOpen());
+    return this.page.evaluate(() => window.__ghosttyHarness.spyWindowOpen());
   }
 
   openedUrls(): Promise<string[]> {
-    return this.page.evaluate(() => window.__ghosttyRegression.openedUrls());
+    return this.page.evaluate(() => window.__ghosttyHarness.openedUrls());
   }
 
   /** Independent oracle: `text` drawn directly with the requested font (no terminal). */
   async glyphOracle(
     request: GlyphOracleRequest
   ): Promise<{ image: Image; grid: Grid; raw: GlyphOracleCapture }> {
-    const raw = await this.page.evaluate((r) => window.__ghosttyRegression.glyphOracle(r), request);
+    const raw = await this.page.evaluate((r) => window.__ghosttyHarness.glyphOracle(r), request);
     return { ...decodeCapture(raw), raw };
   }
 
@@ -314,10 +256,10 @@ export class Harness {
 }
 
 /** Navigate to the harness and wait for its (fatal) font/WASM readiness. */
-export async function openHarness(page: Page): Promise<ReadyInfo> {
+async function openHarness(page: Page): Promise<ReadyInfo> {
   await page.goto(HARNESS_PATH);
-  await page.waitForFunction(() => window.__ghosttyRegression !== undefined);
-  return page.evaluate(() => window.__ghosttyRegression.ready);
+  await page.waitForFunction(() => window.__ghosttyHarness !== undefined);
+  return page.evaluate(() => window.__ghosttyHarness.ready);
 }
 
 export interface HarnessFixtures {
@@ -339,14 +281,14 @@ export const test = base.extend<HarnessFixtures>({
     if (harnessInit) await harnessInit(page);
     const info = await openHarness(page);
     await use(new Harness(page, info));
-    await page.evaluate(() => window.__ghosttyRegression.disposeAll());
+    await page.evaluate(() => window.__ghosttyHarness.disposeAll());
     expect(pageErrors, 'uncaught page errors').toEqual([]);
   },
 });
 
 export { expect };
 
-export async function attachImages(
+async function attachImages(
   testInfo: TestInfo,
   name: string,
   images: Record<string, Image>

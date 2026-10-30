@@ -1,7 +1,11 @@
-/** Native focus ownership across the terminal, hidden textarea and browser window. */
+/**
+ * Focus reports (mode 1004) through a whole Terminal: CSI I / CSI O on focus
+ * changes of the terminal as a whole (container, hidden textarea, browser
+ * window), and the current state when the mode is enabled, per Ghostty's
+ * src/termio/Termio.zig.
+ */
 import { expect, test } from 'bun:test';
-import { Ghostty } from './ghostty';
-import { Terminal } from './terminal';
+import { Ghostty, Terminal } from '../../lib/index';
 
 type Session = {
   term: Terminal;
@@ -10,8 +14,7 @@ type Session = {
   data: string[];
 };
 async function session(body: (s: Session) => void | Promise<void>, shadow = false): Promise<void> {
-  const ghostty = await Ghostty.load();
-  const term = new Terminal({ ghostty, cols: 20, rows: 4 });
+  const term = new Terminal({ ghostty: await Ghostty.load(), cols: 20, rows: 4 });
   const host = document.createElement('div');
   document.body.appendChild(host);
   const container = document.createElement('div');
@@ -30,8 +33,8 @@ async function session(body: (s: Session) => void | Promise<void>, shadow = fals
 const ON = '\x1b[?1004h';
 const OFF = '\x1b[?1004l';
 
-test('native focus observes fragmented mode enables and current unfocused state', async () => {
-  await session(({ term, data }) => {
+test('enabling the mode, even in fragments, reports the current state; repeats are not reported', () =>
+  session(({ term, data }) => {
     term.blur();
     term.write('\x1b[?100');
     expect(data).toEqual([]);
@@ -45,11 +48,10 @@ test('native focus observes fragmented mode enables and current unfocused state'
     term.write(OFF);
     term.focus();
     expect(data).toHaveLength(3);
-  });
-});
+  }));
 
-test('container and textarea transfers do not generate duplicate focus reports', async () => {
-  await session(({ term, container, textarea, data }) => {
+test('focus moving between the container and the textarea is not reported', () =>
+  session(({ term, container, textarea, data }) => {
     term.write(ON);
     data.length = 0;
     textarea.focus();
@@ -60,11 +62,10 @@ test('container and textarea transfers do not generate duplicate focus reports',
     expect(document.activeElement).not.toBe(textarea);
     term.focus();
     expect(data).toEqual(['\x1b[O', '\x1b[I']);
-  });
-});
+  }));
 
-test('window blur/focus reports only the terminal owning DOM focus', async () => {
-  await session(async (first) => {
+test('window blur and focus are reported only by the terminal owning DOM focus', () =>
+  session(async (first) => {
     first.term.write(ON);
     await session((second) => {
       second.term.write(ON);
@@ -79,11 +80,10 @@ test('window blur/focus reports only the terminal owning DOM focus', async () =>
       expect(first.data).toEqual(['\x1b[I']);
       expect(second.data).toEqual(['\x1b[O', '\x1b[I', '\x1b[O']);
     });
-  });
-});
+  }));
 
-test('disabled stdin tracks focus silently without a deferred catch-up report', async () => {
-  await session(({ term, data }) => {
+test('disabled stdin tracks focus silently, with no catch-up report when re-enabled', () =>
+  session(({ term, data }) => {
     term.options.disableStdin = true;
     term.write(ON);
     term.blur();
@@ -94,11 +94,10 @@ test('disabled stdin tracks focus silently without a deferred catch-up report', 
     expect(data).toEqual([]);
     term.blur();
     expect(data).toEqual(['\x1b[O']);
-  });
-});
+  }));
 
-test('RIS and reset disable focus reports; DECSTR preserves the upstream mode', async () => {
-  await session(({ term, data }) => {
+test('RIS and reset() turn focus reports off; DECSTR keeps them on', () =>
+  session(({ term, data }) => {
     term.write(ON);
     term.write('\x1b[!p');
     term.blur();
@@ -113,21 +112,19 @@ test('RIS and reset disable focus reports; DECSTR preserves the upstream mode', 
     term.blur();
     term.focus();
     expect(data).toEqual([]);
-  });
-});
+  }));
 
-test('native focus and blur work within a shadow root', async () => {
-  await session(({ term, textarea, data }) => {
+test('focus and blur are reported inside a shadow root', () =>
+  session(({ term, textarea, data }) => {
     term.write(ON);
     textarea.focus();
     term.blur();
     term.focus();
     expect(data).toEqual(['\x1b[I', '\x1b[O', '\x1b[I']);
-  }, true);
-});
+  }, true));
 
-test('blur cancels refocus and disposal removes focus observers without sending loss', async () => {
-  await session(async ({ term, container, data }) => {
+test('blur cancels a pending refocus; disposal stops focus reports without sending a loss', () =>
+  session(async ({ term, container, data }) => {
     term.write(ON);
     data.length = 0;
     term.focus();
@@ -141,11 +138,10 @@ test('blur cancels refocus and disposal removes focus observers without sending 
     window.dispatchEvent(new Event('blur'));
     window.dispatchEvent(new Event('focus'));
     expect(data).toEqual([]);
-  });
-});
+  }));
 
-test('focus reports leave selection untouched and keep ordinary replies separate', async () => {
-  await session(({ term, data }) => {
+test('focus reports leave the selection alone and follow the replies of the enabling write', () =>
+  session(({ term, data }) => {
     term.write('hello');
     term.select(0, 0, 5);
     term.write(ON + '\x1b[5n');
@@ -155,5 +151,4 @@ test('focus reports leave selection untouched and keep ordinary replies separate
     term.focus();
     expect(term.getSelection()).toBe('hello');
     expect(data.slice(-2)).toEqual(['\x1b[O', '\x1b[I']);
-  });
-});
+  }));

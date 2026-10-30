@@ -7,9 +7,9 @@
 import { THEME, expect, expectSameCells, test } from './support/fixture';
 import { EXACT, cellRect, diffCells, inkCount } from './support/pixels';
 
-const REQUIRED = ['park-render-loop', 'forced-render'];
-
-test('incremental.overflow-ink-matches-full-render', async ({ harness }) => {
+test('an incremental frame keeps overflow ink from an undrawn row, like a full redraw', async ({
+  harness,
+}) => {
   const term = await harness.create({ cols: 6, rows: 4 });
   // Capitals with marks above (É Å Ṩ) on row 2; their ink overflows into row 1.
   // Cursor hidden and parked on row 0 so only the next write dirties a row.
@@ -47,7 +47,9 @@ const SGR = ['0', '1', '7', '31', '32', '34', '38;5;208', '48;5;22', '48;2;40;0;
 // guards dirty tracking, cursor trails, colours and erase operations.
 const GLYPHS = 'ABCDEFHIKLMNORSTUVWXZ0123456789#=+';
 
-test('incremental.seeded-edits-match-full-render', async ({ harness }) => {
+test('after seeded random edits every incremental frame equals a full redraw', async ({
+  harness,
+}) => {
   const seed = Number(process.env.GHOSTTY_BROWSER_SEED ?? 0x5eed);
   test.info().annotations.push({ type: 'seed', description: String(seed) });
   const random = mulberry32(seed);

@@ -1,37 +1,36 @@
 #!/usr/bin/env bash
-# Build Ghostty WASM engines from the pins in ghostty-build.json.
+# Build the unpatched upstream libghostty-vt WASM from the pin in ghostty-build.json.
 #
 # Usage:
-#   scripts/build-wasm.sh [TARGET...] [--work-dir DIR] [--out-dir DIR]
+#   scripts/build-wasm.sh [libghostty-vt] [--work-dir DIR] [--out-dir DIR]
 #                         [--bundle DIR] [--expect-sha256 HEX] [--allow-unverified]
 #
-# TARGET: libghostty-vt (default; the shipping engine), legacy, or all.
+# libghostty-vt is the only target (the manifest's single entry); naming it is optional.
 #
 #   --work-dir DIR   Owned build directory (sources, Zig caches, staging, logs).
-#                    Default: $GHOSTTY_WASM_WORK_DIR or <repo>/.regression-reference/wasm-build.
+#                    Default: $GHOSTTY_WASM_WORK_DIR or <repo>/.wasm-build/work.
 #                    Must be missing, empty, or previously created by this script
 #                    (.ghostty-reference-workdir marker); outside the checkout except
-#                    <repo>/.regression-reference/.
-#   --out-dir DIR    Where each target's artifact (manifest "artifact") is published,
-#                    atomically and only after every check passed. Default: the repo
-#                    root (ghostty-vt.wasm / ghostty-vt-legacy.wasm), which is what
-#                    `bun run build:wasm` and the test suites consume.
+#                    <repo>/.wasm-build/.
+#   --out-dir DIR    Where the artifact (manifest "artifact") is published, atomically
+#                    and only after every check passed. Default: the repo root
+#                    (ghostty-vt.wasm), which is what `bun run build:wasm` and the
+#                    test suites consume.
 #   --bundle DIR     Instead of --out-dir, publish DIR (a direct child of the work dir)
-#                    atomically with <artifact>, build-info.json and the target's env
-#                    file. Single target only.
-#   --expect-sha256  Additionally require this sha256 (single target only).
+#                    atomically with <artifact>, build-info.json and the env file.
+#   --expect-sha256  Additionally require this sha256.
 #   --allow-unverified
-#                    Pin discovery only, NOT FOR RELEASE: build a target whose manifest
-#                    wasmSha256 is null. Single target; needs --bundle or an explicit
-#                    --out-dir that is not the repo root. Marked unverified in
-#                    build-info.json ("verified": false) and <PREFIX>_WASM_VERIFIED=0.
+#                    Pin discovery only, NOT FOR RELEASE: build a pin whose manifest
+#                    wasmSha256 is null. Needs --bundle or an explicit --out-dir that
+#                    is not the repo root. Marked unverified in build-info.json
+#                    ("verified": false) and <PREFIX>_WASM_VERIFIED=0.
 #
-# Compilers: each target's manifest "zigEnv" variable (ZIG_0_16_BIN, ZIG_0_15_BIN)
-# or `zig` on PATH; the version must equal the manifest "zigVersion" exactly.
+# Compiler: the manifest "zigEnv" variable (ZIG_0_16_BIN) or `zig` on PATH; the
+# version must equal the manifest "zigVersion" exactly.
 # GHOSTTY_GIT_URL overrides the manifest gitUrl (it must serve the pinned SHA).
 #
 # Never touches the ghostty/ submodule, global Git config or global Zig caches.
-# Only the pinned commits are fetched (by SHA, depth 1); there is no "latest" mode.
+# Only the pinned commit is fetched (by SHA, depth 1); there is no "latest" mode.
 # The manifest wasmSha256 must match the build exactly. A null wasmSha256 (an
 # unverified pin) is refused unless --allow-unverified is given explicitly; the
 # reference lane always refuses it.
@@ -78,7 +77,6 @@ else
 fi
 
 # --- Arguments ---------------------------------------------------------------
-targets=()
 work_arg="${GHOSTTY_WASM_WORK_DIR:-}"
 out_arg=""
 bundle_arg=""
@@ -98,40 +96,24 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-unverified) allow_unverified=1 && shift ;;
     -h | --help)
-      sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    all) targets+=(libghostty-vt legacy) && shift ;;
-    libghostty-vt | legacy) targets+=("$1") && shift ;;
+    libghostty-vt) shift ;;
     *) die "unknown argument '$1' (see --help)" ;;
   esac
 done
-[[ ${#targets[@]} -gt 0 ]] || targets=(libghostty-vt)
-unique=()
-for t in libghostty-vt legacy; do
-  for requested in "${targets[@]}"; do
-    if [[ "$requested" == "$t" ]]; then
-      unique+=("$t")
-      break
-    fi
-  done
-done
-targets=("${unique[@]}")
 [[ -z "$bundle_arg" || -z "$out_arg" ]] || die "--bundle and --out-dir are exclusive"
-if [[ ${#targets[@]} -gt 1 ]]; then
-  [[ -z "$bundle_arg" && -z "$expect_sha" ]] || die "--bundle/--expect-sha256 need a single target"
-fi
 [[ -z "$expect_sha" || "$expect_sha" =~ ^[0-9a-f]{64}$ ]] || die "--expect-sha256 must be 64 lowercase hex digits"
 if [[ "$allow_unverified" -eq 1 ]]; then
-  [[ ${#targets[@]} -eq 1 ]] || die "--allow-unverified needs a single target"
   [[ -n "$bundle_arg" || -n "$out_arg" ]] ||
     die "--allow-unverified needs --bundle or an explicit --out-dir (never the default repo root)"
 fi
 
 # --- Work dir: resolve, ownership, lock --------------------------------------
 if [[ -z "$work_arg" ]]; then
-  mkdir -p "$repo_root/.regression-reference"
-  work_arg="$repo_root/.regression-reference/wasm-build"
+  mkdir -p "$repo_root/.wasm-build"
+  work_arg="$repo_root/.wasm-build/work"
 fi
 [[ ! -L "$work_arg" ]] || die "work dir '$work_arg' is a symlink; pass the real directory"
 work_parent="$(cd "$(dirname "$work_arg")" 2>/dev/null && pwd -P)" ||
@@ -142,9 +124,9 @@ case "$work_dir/" in
   / | "${HOME:-/nonexistent}/")
     die "refusing to use '$work_dir' as the work dir; pass a dedicated directory"
     ;;
-  "$repo_root/.regression-reference/"?*) ;;
+  "$repo_root/.wasm-build/"?*) ;;
   "$repo_root"/*)
-    die "work dir '$work_dir' is inside the ghostty-web checkout; use $repo_root/.regression-reference/<name> or a directory outside the checkout"
+    die "work dir '$work_dir' is inside the ghostty-web checkout; use $repo_root/.wasm-build/<name> or a directory outside the checkout"
     ;;
 esac
 
@@ -173,10 +155,7 @@ done
 # mkdir is atomic, so this is a portable exclusive lock (no flock on macOS).
 mkdir "$lock_dir" 2>/dev/null ||
   die "another build holds '$lock_dir'; if no build is running, remove that directory"
-cleanup_actions=()
 cleanup() {
-  local action
-  for action in "${cleanup_actions[@]+"${cleanup_actions[@]}"}"; do eval "$action" || true; done
   rm -rf "$lock_dir"
 }
 trap cleanup EXIT
@@ -201,8 +180,8 @@ else
   [[ "$allow_unverified" -eq 0 || "$out_dir" != "$repo_root" ]] ||
     die "--allow-unverified never publishes into the repo root; pass another --out-dir"
   case "$out_dir/" in
-    "$repo_root/" | "$repo_root/.regression-reference/"*) ;;
-    "$repo_root"/*) die "out dir '$out_dir' is inside the checkout; only the repo root or .regression-reference/ are allowed" ;;
+    "$repo_root/" | "$repo_root/.wasm-build/"*) ;;
+    "$repo_root"/*) die "out dir '$out_dir' is inside the checkout; only the repo root or .wasm-build/ are allowed" ;;
   esac
 fi
 
@@ -212,7 +191,7 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_TERMINAL_PROMPT=0
 
 # --- Manifest ----------------------------------------------------------------
-# Emits validated `key=value` lines for one target (no eval of manifest data).
+# Emits validated `key=value` lines for the target (no eval of manifest data).
 read_manifest() {
   # shellcheck disable=SC2016 # the JS below is intentionally single-quoted
   MANIFEST="$manifest" TARGET="$1" "$js_bin" -e '
@@ -233,15 +212,12 @@ read_manifest() {
       ["gitUrl", want("gitUrl", /^[A-Za-z0-9+.:\/@_~%-]+$/)],
       ["zigVersion", want("zigVersion", /^\d+\.\d+\.\d+$/)],
       ["zigEnv", want("zigEnv", /^[A-Z][A-Z0-9_]*$/)],
-      ["patch", want("patch", /^patches\/[A-Za-z0-9._\/-]+\.patch$/, true)],
-      ["patchSha256", want("patchSha256", /^[0-9a-f]{64}$/, true)],
       ["artifact", want("artifact", /^[A-Za-z0-9._-]+\.wasm$/)],
       ["wasmSha256", want("wasmSha256", /^[0-9a-f]{64}$/, true)],
       ["maxWasmBytes", want("maxWasmBytes", /^[1-9]\d*$/)],
       ["envPrefix", want("envPrefix", /^[A-Z][A-Z0-9_]*$/)],
       ["envFile", want("envFile", /^[A-Za-z0-9._-]+\.env$/)],
     ];
-    if (Boolean(out[4][1]) !== Boolean(out[5][1])) fail("patch and patchSha256 go together");
     if (!Array.isArray(t.buildArgs) || t.buildArgs.length === 0) fail("buildArgs missing");
     for (const a of t.buildArgs) {
       if (typeof a !== "string" || !/^[A-Za-z0-9=._+-]+$/.test(a)) fail(`bad build arg ${JSON.stringify(a)}`);
@@ -251,10 +227,10 @@ read_manifest() {
   '
 }
 
-# Per-target state, set by load_target.
+# Target state, set by load_target.
 load_target() {
   t_name=$1
-  t_commit="" t_git_url="" t_zig_version="" t_zig_env="" t_patch="" t_patch_sha=""
+  t_commit="" t_git_url="" t_zig_version="" t_zig_env=""
   t_artifact="" t_wasm_sha="" t_max_bytes="" t_env_prefix="" t_env_file=""
   t_build_args=()
   local lines key value
@@ -267,8 +243,6 @@ load_target() {
       gitUrl) t_git_url=$value ;;
       zigVersion) t_zig_version=$value ;;
       zigEnv) t_zig_env=$value ;;
-      patch) t_patch=$value ;;
-      patchSha256) t_patch_sha=$value ;;
       artifact) t_artifact=$value ;;
       wasmSha256) t_wasm_sha=$value ;;
       maxWasmBytes) t_max_bytes=$value ;;
@@ -296,12 +270,12 @@ resolve_zig() {
     die "$t_name needs Zig $t_zig_version (set $t_zig_env), but '$t_zig_bin' is $version"
 }
 
-# Fetch (by SHA) or verify the pinned source; leaves it pristine.
+# Fetch (by SHA) or verify the pinned source; it must be pristine.
 prepare_source() {
-  local src="$work_dir/sources/$t_commit" tmp head marker="$work_dir/sources/$t_commit.patch-applied"
+  local src="$work_dir/sources/$t_commit" tmp head
   t_src=$src
   mkdir -p "$work_dir/sources"
-  [[ ! -L "$src" && ! -L "$src.partial" && ! -L "$marker" ]] || die "symlink under '$work_dir/sources'"
+  [[ ! -L "$src" && ! -L "$src.partial" ]] || die "symlink under '$work_dir/sources'"
   if [[ -e "$src" ]]; then
     [[ -d "$src/.git" ]] || die "'$src' exists but is not a git checkout; remove it"
     log "$t_name: reusing source $t_commit"
@@ -318,46 +292,13 @@ prepare_source() {
   fi
   head="$(git -C "$src" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
   [[ "$head" == "$t_commit" ]] || die "'$src' is at '${head:-<none>}', not $t_commit"
-  # Recover from an interrupted patched build: only our own recorded patch is undone.
-  if [[ -n "$(git -C "$src" status --porcelain --untracked-files=all)" && -f "$marker" ]]; then
-    local recorded
-    recorded="$(cat "$marker")"
-    [[ -n "$t_patch" && "$recorded" == "$t_patch_sha" ]] ||
-      die "'$src' has changes from another patch ($recorded); remove the source dir"
-    git -C "$src" apply -R --check --whitespace=nowarn "$repo_root/$t_patch" ||
-      die "'$src' has local changes beyond the recorded patch; refusing to discard them"
-    git -C "$src" apply -R --whitespace=nowarn "$repo_root/$t_patch"
-    rm -f "$marker"
-    log "$t_name: reverted the patch left by an interrupted build"
-  fi
   [[ -z "$(git -C "$src" status --porcelain --untracked-files=all)" ]] ||
     die "source '$src' has local modifications or untracked files; refusing to touch them"
-  rm -f "$marker"
   t_tree="$(git -C "$src" rev-parse 'HEAD^{tree}')"
   local min_zig
   min_zig="$(sed -n 's/^[[:space:]]*\.minimum_zig_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$src/build.zig.zon")"
   [[ "$min_zig" == "$t_zig_version" ]] ||
     die "$t_name: build.zig.zon minimum_zig_version is '$min_zig', expected $t_zig_version"
-}
-
-apply_patch() {
-  [[ -n "$t_patch" ]] || return 0
-  local file="$repo_root/$t_patch" marker="$work_dir/sources/$t_commit.patch-applied" actual
-  [[ -f "$file" && ! -L "$file" ]] || die "patch '$t_patch' is missing"
-  actual="$(sha256_of "$file")"
-  [[ "$actual" == "$t_patch_sha" ]] ||
-    die "patch '$t_patch' sha256 is $actual; ghostty-build.json expects $t_patch_sha"
-  git -C "$t_src" apply --check --whitespace=nowarn "$file" || die "patch '$t_patch' does not apply to $t_commit"
-  printf '%s\n' "$t_patch_sha" >"$marker"
-  git -C "$t_src" apply --whitespace=nowarn "$file"
-  t_patched_status="$(git -C "$t_src" status --porcelain --untracked-files=all)"
-  cleanup_actions+=("revert_patch $(printf '%q ' "$t_src" "$file" "$marker")")
-}
-
-revert_patch() {
-  local src=$1 file=$2 marker=$3
-  [[ -f "$marker" ]] || return 0
-  git -C "$src" apply -R --whitespace=nowarn "$file" && rm -f "$marker"
 }
 
 build_target() {
@@ -380,7 +321,6 @@ build_target() {
   local cache="$work_dir/zig-cache/$t_zig_version" logf="$work_dir/logs/$t_name.log" start_s
   mkdir -p "$work_dir/stage" "$work_dir/logs" "$cache/global" "$cache/local" "$work_dir/meta"
   rm -rf "$t_stage"
-  apply_patch
   log "$t_name: zig $t_zig_version build ${t_build_args[*]} (log: $logf)"
   start_s="$(date +%s)"
   if ! (
@@ -394,11 +334,6 @@ build_target() {
   fi
   t_seconds="$(($(date +%s) - start_s))"
 
-  if [[ -n "$t_patch" ]]; then
-    [[ "$(git -C "$t_src" status --porcelain --untracked-files=all)" == "$t_patched_status" ]] ||
-      die "$t_name: the build changed source files beyond the patch"
-    revert_patch "$t_src" "$repo_root/$t_patch" "$work_dir/sources/$t_commit.patch-applied"
-  fi
   [[ -z "$(git -C "$t_src" status --porcelain --untracked-files=all)" ]] ||
     die "$t_name: source is not pristine after the build"
 
@@ -424,11 +359,7 @@ build_target() {
   fi
 
   t_info="$work_dir/meta/$t_name.build-info.json"
-  local patch_json="null" patch_sha_json="null" build_args_json="" arg
-  if [[ -n "$t_patch" ]]; then
-    patch_json="$(json_string "$t_patch")"
-    patch_sha_json="$(json_string "$t_patch_sha")"
-  fi
+  local build_args_json="" arg
   for arg in "${t_build_args[@]}"; do build_args_json+="${build_args_json:+, }$(json_string "$arg")"; done
   cat >"$t_info.partial" <<EOF
 {
@@ -438,8 +369,6 @@ build_target() {
   "gitUrl": $(json_string "$t_git_url"),
   "zigVersion": "$t_zig_version",
   "buildArgs": [$build_args_json],
-  "patch": $patch_json,
-  "patchSha256": $patch_sha_json,
   "artifact": $(json_string "$t_artifact"),
   "wasmSha256": "$t_sha",
   "wasmBytes": $t_bytes,
@@ -451,44 +380,37 @@ EOF
   mv -f "$t_info.partial" "$t_info"
 }
 
-# --- Build every target, then publish ----------------------------------------
-built=()
-for target in "${targets[@]}"; do
-  build_target "$target"
-  built+=("$t_name|$t_wasm|$t_artifact|$t_sha|$t_bytes|$t_commit|$t_env_prefix|$t_env_file|$t_info|$t_zig_version|$t_verified")
-done
-
-for entry in "${built[@]}"; do
-  IFS='|' read -r name wasm artifact sha bytes commit prefix envfile info zigv verified <<<"$entry"
-  verified_flag=1
-  [[ "$verified" == true ]] || verified_flag=0
-  if [[ -n "$bundle_arg" ]]; then
-    tmp="$bundle_dir.partial"
-    rm -rf "$tmp"
-    mkdir -p "$tmp"
-    cp "$wasm" "$tmp/$artifact"
-    cp "$info" "$tmp/build-info.json"
-    # Shell-quoted (bash `printf %q`) so paths with spaces source safely.
-    {
-      printf '%s_COMMIT=%q\n' "$prefix" "$commit"
-      printf '%s_WASM=%q\n' "$prefix" "$bundle_dir/$artifact"
-      printf '%s_WASM_SHA256=%q\n' "$prefix" "$sha"
-      printf '%s_WASM_VERIFIED=%s\n' "$prefix" "$verified_flag"
-    } >"$tmp/$envfile"
-    mv "$tmp" "$bundle_dir"
-    published="$bundle_dir/$artifact"
-    cat "$bundle_dir/$envfile"
-  else
-    dest="$out_dir/$artifact"
-    [[ ! -L "$dest" && ! -d "$dest" ]] || die "'$dest' is a symlink or directory; refusing to replace it"
-    cp "$wasm" "$dest.partial.$$"
-    mv -f "$dest.partial.$$" "$dest"
-    published=$dest
-    printf '%s_COMMIT=%q\n%s_WASM=%q\n%s_WASM_SHA256=%q\n%s_WASM_VERIFIED=%s\n' \
-      "$prefix" "$commit" "$prefix" "$published" "$prefix" "$sha" "$prefix" "$verified_flag"
-  fi
-  echo "${prefix}_WASM_BYTES=$bytes"
-  echo "${prefix}_BUILD_INFO=$info"
-  log "$name: published $published ($bytes bytes, sha256 $sha, Zig $zigv)"
-done
+# --- Build, then publish -----------------------------------------------------
+build_target libghostty-vt
+verified_flag=1
+[[ "$t_verified" == true ]] || verified_flag=0
+prefix=$t_env_prefix
+if [[ -n "$bundle_arg" ]]; then
+  tmp="$bundle_dir.partial"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  cp "$t_wasm" "$tmp/$t_artifact"
+  cp "$t_info" "$tmp/build-info.json"
+  # Shell-quoted (bash `printf %q`) so paths with spaces source safely.
+  {
+    printf '%s_COMMIT=%q\n' "$prefix" "$t_commit"
+    printf '%s_WASM=%q\n' "$prefix" "$bundle_dir/$t_artifact"
+    printf '%s_WASM_SHA256=%q\n' "$prefix" "$t_sha"
+    printf '%s_WASM_VERIFIED=%s\n' "$prefix" "$verified_flag"
+  } >"$tmp/$t_env_file"
+  mv "$tmp" "$bundle_dir"
+  published="$bundle_dir/$t_artifact"
+  cat "$bundle_dir/$t_env_file"
+else
+  dest="$out_dir/$t_artifact"
+  [[ ! -L "$dest" && ! -d "$dest" ]] || die "'$dest' is a symlink or directory; refusing to replace it"
+  cp "$t_wasm" "$dest.partial.$$"
+  mv -f "$dest.partial.$$" "$dest"
+  published=$dest
+  printf '%s_COMMIT=%q\n%s_WASM=%q\n%s_WASM_SHA256=%q\n%s_WASM_VERIFIED=%s\n' \
+    "$prefix" "$t_commit" "$prefix" "$published" "$prefix" "$t_sha" "$prefix" "$verified_flag"
+fi
+echo "${prefix}_WASM_BYTES=$t_bytes"
+echo "${prefix}_BUILD_INFO=$t_info"
+log "$t_name: published $published ($t_bytes bytes, sha256 $t_sha, Zig $t_zig_version)"
 rm -rf "$work_dir/stage"

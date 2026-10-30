@@ -10,15 +10,17 @@
  *
  * Browser-owned policy:
  * - Custom shortcuts, clipboard, dead keys and IME/composition stay in the host.
- * - Terminal-bound native input uses Ghostty for key encoding and mode selection.
- * - Legacy/standalone handlers retain their compatibility encoding path.
+ * - Terminal-bound input (a `getTerminal` callback returning a terminal) uses
+ *   the terminal's native key, mouse, paste and mode state for encoding.
+ * - Standalone handlers (no `getTerminal` callback) encode keys through a
+ *   KeyEncoder and mouse reports on the host, from the mode callbacks.
  */
 
-import type { NativeMouseEvent } from './backends/types';
 import type { Ghostty, GhosttyTerminal } from './ghostty';
 import type { KeyEncoder } from './ghostty';
 import type { IKeyEvent } from './interfaces';
 import { Key, KeyAction, KeyEncoderOption, Mods } from './types';
+import type { NativeMouseEvent } from './vt/types';
 
 /**
  * Map KeyboardEvent.code values to USB HID Key enum values
@@ -155,7 +157,7 @@ const KEY_MAP: Record<string, Key> = {
   F24: Key.F24,
 };
 
-// Native report-all mode can encode lone modifiers; legacy browser policy stays unchanged.
+// Native report-all mode can encode lone modifiers; the standalone browser policy stays unchanged.
 const NATIVE_MODIFIER_KEYS: Readonly<Record<string, Key>> = {
   ShiftLeft: Key.SHIFT_LEFT,
   ShiftRight: Key.SHIFT_RIGHT,
@@ -266,7 +268,7 @@ export class InputHandler {
   private wheelListener: ((e: WheelEvent) => void) | null = null;
   private isComposing = false;
   private isDisposed = false;
-  private mouseButtonsPressed = 0; // Legacy button tracking
+  private mouseButtonsPressed = 0; // Button tracking for standalone (host-encoded) mouse reports
   private nativeMouseButtons = 0; // DOM buttons bitmask, presses forwarded to the application
   private localMouseButtons = 0; // Gestures that began as local/Shift selection
   private readonly mouseTextDecoder = new TextDecoder('utf-8', { fatal: true });
@@ -521,7 +523,7 @@ export class InputHandler {
     }
 
     // The native encoder owns ordinary keys, modifiers and protocol transitions
-    // too. Do not bypass it with the legacy printable/special-key tables below.
+    // too. Do not bypass it with the standalone printable/special-key tables below.
     if (nativeTerminal) {
       this.encodeNativeKey(
         event,
@@ -685,8 +687,7 @@ export class InputHandler {
   }
 
   private nativeTerminal(): GhosttyTerminal | undefined {
-    const terminal = this.getTerminalCallback?.();
-    return terminal?.backend === 'libghostty-vt' ? terminal : undefined;
+    return this.getTerminalCallback?.();
   }
 
   private encodeNativeKey(

@@ -5,14 +5,14 @@
       "kind": "native",
       "upstream": "src/terminal/Terminal.zig",
       "symbol": "pub fn scrollViewport",
-      "target": "lib/backends/native.ts",
+      "target": "lib/vt/bridge.ts",
       "targetSymbol": "scrollViewport(command"
     },
     {
       "kind": "native",
       "upstream": "src/terminal/PageList.zig",
       "symbol": "pub fn scrollbar",
-      "target": "lib/backends/native.ts",
+      "target": "lib/vt/bridge.ts",
       "targetSymbol": "getScrollState()"
     },
     {
