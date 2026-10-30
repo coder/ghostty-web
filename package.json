@@ -61,8 +61,7 @@
     "lint:fix": "biome check --write .",
     "prepublishOnly": "bun run build",
     "release-please": "tsx scripts/release-please-runner.ts",
-    "test:regression": "bun test tests/regression",
-    "test:regression:reference": "bun tests/regression/reference/run.ts"
+    "test:regression": "bun test tests/behavior"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.0",

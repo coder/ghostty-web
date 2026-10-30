@@ -9,6 +9,6 @@
     "declarationMap": false,
     "types": ["bun-types", "node"]
   },
-  "include": ["tests/**/*.ts", "playwright.config.ts", "playwright.gaps.config.ts"],
+  "include": ["tests/behavior/**/*.ts"],
   "exclude": ["node_modules", "dist", "test-results", "playwright-report"]
 }
