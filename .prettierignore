@@ -7,3 +7,7 @@ coverage/
 bun.lock
 CHANGELOG.md
 ghostty/
+test-results/
+playwright-report/
+playwright-report-*/
+.regression-reference/

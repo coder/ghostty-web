@@ -17,6 +17,7 @@ import { fileURLToPath } from 'url';
 import pty from '@lydell/node-pty';
 // WebSocket server
 import { WebSocketServer } from 'ws';
+import { forwardTerminalInput } from './input.js';
 
 import {
   createAuthConfig,
@@ -327,6 +328,13 @@ const HTML_TEMPLATE = `<!doctype html>
         }
       });
 
+      // Raw-byte mouse reports use binary WebSocket frames, never UTF-8 strings.
+      term.onBinary?.((data) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(Uint8Array.from(data, (char) => char.charCodeAt(0)));
+        }
+      });
+
       // Handle resize - notify PTY when terminal dimensions change
       term.onResize(({ cols, rows }) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -614,24 +622,8 @@ wss.on('connection', (ws, req) => {
   });
 
   // WebSocket -> PTY
-  ws.on('message', (data) => {
-    const message = data.toString('utf8');
-
-    // Check for resize message
-    if (message.startsWith('{')) {
-      try {
-        const msg = JSON.parse(message);
-        if (msg.type === 'resize') {
-          ptyProcess.resize(msg.cols, msg.rows);
-          return;
-        }
-      } catch (e) {
-        // Not JSON, treat as input
-      }
-    }
-
-    // Send to PTY
-    ptyProcess.write(message);
+  ws.on('message', (data, isBinary) => {
+    forwardTerminalInput(ptyProcess, data, isBinary);
   });
 
   ws.on('close', () => {

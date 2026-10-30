@@ -1,64 +1,66 @@
 name: 'Setup Zig'
-description: 'Install Zig compiler'
+description: 'Install an exact, independently addressable Zig compiler'
 inputs:
   version:
     description: 'Zig version to install'
     required: true
-    default: '0.15.2'
+    default: '0.16.0'
+outputs:
+  bin-path:
+    description: 'Absolute path to this version of Zig'
+    value: ${{ steps.expose.outputs.bin-path }}
 runs:
   using: 'composite'
   steps:
+    - name: Validate version
+      shell: bash
+      env:
+        ZIG_VERSION: ${{ inputs.version }}
+      run: |
+        [[ "$ZIG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          echo 'An exact numeric Zig version is required' >&2
+          exit 1
+        }
     - name: Cache Zig
       uses: actions/cache@v4
       id: cache-zig
       with:
-        path: |
-          ~/zig
-        key: zig-${{ runner.os }}-${{ inputs.version }}
-
+        path: ~/zig/${{ inputs.version }}
+        key: zig-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-v2
     - name: Download and install Zig
       if: steps.cache-zig.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        ZIG_VERSION: ${{ inputs.version }}
       run: |
-        set -e
-        VERSION="${{ inputs.version }}"
-
-        # Determine platform
-        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-          PLATFORM="linux"
-          ARCH="x86_64"
-        elif [[ "$OSTYPE" == "darwin"* ]]; then
-          PLATFORM="macos"
-          if [[ "$(uname -m)" == "arm64" ]]; then
-            ARCH="aarch64"
-          else
-            ARCH="x86_64"
-          fi
-        else
-          echo "Unsupported OS: $OSTYPE"
-          exit 1
-        fi
-
-        # Download from ziglang.org
-        # Note: Format changed in 0.14.1+ from zig-linux-x86_64 to zig-x86_64-linux
-        TARBALL="zig-${ARCH}-${PLATFORM}-${VERSION}.tar.xz"
-        URL="https://ziglang.org/download/${VERSION}/${TARBALL}"
-
-        echo "Downloading Zig ${VERSION} for ${PLATFORM}-${ARCH}..."
-        curl --retry 3 --retry-delay 5 -L -o "/tmp/${TARBALL}" "${URL}"
-
-        # Extract to home directory
-        mkdir -p ~/zig
-        tar -xf "/tmp/${TARBALL}" -C ~/zig --strip-components=1
-
-        echo "Zig ${VERSION} installed to ~/zig"
-
-    - name: Add Zig to PATH
+        set -euo pipefail
+        case "$OSTYPE" in
+          linux-gnu*) PLATFORM=linux ;;
+          darwin*) PLATFORM=macos ;;
+          *) echo "Unsupported OS: $OSTYPE" >&2; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64) ARCH=x86_64 ;;
+          arm64|aarch64) ARCH=aarch64 ;;
+          *) echo 'Unsupported architecture' >&2; exit 1 ;;
+        esac
+        TARBALL="zig-${ARCH}-${PLATFORM}-${ZIG_VERSION}.tar.xz"
+        URL="https://ziglang.org/download/${ZIG_VERSION}/${TARBALL}"
+        ARCHIVE="$RUNNER_TEMP/$TARBALL"
+        curl --fail --retry 3 --retry-delay 5 -L -o "$ARCHIVE" "$URL"
+        mkdir -p "$HOME/zig/$ZIG_VERSION"
+        tar -xf "$ARCHIVE" -C "$HOME/zig/$ZIG_VERSION" --strip-components=1
+        rm -f "$ARCHIVE"
+    - name: Expose and verify the compiler
+      id: expose
       shell: bash
+      env:
+        ZIG_VERSION: ${{ inputs.version }}
       run: |
-        echo "$HOME/zig" >> $GITHUB_PATH
-
-    - name: Verify Zig installation
-      shell: bash
-      run: |
-        zig version
+        set -euo pipefail
+        BIN="$HOME/zig/$ZIG_VERSION/zig"
+        test "$("$BIN" version)" = "$ZIG_VERSION"
+        echo "$HOME/zig/$ZIG_VERSION" >> "$GITHUB_PATH"
+        echo "bin-path=$BIN" >> "$GITHUB_OUTPUT"
+        PREFIX="ZIG_$(echo "$ZIG_VERSION" | cut -d. -f1,2 | tr . _)"
+        echo "${PREFIX}_BIN=$BIN" >> "$GITHUB_ENV"

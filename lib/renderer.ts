@@ -10,15 +10,27 @@
  * - Dirty line optimization for 60 FPS
  */
 
+import type { NativeScrollState } from './backends/types';
 import type { ITheme } from './interfaces';
+import { readState } from './renderer/state';
 import type { SelectionManager } from './selection-manager';
 import type { GhosttyCell, ILink } from './types';
 import { CellFlags } from './types';
 
 // Interface for objects that can be rendered
 export interface IRenderable {
+  readonly backend?: 'legacy' | 'libghostty-vt';
+  /** Native visible viewport, distinct from the public active-buffer facade. */
+  getRenderView?(): IRenderable;
+  getScrollState?(): NativeScrollState;
   getLine(y: number): GhosttyCell[] | null;
-  getCursor(): { x: number; y: number; visible: boolean };
+  getCursor(): {
+    x: number;
+    y: number;
+    visible: boolean;
+    style?: 'block' | 'bar' | 'underline';
+    blinking?: boolean;
+  };
   getDimensions(): { cols: number; rows: number };
   isRowDirty(y: number): boolean;
   /** Returns true if a full redraw is needed (e.g., screen change) */
@@ -30,11 +42,22 @@ export interface IRenderable {
    * For simple cells, returns the single character.
    */
   getGraphemeString?(row: number, col: number): string;
+  /**
+   * What to draw instead of this buffer, if anything: during a render hold
+   * (synchronized output, mode 2026) the frame captured when the hold began.
+   * Consulted only at the bottom of the viewport with no selection, so a held
+   * frame is never mixed with live history rows or a live selection overlay
+   * (those views show the live screen while the hold continues).
+   */
+  getPresentation?(): IRenderable;
+  /** Optional captured history length on a presentation view. */
+  getScrollbackLength?(): number;
 }
 
 export interface IScrollbackProvider {
   getScrollbackLine(offset: number): GhosttyCell[] | null;
   getScrollbackLength(): number;
+  getScrollbackGraphemeString?(offset: number, col: number): string;
 }
 
 // ============================================================================
@@ -98,21 +121,43 @@ export class CanvasRenderer {
   private fontFamily: string;
   private cursorStyle: 'block' | 'underline' | 'bar';
   private cursorBlink: boolean;
+  // Theme of the frame being drawn (all drawing reads this)
   private theme: Required<ITheme>;
+  // Latest theme from setTheme(): live frames use it
+  private liveTheme: Required<ITheme>;
+  // Theme each synchronized-output frame was captured with, pinned when the
+  // theme changes while it is the active presentation (see setTheme)
+  private heldThemes = new WeakMap<IRenderable, Required<ITheme>>();
+  // Buffer last passed to render(), before any held presentation replaced it
+  // (currentBuffer may be a held view); setTheme asks it for the active capture
+  private sourceBuffer?: IRenderable;
   private devicePixelRatio: number;
+  private readonly followsWindowDevicePixelRatio: boolean;
   private metrics: FontMetrics;
   private palette: string[];
 
   // Cursor blinking state
   private cursorVisible: boolean = true;
-  private cursorBlinkInterval?: number;
+  private cursorBlinkSince?: number;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
+  private lastCursorVisible = true;
+  private lastNativeCursorStyle: 'block' | 'bar' | 'underline' = 'block';
 
   // Viewport tracking (for scrolling)
   private lastViewportY: number = 0;
+  private lastScrollbarState = '';
 
   // Current buffer being rendered (for grapheme lookups)
   private currentBuffer: IRenderable | null = null;
+  private currentHistory?: IScrollbackProvider;
+  private currentRowOffset = 0;
+  private currentHistoryLength = 0;
+
+  // Viewport lines of the frame being rendered (a band also draws the row below)
+  private frameLine?: (y: number) => GhosttyCell[] | null;
+
+  // Measured ink ascent per font and text (see mayReachRowAbove)
+  private inkAscents = new Map<string, number>();
 
   // Selection manager (for rendering selection)
   private selectionManager?: SelectionManager;
@@ -152,6 +197,8 @@ export class CanvasRenderer {
     this.cursorStyle = options.cursorStyle ?? 'block';
     this.cursorBlink = options.cursorBlink ?? false;
     this.theme = { ...DEFAULT_THEME, ...options.theme };
+    this.liveTheme = this.theme;
+    this.followsWindowDevicePixelRatio = options.devicePixelRatio === undefined;
     this.devicePixelRatio = options.devicePixelRatio ?? window.devicePixelRatio ?? 1;
 
     // Build color palette (16 ANSI colors)
@@ -205,8 +252,29 @@ export class CanvasRenderer {
 
     // Add 2px padding to height to account for glyphs that overflow (like 'f', 'd', 'g', 'p')
     // and anti-aliasing pixels
-    const height = Math.ceil(ascent + descent) + 2;
-    const baseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+    let height = Math.ceil(ascent + descent) + 2;
+    let baseline = Math.ceil(ascent) + 1; // Offset baseline by half the padding
+
+    // 'M' alone does not bound the font: at some sizes ascenders, brackets,
+    // '|', '$' or descenders reach past the box above. Grow the cell only by
+    // the ink of printable ASCII that does not fit, so sizes where everything
+    // already fits keep exactly the metrics above.
+    let inkAscent = 0;
+    let inkDescent = 0;
+    for (let code = 0x21; code <= 0x7e; code++) {
+      const glyph = ctx.measureText(String.fromCharCode(code));
+      // Without ink metrics (e.g. a DOM shim), keep the box above.
+      if (Number.isFinite(glyph.actualBoundingBoxAscent)) {
+        inkAscent = Math.max(inkAscent, glyph.actualBoundingBoxAscent);
+      }
+      if (Number.isFinite(glyph.actualBoundingBoxDescent)) {
+        inkDescent = Math.max(inkDescent, glyph.actualBoundingBoxDescent);
+      }
+    }
+    const extraAbove = Math.max(0, Math.ceil(inkAscent - baseline));
+    const extraBelow = Math.max(0, Math.ceil(inkDescent - (height - baseline)));
+    baseline += extraAbove;
+    height += extraAbove + extraBelow;
 
     return { width, height, baseline };
   }
@@ -216,6 +284,7 @@ export class CanvasRenderer {
    */
   public remeasureFont(): void {
     this.metrics = this.measureFont();
+    this.inkAscents.clear();
   }
 
   // ==========================================================================
@@ -242,8 +311,10 @@ export class CanvasRenderer {
     this.canvas.style.height = `${cssHeight}px`;
 
     // Set actual canvas size (scaled for DPI)
-    this.canvas.width = cssWidth * this.devicePixelRatio;
-    this.canvas.height = cssHeight * this.devicePixelRatio;
+    // Canvas backing dimensions are integers. Use the same rounding in render()
+    // or a fractional DPR causes a resize (and erases the canvas) on every frame.
+    this.canvas.width = Math.floor(cssWidth * this.devicePixelRatio);
+    this.canvas.height = Math.floor(cssHeight * this.devicePixelRatio);
 
     // Scale context to match DPI (setting canvas.width/height resets the context)
     this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio);
@@ -269,8 +340,36 @@ export class CanvasRenderer {
     forceAll: boolean = false,
     viewportY: number = 0,
     scrollbackProvider?: IScrollbackProvider,
-    scrollbarOpacity: number = 1
+    scrollbarOpacity: number = 1,
+    timestamp: number = performance.now()
   ): void {
+    // Synchronized output: draw the held frame (every read below, including
+    // graphemes, cursor and dirty tracking, then comes from it).
+    let heldHistory: number | undefined;
+    let held = false;
+    const state = readState(buffer);
+    this.sourceBuffer = state.source;
+    const nativeViewport = state.scroll !== undefined;
+    if (state.scroll)
+      viewportY = Math.max(0, state.scroll.total - state.scroll.len - state.scroll.offset);
+    buffer = state.live;
+    if (state.source.getPresentation && viewportY === 0 && !this.selectionManager?.hasSelection()) {
+      const presentation = state.source.getPresentation();
+      if (presentation !== state.source) {
+        held = true;
+        heldHistory = presentation.getScrollbackLength?.();
+        buffer = presentation;
+      }
+    }
+
+    // Live frames use the latest theme; a held frame keeps the theme it was
+    // captured with. Switching between them repaints every row.
+    const frameTheme = (held ? this.heldThemes.get(buffer) : undefined) ?? this.liveTheme;
+    if (frameTheme !== this.theme) {
+      this.theme = frameTheme;
+      forceAll = true;
+    }
+
     // Store buffer reference for grapheme lookups in renderCell
     this.currentBuffer = buffer;
 
@@ -278,49 +377,95 @@ export class CanvasRenderer {
     // Multiple update() calls are safe - dirty state persists until clearDirty().
     const cursor = buffer.getCursor();
     const dims = buffer.getDimensions();
-    const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
+    const scrollbackLength =
+      heldHistory ??
+      (state.scroll
+        ? state.scroll.total - state.scroll.len
+        : scrollbackProvider
+          ? scrollbackProvider.getScrollbackLength()
+          : 0);
+    // Smooth animation may be fractional, but cell/grid lookups always use the
+    // same whole-row boundary, including glyphs that overflow from a neighbor.
+    const rowOffset = nativeViewport ? 0 : Math.max(0, Math.floor(viewportY));
+    this.currentHistory = nativeViewport ? undefined : scrollbackProvider;
+    this.currentRowOffset = rowOffset;
+    this.currentHistoryLength = scrollbackLength;
 
     // Check if buffer needs full redraw (e.g., screen change between normal/alternate)
     if (buffer.needsFullRedraw?.()) {
       forceAll = true;
     }
 
-    // Resize canvas if dimensions changed
+    // Follow zoom/display changes unless the caller explicitly fixed the DPR.
+    const dpr = this.followsWindowDevicePixelRatio
+      ? (window.devicePixelRatio ?? 1)
+      : this.devicePixelRatio;
+    const dprChanged = dpr !== this.devicePixelRatio;
+    this.devicePixelRatio = dpr;
+
+    // Match the integer backing size assigned by resize(), including odd grids.
     const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+      dprChanged ||
+      this.canvas.width !== Math.floor(dims.cols * this.metrics.width * dpr) ||
+      this.canvas.height !== Math.floor(dims.rows * this.metrics.height * dpr);
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);
       forceAll = true; // Force full render after resize
     }
 
-    // Force re-render when viewport changes (scrolling)
-    if (viewportY !== this.lastViewportY) {
+    // Native RenderState owns viewport invalidation. Legacy presentation still
+    // uses the compatibility history compositor.
+    if (!nativeViewport && viewportY !== this.lastViewportY) {
       forceAll = true;
       this.lastViewportY = viewportY;
     }
 
+    // The overlay is host presentation, not native dirty state. Repaint its old
+    // pixels when opacity/range changes, including the last frame that hides it.
+    // Hidden metadata cannot change pixels. A stable hidden key avoids overriding
+    // native clean rows as output grows pinned history, but still differs from the
+    // last visible key so the final hiding frame erases the old overlay.
+    const scrollbarState =
+      scrollbackProvider && scrollbarOpacity > 0
+        ? `${viewportY}:${scrollbackLength}:${dims.rows}:${scrollbarOpacity}`
+        : 'hidden';
+    if (scrollbarState !== this.lastScrollbarState) {
+      forceAll = true;
+      this.lastScrollbarState = scrollbarState;
+    }
+
     // Check if cursor position changed or if blinking (need to redraw cursor line)
+    const nativeCursor = buffer.backend === 'libghostty-vt';
+    const effectiveCursorStyle = nativeCursor
+      ? (cursor.style ?? this.cursorStyle)
+      : this.cursorStyle;
+    if (nativeCursor && cursor.blinking !== undefined && cursor.blinking !== this.cursorBlink) {
+      this.setCursorBlink(cursor.blinking);
+    }
+    // RendererThread is the only frame/clock owner. Keep the existing 530ms
+    // compatibility period without an independent interval that survives stops.
+    if (this.cursorBlink && this.cursorBlinkSince !== undefined) {
+      this.cursorVisible =
+        Math.floor(Math.max(0, timestamp - this.cursorBlinkSince) / 530) % 2 === 0;
+    }
+    // Visibility (DECTCEM) is reported by both engines; the reported style is
+    // native-only policy (legacy draws the cursorStyle option).
+    const cursorAppearanceChanged =
+      cursor.visible !== this.lastCursorVisible ||
+      effectiveCursorStyle !== this.lastNativeCursorStyle;
     const cursorMoved =
-      cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
+      cursor.x !== this.lastCursorPosition.x ||
+      cursor.y !== this.lastCursorPosition.y ||
+      cursorAppearanceChanged;
+    // Cursor rows are repainted in the row pass below rather than standalone,
+    // so they get exactly the pixels of a full redraw (see renderLine).
+    const cursorRows: number[] = [];
     if (cursorMoved || this.cursorBlink) {
-      // Mark cursor lines as needing redraw
-      if (!forceAll && !buffer.isRowDirty(cursor.y)) {
-        // Need to redraw cursor line
-        const line = buffer.getLine(cursor.y);
-        if (line) {
-          this.renderLine(line, cursor.y, dims.cols);
-        }
-      }
+      cursorRows.push(cursor.y);
       if (cursorMoved && this.lastCursorPosition.y !== cursor.y) {
-        // Also redraw old cursor line if cursor moved to different line
-        if (!forceAll && !buffer.isRowDirty(this.lastCursorPosition.y)) {
-          const line = buffer.getLine(this.lastCursorPosition.y);
-          if (line) {
-            this.renderLine(line, this.lastCursorPosition.y, dims.cols);
-          }
-        }
+        // Also erase the cursor from its previous row
+        cursorRows.push(this.lastCursorPosition.y);
       }
     }
 
@@ -362,24 +507,7 @@ export class CanvasRenderer {
       // Find rows containing the old or new hovered hyperlink
       // Must check the correct buffer based on viewportY (scrollback vs screen)
       for (let y = 0; y < dims.rows; y++) {
-        let line: GhosttyCell[] | null = null;
-
-        // Same logic as rendering: fetch from scrollback or screen
-        if (viewportY > 0) {
-          if (y < viewportY && scrollbackProvider) {
-            // This row is from scrollback
-            // Floor viewportY for array access (handles fractional values during smooth scroll)
-            const scrollbackOffset = scrollbackLength - Math.floor(viewportY) + y;
-            line = scrollbackProvider.getScrollbackLine(scrollbackOffset);
-          } else {
-            // This row is from visible screen
-            const screenRow = y - Math.floor(viewportY);
-            line = buffer.getLine(screenRow);
-          }
-        } else {
-          // At bottom - fetch from visible screen
-          line = buffer.getLine(y);
-        }
+        const line = this.fetchLine(buffer, y, rowOffset, scrollbackProvider, scrollbackLength);
 
         if (line) {
           for (const cell of line) {
@@ -418,65 +546,50 @@ export class CanvasRenderer {
       this.previousHoveredLinkRange = this.hoveredLinkRange;
     }
 
-    // Track if anything was actually rendered
-    let anyLinesRendered = false;
-
-    // Determine which rows need rendering.
-    // We also include adjacent rows (above and below) for each dirty row to handle
-    // glyph overflow - tall glyphs like Devanagari vowel signs can extend into
-    // adjacent rows' visual space.
-    const rowsToRender = new Set<number>();
+    // Determine which row bands to repaint. A band's pixels depend only on its
+    // own row and on the row below it, whose tall glyphs (accents, Devanagari
+    // vowel signs, box drawing) overflow upward into it (see renderLine). So a
+    // changed row repaints its own band and the band above it; untouched bands
+    // already hold exactly what a full redraw would paint.
+    const repaint: boolean[] = new Array(dims.rows).fill(false);
     for (let y = 0; y < dims.rows; y++) {
       // When scrolled, always force render all lines since we're showing scrollback
       const needsRender =
-        viewportY > 0
+        !nativeViewport && viewportY > 0
           ? true
           : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
 
       if (needsRender) {
-        rowsToRender.add(y);
-        // Include adjacent rows to handle glyph overflow
-        if (y > 0) rowsToRender.add(y - 1);
-        if (y < dims.rows - 1) rowsToRender.add(y + 1);
+        repaint[y] = true;
+        // The band above shows this row's upward glyph overflow
+        if (y > 0) repaint[y - 1] = true;
       }
     }
+    for (const y of cursorRows) {
+      if (y >= 0 && y < dims.rows) repaint[y] = true;
+    }
+
+    // Lines for this frame, each fetched at most once (a band also reads the row below).
+    const lines: Array<GhosttyCell[] | null | undefined> = new Array(dims.rows);
+    this.frameLine = (y: number): GhosttyCell[] | null => {
+      if (y < 0 || y >= dims.rows) return null;
+      if (lines[y] === undefined) {
+        lines[y] = this.fetchLine(buffer, y, rowOffset, scrollbackProvider, scrollbackLength);
+      }
+      return lines[y] ?? null;
+    };
 
     // Render each line
     for (let y = 0; y < dims.rows; y++) {
-      if (!rowsToRender.has(y)) {
+      if (!repaint[y]) {
         continue;
       }
-
-      anyLinesRendered = true;
-
-      // Fetch line from scrollback or visible screen
-      let line: GhosttyCell[] | null = null;
-      if (viewportY > 0) {
-        // Scrolled up - need to fetch from scrollback + visible screen
-        // When scrolled up N lines, we want to show:
-        // - Scrollback lines (from the end) + visible screen lines
-
-        // Check if this row should come from scrollback or visible screen
-        if (y < viewportY && scrollbackProvider) {
-          // This row is from scrollback (upper part of viewport)
-          // Get from end of scrollback buffer
-          // Floor viewportY for array access (handles fractional values during smooth scroll)
-          const scrollbackOffset = scrollbackLength - Math.floor(viewportY) + y;
-          line = scrollbackProvider.getScrollbackLine(scrollbackOffset);
-        } else {
-          // This row is from visible screen (lower part of viewport)
-          const screenRow = viewportY > 0 ? y - Math.floor(viewportY) : y;
-          line = buffer.getLine(screenRow);
-        }
-      } else {
-        // At bottom - fetch from visible screen
-        line = buffer.getLine(y);
-      }
-
+      const line = this.frameLine(y);
       if (line) {
         this.renderLine(line, y, dims.cols);
       }
     }
+    this.frameLine = undefined;
 
     // Selection highlighting is now integrated into renderCellBackground/renderCellText
     // No separate overlay pass needed - this fixes z-order issues with complex glyphs
@@ -484,8 +597,8 @@ export class CanvasRenderer {
     // Link underlines are drawn during cell rendering (see renderCell)
 
     // Render cursor (only if we're at the bottom, not scrolled)
-    if (viewportY === 0 && cursor.visible && this.cursorVisible) {
-      this.renderCursor(cursor.x, cursor.y);
+    if ((nativeViewport || viewportY === 0) && cursor.visible && this.cursorVisible) {
+      this.renderCursor(cursor.x, cursor.y, effectiveCursorStyle);
     }
 
     // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect)
@@ -495,6 +608,8 @@ export class CanvasRenderer {
 
     // Update last cursor position
     this.lastCursorPosition = { x: cursor.x, y: cursor.y };
+    this.lastCursorVisible = cursor.visible;
+    this.lastNativeCursorStyle = effectiveCursorStyle;
 
     // ALWAYS clear dirty flags after rendering, regardless of forceAll.
     // This is critical - if we don't clear after a full redraw, the dirty
@@ -502,29 +617,71 @@ export class CanvasRenderer {
     buffer.clearDirty();
   }
 
+  /** Fetch a viewport row from scrollback or the visible screen. */
+  private fetchLine(
+    buffer: IRenderable,
+    y: number,
+    viewportY: number,
+    scrollbackProvider: IScrollbackProvider | undefined,
+    scrollbackLength: number
+  ): GhosttyCell[] | null {
+    viewportY = Math.max(0, Math.floor(viewportY));
+    if (viewportY > 0) {
+      // Scrolled up - need to fetch from scrollback + visible screen
+      // When scrolled up N lines, we want to show:
+      // - Scrollback lines (from the end) + visible screen lines
+
+      // Check if this row should come from scrollback or visible screen
+      if (y < viewportY && scrollbackProvider) {
+        // This row is from scrollback (upper part of viewport)
+        // Get from end of scrollback buffer
+        // Defensive quantization for legacy callers of the renderer
+        const scrollbackOffset = scrollbackLength - Math.floor(viewportY) + y;
+        return scrollbackProvider.getScrollbackLine(scrollbackOffset);
+      }
+      // This row is from visible screen (lower part of viewport)
+      return buffer.getLine(y - Math.floor(viewportY));
+    }
+    // At bottom - fetch from visible screen
+    return buffer.getLine(y);
+  }
+
   /**
    * Render a single line using two-pass approach:
    * 1. First pass: Draw all cell backgrounds
    * 2. Second pass: Draw all cell text and decorations
+   * (then a third pass redraws tall glyphs of the row below that reach up here)
    *
    * This two-pass approach is necessary for proper rendering of complex scripts
    * like Devanagari where diacritics (like vowel sign ि) can extend LEFT of the
    * base character into the previous cell's visual area. If we draw backgrounds
    * and text in a single pass (cell by cell), the background of cell N would
    * cover any left-extending portions of graphemes from cell N-1.
+   *
+   * Everything is confined to this row's band, so the band's pixels depend only
+   * on this row and the row below it (whose tall glyphs reach up into it). An
+   * incremental frame that repaints the band therefore produces exactly the
+   * pixels of a full redraw, and pixels outside the band are never touched.
    */
   private renderLine(line: GhosttyCell[], y: number, cols: number): void {
-    const lineY = y * this.metrics.height;
-    const lineWidth = cols * this.metrics.width;
+    const top = this.deviceY(y);
+    const bottom = this.deviceY(y + 1);
+    const right = this.deviceX(cols);
+
+    // Backgrounds are filled in device pixels on shared, rounded cell edges, so
+    // they tile exactly at any devicePixelRatio: no anti-aliased seams between
+    // cells and no bleed into a neighbouring row's band.
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     // Clear line background then fill with theme color.
-    // We clear just the cell area - glyph overflow is handled by also
-    // redrawing adjacent rows (see render() method).
+    // We clear just the cell area - glyph overflow from the row below is
+    // redrawn into this band in pass 3.
     // clearRect is needed because fillRect composites rather than replaces,
     // so transparent/translucent backgrounds wouldn't clear previous content.
-    this.ctx.clearRect(0, lineY, lineWidth, this.metrics.height);
+    this.ctx.clearRect(0, top, right, bottom - top);
     this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, lineY, lineWidth, this.metrics.height);
+    this.ctx.fillRect(0, top, right, bottom - top);
 
     // PASS 1: Draw all cell backgrounds first
     // This ensures all backgrounds are painted before any text, allowing text
@@ -532,11 +689,39 @@ export class CanvasRenderer {
     for (let x = 0; x < line.length; x++) {
       const cell = line[x];
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
-      this.renderCellBackground(cell, x, y);
+      this.renderCellBackground(cell, x, y, top, bottom);
     }
+
+    // Text is clipped to the band (device pixels, edges shared with the
+    // neighbouring bands). Ink reaching into another band is drawn when that
+    // band is painted, so anti-aliased ink is never composited twice. The same
+    // clipped draws happen in every frame: a clip can also suppress a glyph
+    // whose only ink inside it is an anti-aliased fringe, so an unclipped full
+    // redraw could not be reproduced exactly by a clipped partial one.
+    this.ctx.beginPath();
+    this.ctx.rect(0, top, right, bottom - top);
+    this.ctx.clip();
+    this.ctx.setTransform(this.devicePixelRatio, 0, 0, this.devicePixelRatio, 0, 0);
 
     // PASS 2: Draw all cell text and decorations
     // Now text can safely extend beyond cell boundaries (for complex scripts)
+    this.renderLineText(line, y);
+
+    // PASS 3: Tall glyphs of the row below that reach up into this band.
+    // (Downward overflow is not drawn: a top-to-bottom repaint always erased it.)
+    const below = this.frameLine?.(y + 1);
+    if (below) {
+      for (let x = 0; x < below.length; x++) {
+        const cell = below[x];
+        if (cell.width === 0 || !this.mayReachRowAbove(cell, x, y + 1)) continue;
+        this.renderCellText(cell, x, y + 1);
+      }
+    }
+    this.ctx.restore();
+  }
+
+  /** Draw a line's text and decorations (pass 2), in CSS pixels. */
+  private renderLineText(line: GhosttyCell[], y: number): void {
     for (let x = 0; x < line.length; x++) {
       const cell = line[x];
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
@@ -545,14 +730,85 @@ export class CanvasRenderer {
   }
 
   /**
+   * Device-pixel position of a column boundary. Adjacent fills share the same
+   * rounded edge, so they meet without a gap or overlap at fractional DPRs.
+   */
+  private deviceX(col: number): number {
+    return Math.round(col * this.metrics.width * this.devicePixelRatio);
+  }
+
+  /** Device-pixel position of a row boundary (see deviceX). */
+  private deviceY(row: number): number {
+    return Math.round(row * this.metrics.height * this.devicePixelRatio);
+  }
+
+  /** CSS font for a cell's style. */
+  private cellFont(cell: GhosttyCell): string {
+    let fontStyle = '';
+    if (cell.flags & CellFlags.ITALIC) fontStyle += 'italic ';
+    if (cell.flags & CellFlags.BOLD) fontStyle += 'bold ';
+    return `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
+  }
+
+  /** Text drawn for a cell: its full grapheme cluster, or its single codepoint. */
+  private cellText(cell: GhosttyCell, x: number, y: number): string {
+    if (cell.grapheme_len > 0) {
+      // Fetch the cluster from exactly the row that supplied this cell, not
+      // the unrelated active row at the same on-canvas y coordinate.
+      const cluster =
+        y < this.currentRowOffset && this.currentHistory
+          ? this.currentHistory.getScrollbackGraphemeString?.(
+              this.currentHistoryLength - this.currentRowOffset + y,
+              x
+            )
+          : this.currentBuffer?.getGraphemeString?.(y - this.currentRowOffset, x);
+      if (cluster !== undefined) return cluster;
+    }
+    // Simple cell - single codepoint
+    return String.fromCodePoint(cell.codepoint || 32); // Default to space if null
+  }
+
+  /**
+   * Whether a cell's glyph may reach above its own row band: its measured ink
+   * ascent (cached per font and text) plus a margin for hinting, synthetic bold
+   * and anti-aliasing exceeds the baseline offset. This only limits which cells
+   * pass 3 redraws; it is evaluated identically in every frame.
+   */
+  private mayReachRowAbove(cell: GhosttyCell, x: number, y: number): boolean {
+    if (cell.flags & CellFlags.INVISIBLE) return false;
+    if ((cell.codepoint === 0 || cell.codepoint === 32) && cell.grapheme_len === 0) return false;
+    const font = this.cellFont(cell);
+    const text = this.cellText(cell, x, y);
+    const key = `${font}\n${text}`;
+    let ascent = this.inkAscents.get(key);
+    if (ascent === undefined) {
+      if (this.inkAscents.size >= 4096) this.inkAscents.clear();
+      this.ctx.font = font;
+      const measured = this.ctx.measureText(text).actualBoundingBoxAscent;
+      // Without ink metrics, assume the glyph may overflow.
+      ascent = Number.isFinite(measured) ? measured : Number.POSITIVE_INFINITY;
+      this.inkAscents.set(key, ascent);
+    }
+    const margin = 1 / this.devicePixelRatio + this.fontSize / 16;
+    return ascent + margin > this.metrics.baseline;
+  }
+
+  /**
    * Render a cell's background only (Pass 1 of two-pass rendering)
    * Selection highlighting is integrated here to avoid z-order issues with
    * complex glyphs (like Devanagari) that extend outside their cell bounds.
+   * Draws in device pixels: the caller has set an identity transform and passes
+   * the row band's device-pixel edges.
    */
-  private renderCellBackground(cell: GhosttyCell, x: number, y: number): void {
-    const cellX = x * this.metrics.width;
-    const cellY = y * this.metrics.height;
-    const cellWidth = this.metrics.width * cell.width;
+  private renderCellBackground(
+    cell: GhosttyCell,
+    x: number,
+    y: number,
+    top: number,
+    bottom: number
+  ): void {
+    const left = this.deviceX(x);
+    const width = this.deviceX(x + cell.width) - left;
 
     // Check if this cell is selected
     const isSelected = this.isInSelection(x, y);
@@ -560,7 +816,7 @@ export class CanvasRenderer {
     if (isSelected) {
       // Draw selection background (solid color, not overlay)
       this.ctx.fillStyle = this.theme.selectionBackground;
-      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+      this.ctx.fillRect(left, top, width, bottom - top);
       return; // Selection background replaces cell background
     }
 
@@ -576,12 +832,16 @@ export class CanvasRenderer {
       bg_b = cell.fg_b;
     }
 
-    // Only draw cell background if it's different from the default (black)
-    // This lets the theme background (drawn earlier) show through for default cells
-    const isDefaultBg = bg_r === 0 && bg_g === 0 && bg_b === 0;
+    // The native API distinguishes an explicit black cell from a default.
+    // Legacy cells lack this metadata and retain their historical RGB sentinel.
+    // Inverse foreground is always a real background color on the native path.
+    const black = bg_r === 0 && bg_g === 0 && bg_b === 0;
+    const inverse = (cell.flags & CellFlags.INVERSE) !== 0;
+    const isDefaultBg =
+      cell.bg_default === undefined ? black : !inverse && cell.bg_default && black;
     if (!isDefaultBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
-      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+      this.ctx.fillRect(left, top, width, bottom - top);
     }
   }
 
@@ -603,10 +863,7 @@ export class CanvasRenderer {
     const isSelected = this.isInSelection(x, y);
 
     // Set text style
-    let fontStyle = '';
-    if (cell.flags & CellFlags.ITALIC) fontStyle += 'italic ';
-    if (cell.flags & CellFlags.BOLD) fontStyle += 'bold ';
-    this.ctx.font = `${fontStyle}${this.fontSize}px ${this.fontFamily}`;
+    this.ctx.font = this.cellFont(cell);
 
     // Set text color - use override, selection foreground, or normal color
     if (colorOverride) {
@@ -639,15 +896,7 @@ export class CanvasRenderer {
     const textY = cellY + this.metrics.baseline;
 
     // Get the character to render - use grapheme lookup for complex scripts
-    let char: string;
-    if (cell.grapheme_len > 0 && this.currentBuffer?.getGraphemeString) {
-      // Cell has additional codepoints - get full grapheme cluster
-      char = this.currentBuffer.getGraphemeString(y, x);
-    } else {
-      // Simple cell - single codepoint
-      char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
-    }
-    this.ctx.fillText(char, textX, textY);
+    this.ctx.fillText(this.cellText(cell, x, y), textX, textY);
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
@@ -716,47 +965,58 @@ export class CanvasRenderer {
   /**
    * Render cursor
    */
-  private renderCursor(x: number, y: number): void {
-    const cursorX = x * this.metrics.width;
-    const cursorY = y * this.metrics.height;
+  private renderCursor(
+    x: number,
+    y: number,
+    style: 'block' | 'bar' | 'underline' = this.cursorStyle
+  ): void {
+    // The cursor is drawn over the frame every render, so its edges are snapped
+    // to device pixels like the backgrounds: repeated draws stay identical and
+    // never blend into a neighbouring cell or row band.
+    const dpr = this.devicePixelRatio;
+    const left = this.deviceX(x);
+    const right = this.deviceX(x + 1);
+    const top = this.deviceY(y);
+    const bottom = this.deviceY(y + 1);
 
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.fillStyle = this.theme.cursor;
 
-    switch (this.cursorStyle) {
+    switch (style) {
       case 'block':
         // Full cell block
-        this.ctx.fillRect(cursorX, cursorY, this.metrics.width, this.metrics.height);
+        this.ctx.fillRect(left, top, right - left, bottom - top);
         // Re-draw character under cursor with cursorAccent color
         {
           const line = this.currentBuffer?.getLine(y);
           if (line?.[x]) {
-            this.ctx.save();
             this.ctx.beginPath();
-            this.ctx.rect(cursorX, cursorY, this.metrics.width, this.metrics.height);
+            this.ctx.rect(left, top, right - left, bottom - top);
             this.ctx.clip();
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             this.renderCellText(line[x], x, y, this.theme.cursorAccent);
-            this.ctx.restore();
           }
         }
         break;
 
-      case 'underline':
+      case 'underline': {
         // Underline at bottom of cell
         const underlineHeight = Math.max(2, Math.floor(this.metrics.height * 0.15));
-        this.ctx.fillRect(
-          cursorX,
-          cursorY + this.metrics.height - underlineHeight,
-          this.metrics.width,
-          underlineHeight
-        );
+        const underlineTop = Math.round(((y + 1) * this.metrics.height - underlineHeight) * dpr);
+        this.ctx.fillRect(left, underlineTop, right - left, bottom - underlineTop);
         break;
+      }
 
-      case 'bar':
+      case 'bar': {
         // Vertical bar at left of cell
         const barWidth = Math.max(2, Math.floor(this.metrics.width * 0.15));
-        this.ctx.fillRect(cursorX, cursorY, barWidth, this.metrics.height);
+        const barRight = Math.round((x * this.metrics.width + barWidth) * dpr);
+        this.ctx.fillRect(left, top, barRight - left, bottom - top);
         break;
+      }
     }
+    this.ctx.restore();
   }
 
   // ==========================================================================
@@ -764,18 +1024,12 @@ export class CanvasRenderer {
   // ==========================================================================
 
   private startCursorBlink(): void {
-    // xterm.js uses ~530ms blink interval
-    this.cursorBlinkInterval = window.setInterval(() => {
-      this.cursorVisible = !this.cursorVisible;
-      // Note: Render loop should redraw cursor line automatically
-    }, 530);
+    this.cursorBlinkSince = performance.now();
+    this.cursorVisible = true;
   }
 
   private stopCursorBlink(): void {
-    if (this.cursorBlinkInterval !== undefined) {
-      clearInterval(this.cursorBlinkInterval);
-      this.cursorBlinkInterval = undefined;
-    }
+    this.cursorBlinkSince = undefined;
     this.cursorVisible = true;
   }
 
@@ -784,29 +1038,37 @@ export class CanvasRenderer {
   // ==========================================================================
 
   /**
-   * Update theme colors
+   * Update theme colors. Live frames use the new theme from the next render.
+   * A synchronized-output frame keeps the theme it was captured with: the
+   * engine colors change together with this call, so a capture taken since
+   * the previous call matches the outgoing live theme and is pinned to it
+   * here (a capture pinned earlier keeps its older theme).
    */
   public setTheme(theme: ITheme): void {
-    this.theme = { ...DEFAULT_THEME, ...theme };
+    const presentation = this.sourceBuffer?.getPresentation?.();
+    if (presentation && presentation !== this.sourceBuffer && !this.heldThemes.has(presentation)) {
+      this.heldThemes.set(presentation, this.liveTheme);
+    }
+    this.liveTheme = { ...DEFAULT_THEME, ...(theme ?? {}) };
 
     // Rebuild palette
     this.palette = [
-      this.theme.black,
-      this.theme.red,
-      this.theme.green,
-      this.theme.yellow,
-      this.theme.blue,
-      this.theme.magenta,
-      this.theme.cyan,
-      this.theme.white,
-      this.theme.brightBlack,
-      this.theme.brightRed,
-      this.theme.brightGreen,
-      this.theme.brightYellow,
-      this.theme.brightBlue,
-      this.theme.brightMagenta,
-      this.theme.brightCyan,
-      this.theme.brightWhite,
+      this.liveTheme.black,
+      this.liveTheme.red,
+      this.liveTheme.green,
+      this.liveTheme.yellow,
+      this.liveTheme.blue,
+      this.liveTheme.magenta,
+      this.liveTheme.cyan,
+      this.liveTheme.white,
+      this.liveTheme.brightBlack,
+      this.liveTheme.brightRed,
+      this.liveTheme.brightGreen,
+      this.liveTheme.brightYellow,
+      this.liveTheme.brightBlue,
+      this.liveTheme.brightMagenta,
+      this.liveTheme.brightCyan,
+      this.liveTheme.brightWhite,
     ];
   }
 
@@ -816,6 +1078,7 @@ export class CanvasRenderer {
   public setFontSize(size: number): void {
     this.fontSize = size;
     this.metrics = this.measureFont();
+    this.inkAscents.clear();
   }
 
   /**
@@ -824,6 +1087,7 @@ export class CanvasRenderer {
   public setFontFamily(family: string): void {
     this.fontFamily = family;
     this.metrics = this.measureFont();
+    this.inkAscents.clear();
   }
 
   /**
@@ -997,5 +1261,13 @@ export class CanvasRenderer {
    */
   public dispose(): void {
     this.stopCursorBlink();
+    // A retained renderer must not retain or query a freed native terminal
+    // through presentation/history views after its owner is disposed.
+    this.currentBuffer = null;
+    this.sourceBuffer = undefined;
+    this.currentHistory = undefined;
+    this.frameLine = undefined;
+    this.selectionManager = undefined;
+    this.heldThemes = new WeakMap();
   }
 }

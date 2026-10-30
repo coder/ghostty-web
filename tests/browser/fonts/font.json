@@ -1,0 +1,24 @@
+{
+  "fonts": [
+    {
+      "role": "primary",
+      "family": "GhosttyRegressionMono",
+      "file": "DejaVuSansMono.ttf",
+      "sha256": "39c29931201f08dd89fdba4129c76288e6baeecf7c94fe4f6a757f2b50718b1b",
+      "bytes": 340712,
+      "sizePx": 15,
+      "unitsPerEm": 2048,
+      "advanceUnits": 1233
+    },
+    {
+      "role": "alternate",
+      "family": "GhosttyRegressionAlt",
+      "file": "DejaVuSansMono-Bold.ttf",
+      "sha256": "f8aa70b5d4210d77624f5b5b5cf094fadf9fd019caf5b528fa5af42fc4ac43a5",
+      "bytes": 331992,
+      "sizePx": 15,
+      "unitsPerEm": 2048,
+      "advanceUnits": 1233
+    }
+  ]
+}

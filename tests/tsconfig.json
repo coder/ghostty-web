@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "rootDir": "..",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["bun-types", "node"]
+  },
+  "include": ["**/*.ts", "../playwright.config.ts"],
+  "exclude": ["../node_modules", "../dist", "../test-results", "../playwright-report"]
+}

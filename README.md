@@ -6,7 +6,7 @@
 
 - Migrate from xterm by changing your import: `@xterm/xterm` → `ghostty-web`
 - WASM-compiled parser from Ghostty—the same code that runs the native app
-- Zero runtime dependencies, ~400KB WASM bundle
+- Zero runtime dependencies, ~828 KiB uncompressed upstream WASM bundle
 
 Originally created for [Mux](https://github.com/coder/mux) (a desktop app for isolated, parallel agentic development), but designed to be used anywhere.
 
@@ -61,26 +61,148 @@ const term = new Terminal({
 });
 
 term.open(document.getElementById('terminal'));
-term.onData((data) => websocket.send(data));
+term.onData((data) => websocket.send(data)); // UTF-8 text input
+term.onBinary((data) => {
+  // Raw bytes (e.g. classic X10 mouse reports); send a binary WebSocket frame.
+  websocket.send(Uint8Array.from(data, (char) => char.charCodeAt(0)));
+});
 websocket.onmessage = (e) => term.write(e.data);
 ```
 
 For a comprehensive client <-> server example, refer to the [demo](./demo/index.html#L141).
 
+## Scrollback behavior
+
+`scrollback` is Ghostty's **approximate physical-line budget** (default 10000).
+Ghostty allocates and prunes whole pages, so the history actually retained varies
+with terminal width and content; it is not an exact xterm.js line cap or a minimum
+retention guarantee. `scrollback: 0` disables history. Buffer APIs report the rows
+actually retained. Exact xterm-style retention is deferred rather than emulated
+with a hidden JavaScript clamp.
+
+## Runtime appearance and viewport input
+
+On the native backend, assigning `term.options.theme` updates the renderer and
+Ghostty's default colors/palette in place, preserving content, history and active
+terminal state. A synchronized-output frame keeps its capture theme until released;
+live history/selection views use the newest theme. The legacy backend retains its
+construction theme because its ABI has no runtime color setter. Omitted backgrounds
+use the existing `#1e1e1e` canvas default for native OSC 11 queries too; explicit
+backgrounds and program color overrides retain their normal behavior. Opaque named
+CSS colors and forms such as `rgba(..., 1)` and `hsl(...)` are resolved by the browser
+before configuring native colors, so their queries match the painted colors too.
+
+Font changes preserve DPR-scaled canvas sizing and scrollbar state. Local wheel
+input accumulates sub-line deltas and scrolls whole rows; scrollbar drags continue
+outside the canvas. On the native backend, new output preserves the content you
+are reading while scrolled back, including through history pruning. If that content
+is discarded, the view clamps to the oldest retained row. At the bottom, the view
+continues to follow new output. Typing, pasting, or `input(data, true)` resumes
+following before the input is sent; modifier/release and pointer reports do not.
+`scrollToBottom()` also resumes following explicitly. Fractional wheel input survives
+interleaved output. Thumb dragging also preserves the current reading anchor across
+output, pruning and resize. Logical scrolling is now immediate and whole-row,
+matching Ghostty's host policy. **`smoothScrollDuration` is deprecated:** it remains
+accepted for source compatibility but no longer adds time-based easing on either
+backend. Fractional assignments to `term.viewportY` are floored to a whole row.
+Ghostty continuously owns the native viewport, including reset/clear, reflow and
+per-screen reading positions; the host no longer parks it at the bottom after
+writes or reconstructs the visible screen. The archived legacy backend retains its
+jump-to-bottom-on-output policy. See [host architecture](./docs/upstream-host-architecture.md)
+for ownership, intentional browser adaptations and validation limits.
+
+String writes can split a UTF-16 surrogate pair across chunks. Empty chunks preserve
+the pending half; a nonempty byte write flushes an unmatched half as U+FFFD before
+the bytes. `disableStdin` suppresses terminal replies as well as host input, without
+replaying suppressed replies when re-enabled.
+
+## Selection and synchronized output
+
+Native selection text comes from Ghostty's formatter, with complete graphemes,
+joined soft wraps and no wide-character spacer artifacts. Native anchors follow
+output and reflow; history pruning follows Ghostty's endpoint-clamping behavior.
+`selectAll()` includes history. Existing public selection-coordinate conventions
+are retained; see the [migration notes](./docs/migration-libghostty-vt.md).
+
+Mode 2026 holds presentation at the frame captured by Ghostty's render-hold
+callback, while buffer reads and protocol replies remain live. The hold ends on
+release/reset/resize or after a one-second draw-time timeout. History navigation
+and active selection show live content instead of mixing live and held rows.
+
+## Native paste and focus input
+
+The native backend delegates paste sanitization and mode-2004 framing to Ghostty.
+Unbracketed LF becomes CR (CRLF becomes CRCR); unsafe control bytes are replaced
+with spaces. Multiline paste remains automatic—there is no new confirmation UI,
+and newlines can still execute commands in an unbracketed shell.
+
+Mode 1004 reports terminal focus changes without treating internal textarea focus
+transfers as a loss/gain pair. The pinned C API limits exact report-on-enable
+behavior; see the [migration notes](./docs/migration-libghostty-vt.md).
+
+## Mouse input
+
+The native backend uses Ghostty's mouse encoder for application tracking. Hold
+Shift while starting a drag to select locally instead; without tracking, normal
+history scrolling and the existing alternate-screen wheel behavior are retained.
+
+`onData` remains a UTF-8 string channel. The additive `onBinary` event carries
+non-UTF-8 native mouse reports as xterm-compatible byte strings: each character's
+code is one byte (0–255). Send those as bytes, never as UTF-8 text. The demo handles
+binary WebSocket frames separately from its text/resize protocol.
+
+Without an `onBinary` subscriber, unsafe classic X10 reports remain withheld,
+preserving string-only integrations. SGR, URXVT, SGR-pixels and UTF8 mouse formats
+continue through `onData` without duplication. Legacy encoding is unchanged. See
+the [migration notes](./docs/migration-libghostty-vt.md) for remaining limitations.
+
+## Link activation safety
+
+The built-in OSC 8 provider opens only absolute URLs using its recognized built-in
+protocols. Executable/document schemes such as `javascript:`, `data:`, `file:` and
+`blob:`, unknown schemes, relative targets and control-obfuscated URLs are blocked.
+Ctrl/Cmd is still required. Embedders needing custom protocols can supply a custom
+link provider with their own validation and activation policy.
+
 ## Development
 
-ghostty-web builds from Ghostty's source with a [patch](./patches/ghostty-wasm-api.patch) to expose additional
-functionality.
-
-> Requires Zig and Bun.
+ghostty-web builds the upstream **libghostty-vt C/WASM API** without a production
+patch. Exact source revisions, compiler versions, hashes and size budgets live in
+[`ghostty-build.json`](./ghostty-build.json). The current target requires **Zig 0.16.0**
+and Bun. Builds use isolated owned directories and never modify the submodule checkout.
 
 ```bash
+bun install --frozen-lockfile
 bun run build
 ```
 
-Mitchell Hashimoto (author of Ghostty) has [been working](https://mitchellh.com/writing/libghostty-is-coming) on `libghostty` which makes this all possible. The patches are very minimal thanks to the work the Ghostty team has done, and we expect them to get smaller.
+The previous custom-ABI engine can still be built for explicit rollback; it is never
+selected silently and is not part of the test suites. It requires **Zig 0.15.2** and the
+archived [legacy patch](./patches/legacy/ghostty-wasm-api.patch):
 
-This library will eventually consume a native Ghostty WASM distribution once available, and will continue to provide an xterm.js compatible API.
+```bash
+export ZIG_0_15_BIN=/path/to/zig-0.15.2/zig
+bun run build:wasm:legacy
+```
+
+An explicit WASM path can require its backend:
+
+```typescript
+import { Ghostty, Terminal } from 'ghostty-web';
+
+const ghostty = await Ghostty.load('/ghostty-vt.wasm', { backend: 'libghostty-vt' });
+const term = new Terminal({ ghostty });
+console.log(ghostty.backend); // 'libghostty-vt'; mismatched/malformed ABIs throw
+```
+
+`Ghostty`, `GhosttyTerminal`, `KeyEncoder` and the public cell/enumeration shapes remain
+compatible facades. Native layouts and enums are checked against the WASM's type manifest.
+Legacy public numeric key values are translated by semantic name on the native path.
+The default npm payload contains the native WASM only; hosts that need rollback can build
+and serve `ghostty-vt-legacy.wasm` separately and pass `{ backend: 'legacy' }`.
+
+See [the test guide](./tests/README.md) for running the tests and
+[the migration notes](./docs/migration-libghostty-vt.md) for behavior changes and limitations.
 
 At Coder we're big fans of Ghostty, so kudos to that team for all the amazing work.
 

@@ -1,0 +1,22 @@
+{
+  "scene": "dark-styles",
+  "description": "Dark terminal: text, SGR weight/italic/underline and RGB colors.",
+  "scenarioSha256": "cb98a05bc179121a1db652360897cb339143cbb79c1924bf5733e3dd42416a8d",
+  "browser": "156.0.8078.4",
+  "container": "mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f",
+  "font": {
+    "family": "GhosttyRegressionMono",
+    "sha256": "39c29931201f08dd89fdba4129c76288e6baeecf7c94fe4f6a757f2b50718b1b",
+    "size": 15
+  },
+  "dpr": 1,
+  "width": 360,
+  "height": 128,
+  "grid": {
+    "cols": 40,
+    "rows": 8,
+    "cellW": 9,
+    "cellH": 16
+  },
+  "observedWasmSha256": "0789394612a79e22abc37ecf952e360aecfa7ec737d416ef3d664d1b9277fdbd"
+}

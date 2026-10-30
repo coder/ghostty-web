@@ -3,8 +3,17 @@ import type { IDisposable, IEvent } from './interfaces';
 export class EventEmitter<T> {
   private listeners: Array<(arg: T) => void> = [];
 
-  fire(arg: T): void {
-    for (const listener of this.listeners) {
+  get hasListeners(): boolean {
+    return this.listeners.length > 0;
+  }
+
+  fire(arg: T, shouldContinue?: () => boolean): void {
+    // Guarded notifications (resize) use a stable listener snapshot and can
+    // stop when a nested mutation supersedes them. Other events retain their
+    // existing delivery semantics.
+    const listeners = shouldContinue ? [...this.listeners] : this.listeners;
+    for (const listener of listeners) {
+      if (shouldContinue && !shouldContinue()) break;
       listener(arg);
     }
   }

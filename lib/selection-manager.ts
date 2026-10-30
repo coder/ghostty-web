@@ -28,6 +28,17 @@ export interface SelectionCoordinates {
   endRow: number;
 }
 
+/** A selection endpoint: column and absolute buffer row (history first, then the screen). */
+interface SelectionPoint {
+  col: number;
+  absoluteRow: number;
+}
+
+/** Integer in [min, max]; non-finite input becomes `min`. */
+function clampInt(value: number, min: number, max: number): number {
+  return Number.isFinite(value) ? Math.max(min, Math.min(Math.floor(value), max)) : min;
+}
+
 // ============================================================================
 // SelectionManager Class
 // ============================================================================
@@ -39,9 +50,28 @@ export class SelectionManager {
   private textarea: HTMLTextAreaElement;
 
   // Selection state - coordinates are in ABSOLUTE buffer space (viewportY + viewportRow)
-  // This ensures selection persists correctly when scrolling
-  private selectionStart: { col: number; absoluteRow: number } | null = null;
-  private selectionEnd: { col: number; absoluteRow: number } | null = null;
+  // This ensures selection persists correctly when scrolling.
+  //
+  // On libghostty-vt the terminal owns the selection: `selectionStart` (the
+  // anchor) and `selectionEnd` are accessors over the native, tracked
+  // selection. Reads re-query its endpoints (they move with content through
+  // output, history pruning and reflow, and a screen switch or reset clears
+  // them), so every consumer - renderer, API callers, event listeners - sees
+  // the current native state; writes install the new range natively. Only
+  // the anchoring and the copy text are native: which rows the public API and
+  // gestures select (the absolute rows computed below) is unchanged host
+  // policy. The legacy engine keeps the plain JS fields.
+  private start: SelectionPoint | null = null;
+  private end: SelectionPoint | null = null;
+  private readonly nativeSelection: boolean;
+  /**
+   * Native only: exactly one endpoint has been assigned (e.g. between the two
+   * assignments that start a selection). The terminal holds no selection then,
+   * so the JS half must not be overwritten by a re-read until it is completed.
+   */
+  private halfAssigned = false;
+  /** The viewport rows painted for the selection last frame (both engines). */
+  private paintedCoords: SelectionCoordinates | null = null;
   private isSelecting: boolean = false;
   private mouseDownX: number = 0;
   private mouseDownY: number = 0;
@@ -61,6 +91,11 @@ export class SelectionManager {
   private boundContextMenuHandler: ((e: MouseEvent) => void) | null = null;
   private boundClickHandler: ((e: MouseEvent) => void) | null = null;
   private boundDocumentMouseMoveHandler: ((e: MouseEvent) => void) | null = null;
+  // Anonymous listeners registered through listen(), removed on dispose()
+  private registeredListeners: Array<[EventTarget, string, EventListener]> = [];
+  // Pending context-menu restore (timer + one-shot listeners), cancelled on dispose()
+  private contextMenuTimeout: ReturnType<typeof setTimeout> | null = null;
+  private contextMenuReset: (() => void) | null = null;
 
   // Auto-scroll state for drag selection
   private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
@@ -109,9 +144,77 @@ export class SelectionManager {
     this.renderer = renderer;
     this.wasmTerm = wasmTerm;
     this.textarea = textarea;
+    this.nativeSelection = wasmTerm.backend === 'libghostty-vt';
 
     // Attach mouse event listeners
     this.attachEventListeners();
+  }
+
+  private get selectionStart(): SelectionPoint | null {
+    this.syncNative();
+    return this.start;
+  }
+
+  private set selectionStart(point: SelectionPoint | null) {
+    this.syncNative();
+    this.start = point;
+    this.pushNative();
+  }
+
+  private get selectionEnd(): SelectionPoint | null {
+    this.syncNative();
+    return this.end;
+  }
+
+  private set selectionEnd(point: SelectionPoint | null) {
+    this.syncNative();
+    this.end = point;
+    this.pushNative();
+  }
+
+  /** Native: re-read the terminal-owned endpoints (never reuse ones read before a mutation). */
+  private syncNative(): void {
+    if (!this.nativeSelection || this.halfAssigned) return;
+    const range = this.wasmTerm.getSelectionRange();
+    this.start = range ? { col: range.start.x, absoluteRow: range.start.y } : null;
+    this.end = range ? { col: range.end.x, absoluteRow: range.end.y } : null;
+  }
+
+  /** Native: install the JS endpoints (clamped to the active screen), or clear. */
+  private pushNative(): void {
+    if (!this.nativeSelection) return;
+    this.halfAssigned = (this.start === null) !== (this.end === null);
+    if (!this.start || !this.end) {
+      this.wasmTerm.clearSelection();
+      return;
+    }
+    const cols = this.wasmTerm.cols;
+    const lastRow = this.wasmTerm.getScrollbackLength() + this.wasmTerm.rows - 1;
+    const clamp = (p: SelectionPoint) => ({
+      x: clampInt(p.col, 0, cols - 1),
+      y: clampInt(p.absoluteRow, 0, lastRow),
+    });
+    this.wasmTerm.setSelectionRange(clamp(this.start), clamp(this.end));
+  }
+
+  /**
+   * Rows painted last frame need a redraw when the selection moved or
+   * vanished, whatever replaced it: a new select()/selectLines() range, a
+   * native selection following its content, or one the terminal dropped.
+   */
+  private trackPainted(coords: SelectionCoordinates | null): void {
+    const last = this.paintedCoords;
+    const same =
+      last !== null &&
+      coords !== null &&
+      last.startRow === coords.startRow &&
+      last.startCol === coords.startCol &&
+      last.endRow === coords.endRow &&
+      last.endCol === coords.endCol;
+    if (last && !same) {
+      for (let row = last.startRow; row <= last.endRow; row++) this.dirtySelectionRows.add(row);
+    }
+    this.paintedCoords = coords;
   }
 
   // ==========================================================================
@@ -122,6 +225,10 @@ export class SelectionManager {
    * Get the selected text as a string
    */
   getSelection(): string {
+    // Native: Ghostty's own copy text (soft wraps unwrapped, wide spacers and
+    // trailing blanks dropped, full graphemes) of the terminal-owned selection.
+    if (this.nativeSelection) return this.wasmTerm.getSelectionText();
+
     if (!this.selectionStart || !this.selectionEnd) return '';
 
     // Get absolute row coordinates (not clamped to viewport)
@@ -210,7 +317,12 @@ export class SelectionManager {
    * Check if there's an active selection
    */
   hasSelection(): boolean {
-    if (!this.selectionStart || !this.selectionEnd) return false;
+    if (!this.selectionStart || !this.selectionEnd) {
+      // A selection that is gone (cleared, or dropped by the native terminal
+      // on a screen switch or reset) must also stop being painted.
+      this.trackPainted(null);
+      return false;
+    }
 
     // Don't report selection until drag threshold is met (prevents flash on click)
     if (this.isSelecting && !this.dragThresholdMet) return false;
@@ -237,6 +349,9 @@ export class SelectionManager {
    * Clear the selection
    */
   clearSelection(): void {
+    // The current range may have replaced an older range without a paint yet.
+    // Erase what was actually shown, even while a new click is below drag threshold.
+    this.trackPainted(null);
     if (!this.hasSelection()) return;
 
     // Mark current selection rows as dirty for redraw
@@ -260,6 +375,21 @@ export class SelectionManager {
    */
   selectAll(): void {
     const dims = this.wasmTerm.getDimensions();
+    if (this.nativeSelection) {
+      // Host policy: the whole grid, every column of every row (as before),
+      // extended to the whole history. Always selects and fires, even when the
+      // buffer is blank. The copy text comes from Ghostty's formatter, which
+      // trims trailing blanks and blank trailing rows. (Upstream
+      // ghostty_terminal_select_all would instead trim the range itself.)
+      this.selectionStart = { col: 0, absoluteRow: 0 };
+      this.selectionEnd = {
+        col: dims.cols - 1,
+        absoluteRow: this.wasmTerm.getScrollbackLength() + dims.rows - 1,
+      };
+      this.requestRender();
+      this.selectionChangedEmitter.fire();
+      return;
+    }
     const viewportY = this.getViewportY();
     this.selectionStart = { col: 0, absoluteRow: viewportY };
     this.selectionEnd = { col: dims.cols - 1, absoluteRow: viewportY + dims.rows - 1 };
@@ -272,6 +402,12 @@ export class SelectionManager {
    * xterm.js compatible API
    */
   select(column: number, row: number, length: number): void {
+    // Row mapping is ghostty-web's established public behavior on both engines
+    // (absolute row = viewportY + row, clamped to the viewport height); it is
+    // not xterm.js's absolute buffer row. On libghostty-vt the resulting range
+    // is installed as the terminal-owned selection, which then follows its
+    // content.
+
     // Clamp to valid ranges
     const dims = this.wasmTerm.getDimensions();
     row = Math.max(0, Math.min(row, dims.rows - 1));
@@ -303,6 +439,9 @@ export class SelectionManager {
    * xterm.js compatible API
    */
   selectLines(start: number, end: number): void {
+    // `start`/`end` are viewport rows on both engines (established public
+    // behavior, not xterm.js's absolute buffer rows); on libghostty-vt the
+    // resulting rows become the terminal-owned selection.
     const dims = this.wasmTerm.getDimensions();
 
     // Clamp to valid row ranges
@@ -360,7 +499,9 @@ export class SelectionManager {
    * Get current selection coordinates (for rendering)
    */
   getSelectionCoords(): SelectionCoordinates | null {
-    return this.normalizeSelection();
+    const coords = this.normalizeSelection();
+    this.trackPainted(coords);
+    return coords;
   }
 
   /**
@@ -390,6 +531,15 @@ export class SelectionManager {
   dispose(): void {
     this.selectionChangedEmitter.dispose();
 
+    // Native: release the terminal-owned selection (its tracked pins) with us.
+    if (this.nativeSelection) {
+      this.start = null;
+      this.end = null;
+      this.halfAssigned = false;
+      this.isSelecting = false;
+      this.wasmTerm.clearSelection();
+    }
+
     // Stop auto-scroll if active
     this.stopAutoScroll();
 
@@ -418,21 +568,56 @@ export class SelectionManager {
       this.boundClickHandler = null;
     }
 
-    // Canvas event listeners will be cleaned up when canvas is removed from DOM
+    // Remove anonymous canvas/document listeners
+    for (const [target, type, listener] of this.registeredListeners) {
+      target.removeEventListener(type, listener);
+    }
+    this.registeredListeners = [];
+
+    // Cancel a pending context-menu restore and its one-shot listeners
+    this.cancelContextMenuReset();
+  }
+
+  /** Add a listener that dispose() removes. */
+  private listen<K extends keyof HTMLElementEventMap>(
+    target: EventTarget,
+    type: K,
+    listener: (e: HTMLElementEventMap[K]) => void
+  ): void {
+    target.addEventListener(type, listener as EventListener);
+    this.registeredListeners.push([target, type, listener as EventListener]);
+  }
+
+  /** Cancel the delayed context-menu restore; restores the textarea if armed. */
+  private cancelContextMenuReset(): void {
+    if (this.contextMenuTimeout !== null) {
+      clearTimeout(this.contextMenuTimeout);
+      this.contextMenuTimeout = null;
+    }
+    this.contextMenuReset?.();
   }
 
   // ==========================================================================
   // Private Methods
   // ==========================================================================
 
-  /**
-   * Attach mouse event listeners to canvas
-   */
+  /** Native tracking owns pointer input unless the host's Shift-selection policy applies. */
+  private applicationOwnsMouse(event: MouseEvent): boolean {
+    return (
+      this.wasmTerm.backend === 'libghostty-vt' &&
+      !this.terminal.options.disableStdin &&
+      this.wasmTerm.hasMouseTracking() &&
+      !event.shiftKey
+    );
+  }
+
+  /** Attach mouse event listeners to canvas. */
   private attachEventListeners(): void {
     const canvas = this.renderer.getCanvas();
 
     // Mouse down - start selection or clear existing
-    canvas.addEventListener('mousedown', (e: MouseEvent) => {
+    this.listen(canvas, 'mousedown', (e: MouseEvent) => {
+      if (this.applicationOwnsMouse(e)) return;
       if (e.button === 0) {
         // Left click only
 
@@ -462,7 +647,7 @@ export class SelectionManager {
     });
 
     // Mouse move on canvas - update selection
-    canvas.addEventListener('mousemove', (e: MouseEvent) => {
+    this.listen(canvas, 'mousemove', (e: MouseEvent) => {
       if (this.isSelecting) {
         // Check if drag threshold has been met
         if (!this.dragThresholdMet) {
@@ -490,7 +675,7 @@ export class SelectionManager {
     });
 
     // Mouse leave - check for auto-scroll when leaving canvas during drag
-    canvas.addEventListener('mouseleave', (e: MouseEvent) => {
+    this.listen(canvas, 'mouseleave', (e: MouseEvent) => {
       if (this.isSelecting) {
         // Determine scroll direction based on where mouse left
         const rect = canvas.getBoundingClientRect();
@@ -503,7 +688,7 @@ export class SelectionManager {
     });
 
     // Mouse enter - stop auto-scroll when mouse returns to canvas
-    canvas.addEventListener('mouseenter', () => {
+    this.listen(canvas, 'mouseenter', () => {
       if (this.isSelecting) {
         this.stopAutoScroll();
       }
@@ -566,7 +751,7 @@ export class SelectionManager {
     document.addEventListener('mousemove', this.boundDocumentMouseMoveHandler);
 
     // Track mousedown on document to know if a click started inside the canvas
-    document.addEventListener('mousedown', (e: MouseEvent) => {
+    this.listen(document, 'mousedown', (e: MouseEvent) => {
       this.mouseDownTarget = e.target;
     });
 
@@ -596,7 +781,8 @@ export class SelectionManager {
 
     // Handle click events for double-click (word) and triple-click (line) selection
     // Use event.detail which browsers set to click count (1, 2, 3, etc.)
-    canvas.addEventListener('click', (e: MouseEvent) => {
+    this.listen(canvas, 'click', (e: MouseEvent) => {
+      if (this.applicationOwnsMouse(e)) return;
       // event.detail: 1 = single, 2 = double, 3 = triple click
       if (e.detail === 2) {
         // Double-click - select word
@@ -662,6 +848,13 @@ export class SelectionManager {
     // Right-click (context menu) - position textarea to show browser's native menu
     // This allows Copy/Paste options to appear in the context menu
     this.boundContextMenuHandler = (e: MouseEvent) => {
+      if (this.applicationOwnsMouse(e)) {
+        e.preventDefault();
+        return;
+      }
+      // Finish any previous menu's restore first so it cannot hide this one
+      this.cancelContextMenuReset();
+
       // Position textarea at mouse cursor
       const canvas = this.renderer.getCanvas();
       const rect = canvas.getBoundingClientRect();
@@ -693,7 +886,8 @@ export class SelectionManager {
 
       // After a short delay, restore the textarea to its hidden state
       // This allows the context menu to appear first
-      setTimeout(() => {
+      this.contextMenuTimeout = setTimeout(() => {
+        this.contextMenuTimeout = null;
         // Listen for when the context menu closes (user clicks away or selects an option)
         const resetTextarea = () => {
           this.textarea.style.pointerEvents = 'none';
@@ -708,7 +902,9 @@ export class SelectionManager {
           document.removeEventListener('click', resetTextarea);
           document.removeEventListener('contextmenu', resetTextarea);
           this.textarea.removeEventListener('blur', resetTextarea);
+          this.contextMenuReset = null;
         };
+        this.contextMenuReset = resetTextarea;
 
         // Reset on any of these events (menu closed)
         document.addEventListener('click', resetTextarea, { once: true });
@@ -785,6 +981,14 @@ export class SelectionManager {
    * Start auto-scrolling in the given direction
    */
   private startAutoScroll(direction: number): void {
+    const viewportY = this.getViewportY();
+    const atBoundary =
+      direction < 0 ? viewportY >= this.wasmTerm.getScrollbackLength() : viewportY <= 0;
+    if (atBoundary) {
+      this.stopAutoScroll();
+      return;
+    }
+
     // Don't restart if already scrolling in same direction
     if (this.autoScrollInterval !== null && this.autoScrollDirection === direction) {
       return;
@@ -807,7 +1011,14 @@ export class SelectionManager {
       // scrollLines convention: negative = scroll up into history, positive = scroll down to newer
       // So direction maps directly to scrollLines sign
       const scrollAmount = SelectionManager.AUTO_SCROLL_SPEED * this.autoScrollDirection;
+      const before = this.getViewportY();
       (this.terminal as any).scrollLines(scrollAmount);
+      if (this.getViewportY() === before) {
+        // A timed near-edge drag must not jump to a viewport corner when
+        // scrolling is clamped. Outside-canvas movement is handled separately.
+        this.stopAutoScroll();
+        return;
+      }
 
       // Extend selection in the scroll direction
       // Key insight: we need to EXTEND the selection, not reset it to viewport edge

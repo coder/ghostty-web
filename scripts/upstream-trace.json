@@ -1,0 +1,89 @@
+{
+  "pin": "246f702876b924a1cb7cade1e99274d1470302fc",
+  "mappings": [
+    {
+      "kind": "native",
+      "upstream": "src/terminal/Terminal.zig",
+      "symbol": "pub fn scrollViewport",
+      "target": "lib/backends/native.ts",
+      "targetSymbol": "scrollViewport(command"
+    },
+    {
+      "kind": "native",
+      "upstream": "src/terminal/PageList.zig",
+      "symbol": "pub fn scrollbar",
+      "target": "lib/backends/native.ts",
+      "targetSymbol": "getScrollState()"
+    },
+    {
+      "kind": "port",
+      "upstream": "src/Surface.zig",
+      "symbol": "pub fn scrollCallback",
+      "target": "lib/surface.ts",
+      "targetSymbol": "scrollCallback(event"
+    },
+    {
+      "kind": "port",
+      "upstream": "src/Surface.zig",
+      "symbol": "fn scrollToBottom",
+      "target": "lib/surface.ts",
+      "targetSymbol": "prepareUserInput"
+    },
+    {
+      "kind": "port",
+      "upstream": "src/Surface.zig",
+      "symbol": "pub fn focusCallback",
+      "target": "lib/surface.ts",
+      "targetSymbol": "focusCallback(focused"
+    },
+    {
+      "kind": "adapter",
+      "upstream": "src/termio/Termio.zig",
+      "symbol": "pub fn processOutput",
+      "target": "lib/termio/termio.ts",
+      "targetSymbol": "processOutput(data"
+    },
+    {
+      "kind": "adapter",
+      "upstream": "src/renderer/Thread.zig",
+      "symbol": "fn wakeupCallback",
+      "target": "lib/renderer/thread.ts",
+      "targetSymbol": "export class RendererThread"
+    },
+    {
+      "kind": "adapter",
+      "upstream": "src/renderer/State.zig",
+      "symbol": "terminal: *terminalpkg.Terminal",
+      "target": "lib/renderer/state.ts",
+      "targetSymbol": "readState"
+    },
+    {
+      "kind": "adapter",
+      "upstream": "src/renderer/generic.zig",
+      "symbol": "updateFrame",
+      "target": "lib/renderer.ts",
+      "targetSymbol": "readState(buffer)"
+    },
+    {
+      "kind": "browser-adapter",
+      "upstream": "src/apprt/gtk/class/surface.zig",
+      "symbol": "pub fn setScrollbar",
+      "target": "lib/apprt/scrollbar.ts",
+      "targetSymbol": "export class SurfaceScrollbar"
+    },
+    {
+      "kind": "browser-adapter",
+      "upstream": "macos/Sources/Ghostty/Surface View/SurfaceScrollView.swift",
+      "symbol": "private func handleLiveScroll",
+      "target": "lib/apprt/scrollbar.ts",
+      "targetSymbol": "private onMove"
+    },
+    {
+      "kind": "browser-adapter",
+      "upstream": "src/Surface.zig",
+      "symbol": "pub fn deinit",
+      "target": "lib/apprt/surface.ts",
+      "targetSymbol": "export class BrowserSurface"
+    }
+  ]
+}

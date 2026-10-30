@@ -1618,3 +1618,33 @@ index b6430ea34..10e0ef79d 100644
              if (t.modes.get(.reverse_colors)) {
                  self.colors.background = fg;
                  self.colors.foreground = bg;
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 29f414e03..bd3d3dec8 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -4,6 +4,7 @@
+ const PageList = @This();
+
+ const std = @import("std");
++const builtin = @import("builtin");
+ const build_options = @import("terminal_options");
+ const Allocator = std.mem.Allocator;
+ const assert = @import("../quirks.zig").inlineAssert;
+@@ -341,7 +342,7 @@ fn initPages(
+         // In runtime safety modes we have to memset because the Zig allocator
+         // interface will always memset to 0xAA for undefined. In non-safe modes
+         // we use a page allocator and the OS guarantees zeroed memory.
+-        if (comptime std.debug.runtime_safety) @memset(page_buf, 0);
++        if (comptime std.debug.runtime_safety or builtin.os.tag == .freestanding) @memset(page_buf, 0);
+
+         // Initialize the first set of pages to contain our viewport so that
+         // the top of the first page is always the active area.
+@@ -2675,7 +2676,7 @@ inline fn createPageExt(
+
+     // Required only with runtime safety because allocators initialize
+     // to undefined, 0xAA.
+-    if (comptime std.debug.runtime_safety) @memset(page_buf, 0);
++    if (comptime std.debug.runtime_safety or builtin.os.tag == .freestanding) @memset(page_buf, 0);
+
+     page.* = .{
+         .data = .initBuf(.init(page_buf), layout),

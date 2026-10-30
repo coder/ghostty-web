@@ -1345,7 +1345,7 @@ describe('Buffer Access API', () => {
 
     term.open(container!);
 
-    // Write to main screen (default background = black)
+    // Write to main screen (default background = #1e1e1e)
     term.write('MAIN\r\n');
     term.wasmTerm?.update();
     term.wasmTerm?.markClean();
@@ -1372,14 +1372,14 @@ describe('Buffer Access API', () => {
     term.write('\x1b[?1049l');
     term.wasmTerm?.update();
 
-    // CRITICAL: Background colors must be restored to main screen values (black)
+    // Background colors must be restored to the main screen's canvas default.
     const restoredViewport = term.wasmTerm?.getViewport();
     const firstCell = restoredViewport![0];
 
-    // Main screen cells should have default background (0, 0, 0 = black)
-    expect(firstCell.bg_r).toBe(0);
-    expect(firstCell.bg_g).toBe(0);
-    expect(firstCell.bg_b).toBe(0);
+    // The native default now agrees with the existing dark-gray canvas (#1e1e1e).
+    expect(firstCell.bg_r).toBe(0x1e);
+    expect(firstCell.bg_g).toBe(0x1e);
+    expect(firstCell.bg_b).toBe(0x1e);
 
     // Verify text is also restored
     expect(String.fromCodePoint(firstCell.codepoint)).toBe('M');
@@ -2271,7 +2271,7 @@ describe('Selection with Scrollback', () => {
     term.dispose();
   });
 
-  test('should select correct text with fractional viewportY (smooth scroll)', async () => {
+  test('should select correct text after quantizing a fractional compatibility viewport', async () => {
     if (!container) return;
 
     const term = await createIsolatedTerminal({ cols: 80, rows: 24, scrollback: 1000 });
@@ -2282,12 +2282,10 @@ describe('Selection with Scrollback', () => {
       term.write(`Line ${i.toString().padStart(3, '0')}\r\n`);
     }
 
-    // Simulate a fractional viewportY as produced by smooth scrolling.
-    // We set it directly to avoid needing to call private smooth scroll APIs.
-    (term as any).viewportY = 10.7;
-
-    // Sanity check that getViewportY returns the raw value
-    expect(term.getViewportY()).toBeCloseTo(10.7);
+    // Native-parity scrolling has no fractional logical viewport. The public
+    // compatibility setter keeps the previous floor-based row interpretation.
+    term.viewportY = 10.7;
+    expect(term.getViewportY()).toBe(10);
 
     // SelectionManager interprets viewport rows using Math.floor(viewportY),
     // matching CanvasRenderer. With viewportY=10.7, floor(viewportY)=10.
@@ -2451,7 +2449,7 @@ describe('Options Proxy handleOptionChange', () => {
     // @ts-ignore - accessing private for test
     expect(renderer.cursorBlink).toBe(true);
     // @ts-ignore - accessing private for test
-    expect(renderer.cursorBlinkInterval).toBeDefined();
+    expect(renderer.cursorBlinkSince).toBeDefined(); // frame-driven, no separate timer
 
     // Disable cursor blink
     term.options.cursorBlink = false;

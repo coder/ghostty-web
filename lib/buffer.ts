@@ -136,15 +136,18 @@ export class Buffer implements IBuffer {
   }
 
   get viewportY(): number {
-    // Get viewport offset from Terminal
-    // For now, return 0 (no scrollback navigation implemented yet)
-    return 0;
+    if (this.bufferType === 'alternate') return 0;
+    // Public buffer coordinates count from oldest history, while Terminal's
+    // internal viewport offset counts upward from the live screen. Match the
+    // renderer's whole-row compatibility mapping.
+    const base = this.baseY;
+    return Math.max(0, Math.min(base, base - Math.floor(this.terminal.getViewportY())));
   }
 
   get baseY(): number {
-    // For normal buffer: 0
-    // For alternate buffer: 0 (alternate has no scrollback)
-    return 0;
+    // The active screen starts immediately after the retained history. General
+    // inactive-screen access remains limited by the underlying native API.
+    return this.bufferType === 'alternate' ? 0 : (this.getWasmTerm()?.getScrollbackLength() ?? 0);
   }
 
   get length(): number {
@@ -173,10 +176,11 @@ export class Buffer implements IBuffer {
     // Determine if accessing scrollback or visible screen
     const scrollbackLength = wasmTerm.getScrollbackLength();
     let cells: GhosttyCell[] | null;
-    let lineNumber: number;
+    let lineNumber = y;
+    const fromHistory = this.bufferType === 'normal' && y < scrollbackLength;
     let isWrapped: boolean;
 
-    if (this.bufferType === 'normal' && y < scrollbackLength) {
+    if (fromHistory) {
       // Accessing scrollback
       // WASM getScrollbackLine: offset 0 = oldest, offset (length-1) = newest
       // Buffer coords: y=0 = oldest, y=(length-1) = newest
@@ -197,7 +201,17 @@ export class Buffer implements IBuffer {
       return undefined;
     }
 
-    return new BufferLine(cells, isWrapped, wasmTerm.cols);
+    // BufferLine is a retained snapshot. Capture clusters while the cell and
+    // row coordinates still refer to this write, never lazily after mutation.
+    const clusters = new Map<number, string>();
+    for (let x = 0; x < cells.length; x++) {
+      if (cells[x].grapheme_len === 0) continue;
+      const codepoints = fromHistory
+        ? wasmTerm.getScrollbackGrapheme(y, x)
+        : wasmTerm.getGrapheme(lineNumber, x);
+      if (codepoints?.length) clusters.set(x, String.fromCodePoint(...codepoints));
+    }
+    return new BufferLine(cells, isWrapped, wasmTerm.cols, clusters);
   }
 
   getNullCell(): IBufferCell {
@@ -221,7 +235,12 @@ export class BufferLine implements IBufferLine {
   private _isWrapped: boolean;
   private _length: number;
 
-  constructor(cells: GhosttyCell[], isWrapped: boolean, length: number) {
+  constructor(
+    cells: GhosttyCell[],
+    isWrapped: boolean,
+    length: number,
+    private readonly clusters: ReadonlyMap<number, string> = new Map()
+  ) {
     this.cells = cells;
     this._isWrapped = isWrapped;
     this._length = length;
@@ -260,7 +279,7 @@ export class BufferLine implements IBufferLine {
       );
     }
 
-    return new BufferCell(this.cells[x], x);
+    return new BufferCell(this.cells[x], x, this.clusters.get(x));
   }
 
   translateToString(trimRight = false, startColumn = 0, endColumn = this._length): string {
@@ -269,19 +288,17 @@ export class BufferLine implements IBufferLine {
     const end = Math.max(start, Math.min(endColumn, this._length));
 
     let result = '';
-    for (let x = start; x < end; x++) {
-      const cell = this.getCell(x);
-      if (cell) {
-        const chars = cell.getChars();
-        result += chars;
-      }
+    for (let x = start; x < end; ) {
+      const cell = this.getCell(x)!;
+      result += cell.getChars() || ' ';
+      // Skip the trailing spacer when starting at a wide glyph. Starting on a
+      // spacer itself yields one blank cell, matching xterm's column-slice API.
+      x += cell.getWidth() || 1;
     }
 
-    if (trimRight) {
-      result = result.trimEnd();
-    }
-
-    return result;
+    // Preserve ghostty-web's established trimRight policy (all trailing
+    // whitespace), while fixing interior blanks and cell/cluster iteration.
+    return trimRight ? result.trimEnd() : result;
   }
 }
 
@@ -296,12 +313,17 @@ export class BufferCell implements IBufferCell {
   private cell: GhosttyCell;
   private x: number;
 
-  constructor(cell: GhosttyCell, x: number) {
+  constructor(
+    cell: GhosttyCell,
+    x: number,
+    private readonly chars?: string
+  ) {
     this.cell = cell;
     this.x = x;
   }
 
   getChars(): string {
+    if (this.chars !== undefined) return this.chars;
     const codepoint = this.cell.codepoint;
 
     // Return empty string for null character or invalid codepoints

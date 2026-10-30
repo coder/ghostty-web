@@ -6,3 +6,10 @@ dist/
 
 # WASM build output (built locally and in CI)
 ghostty-vt.wasm
+ghostty-vt-legacy.wasm
+
+# Regression evidence and isolated reference build output
+/test-results/
+/playwright-report/
+/playwright-report-*/
+/.regression-reference/

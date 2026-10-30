@@ -180,6 +180,13 @@
           }
         });
 
+        // Raw-byte mouse reports are a separate channel from UTF-8 onData.
+        term.onBinary((data) => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(Uint8Array.from(data, (char) => char.charCodeAt(0)));
+          }
+        });
+
         // Debug scrollback
         console.log('Terminal scrollback:', term.buffer?.scrollback?.length || 'N/A');
         term.onScroll((ydisp) => {

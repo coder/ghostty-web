@@ -1,0 +1,22 @@
+{
+  "scene": "alternate-font",
+  "description": "The alternate vendored face, selected through fontFamily at 20px.",
+  "scenarioSha256": "f8a898a3aef0d970cd3dbac6035e8a0201d998b2bbf4ec006e9f09e9ed6d03a9",
+  "browser": "156.0.8078.4",
+  "container": "mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f",
+  "font": {
+    "family": "GhosttyRegressionAlt",
+    "sha256": "f8aa70b5d4210d77624f5b5b5cf094fadf9fd019caf5b528fa5af42fc4ac43a5",
+    "size": 20
+  },
+  "dpr": 1,
+  "width": 384,
+  "height": 126,
+  "grid": {
+    "cols": 32,
+    "rows": 6,
+    "cellW": 12,
+    "cellH": 21
+  },
+  "observedWasmSha256": "0789394612a79e22abc37ecf952e360aecfa7ec737d416ef3d664d1b9277fdbd"
+}

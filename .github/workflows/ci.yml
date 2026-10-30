@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     name: fmt
@@ -15,7 +18,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - name: Install dependencies
         run: bun install
@@ -31,7 +34,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - name: Install dependencies
         run: bun install
@@ -47,7 +50,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - name: Install dependencies
         run: bun install
@@ -65,11 +68,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Build WASM
         run: ./scripts/build-wasm.sh
@@ -79,6 +82,55 @@ jobs:
 
       - name: Run tests
         run: bun test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostty-vt-wasm
+          path: ghostty-vt.wasm
+          retention-days: 7
+
+  browser:
+    name: browser (Chromium)
+    needs: test
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
+      options: --ipc=host
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    steps:
+      - uses: actions/checkout@v4
+      # setup-bun extracts a ZIP; the pinned Playwright image does not include unzip.
+      - name: Install Bun setup prerequisite
+        run: apt-get update -qq && apt-get install -y --no-install-recommends unzip
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.15
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: ghostty-vt-wasm
+      - run: bun install --frozen-lockfile
+      - name: Run browser tests
+        run: bun run test:browser
+      - name: Verify the packed package
+        env:
+          TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-results/package
+        run: bun run test:package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 14
 
   build:
     name: build
@@ -90,21 +142,23 @@ jobs:
 
       - uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Build WASM
         run: ./scripts/build-wasm.sh
 
+      # The unpatched current API includes render/selection/formatter facilities:
+      # intentionally budget 1 MiB instead of the old custom shim's 512 KiB.
       - name: Check WASM size
         run: |
           SIZE=$(stat -c%s ghostty-vt.wasm)
           echo "WASM size: $SIZE bytes"
-          if [ "$SIZE" -gt 524288 ]; then
-            echo "❌ Error: WASM exceeds 512 KB limit"
+          if [ "$SIZE" -gt 1048576 ]; then
+            echo "❌ Error: native libghostty-vt WASM exceeds the reviewed 1 MiB limit"
             exit 1
           fi
 

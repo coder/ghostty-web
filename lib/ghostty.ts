@@ -1,16 +1,33 @@
 /**
- * TypeScript wrapper for libghostty-vt WASM API
+ * Public bridge to the Ghostty VT engine compiled to WebAssembly.
  *
- * High-performance terminal emulation using Ghostty's battle-tested VT100 parser.
- * The key optimization is the RenderState API which provides a pre-computed
- * snapshot of all render data in a single update call.
+ * `Ghostty`, `GhosttyTerminal` and `KeyEncoder` are facades over one of two
+ * engines, detected from the loaded module (see lib/backends):
+ *  - `libghostty-vt`: upstream libghostty-vt (exports `ghostty_type_json`);
+ *  - `legacy`: the pinned core plus ghostty-web's custom WASM API patch.
+ * `backend` reports which one is in use. Public constructors, method shapes,
+ * cell layout and enum values are the same for both.
  */
 
+import { type BackendKind, type GhosttyLoadOptions, backendFor } from './backends';
+import type {
+  KeyEncoderBackend,
+  NativeHostEvent,
+  NativeMouseEvent,
+  NativeRenderView,
+  NativeScrollCommand,
+  NativeScrollState,
+  RawExports,
+  ScreenPoint,
+  ScreenSelection,
+  TerminalBackend,
+  VtBackend,
+} from './backends/types';
+import type { IRenderable } from './renderer';
 import {
   CellFlags,
   type Cursor,
   DirtyState,
-  GHOSTTY_CONFIG_SIZE,
   type GhosttyCell,
   type GhosttyTerminalConfig,
   type GhosttyWasmExports,
@@ -20,7 +37,6 @@ import {
   type RGB,
   type RenderStateColors,
   type RenderStateCursor,
-  type TerminalHandle,
 } from './types';
 
 // Re-export types for convenience
@@ -35,17 +51,55 @@ export {
   type RenderStateColors,
   type RenderStateCursor,
 };
+export type {
+  BackendKind,
+  GhosttyLoadOptions,
+  NativeRenderView,
+  NativeScrollCommand,
+  NativeScrollState,
+  ScreenPoint,
+  ScreenSelection,
+};
+
+/** Exports accepted by the public constructors (legacy or libghostty-vt). */
+type BridgeExports = GhosttyWasmExports | RawExports;
+
+/** Backend of each live facade, for same-module integrations (KeyEncoder sync). */
+const terminalImpls = new WeakMap<GhosttyTerminal, TerminalBackend>();
+
+/**
+ * A render hold (synchronized output) presents its captured frame for at most
+ * this long, as upstream recommends, so a program that never releases its
+ * hold cannot freeze the screen.
+ */
+export const RENDER_HOLD_TIMEOUT_MS = 1000;
+
+function nativeOnly(kind: BackendKind, what: string): Error {
+  return new Error(`${what} requires the libghostty-vt backend (this instance is '${kind}')`);
+}
 
 /**
  * Main Ghostty WASM wrapper class
  */
 export class Ghostty {
-  private exports: GhosttyWasmExports;
+  /** Raw instance exports (kept raw: tests read `exports.memory`). */
+  private exports: BridgeExports;
   private memory: WebAssembly.Memory;
+  private readonly impl: VtBackend;
 
-  constructor(wasmInstance: WebAssembly.Instance) {
-    this.exports = wasmInstance.exports as GhosttyWasmExports;
-    this.memory = this.exports.memory;
+  /**
+   * @param wasmInstance An instantiated Ghostty WASM module.
+   * @param options `backend` requires a specific engine (mismatch throws).
+   */
+  constructor(wasmInstance: WebAssembly.Instance, options?: GhosttyLoadOptions) {
+    this.exports = wasmInstance.exports as BridgeExports;
+    this.impl = backendFor(this.exports as RawExports, options?.backend);
+    this.memory = this.impl.memory;
+  }
+
+  /** Which engine this instance runs. */
+  get backend(): BackendKind {
+    return this.impl.kind;
   }
 
   createKeyEncoder(): KeyEncoder {
@@ -60,10 +114,15 @@ export class Ghostty {
     return new GhosttyTerminal(this.exports, this.memory, cols, rows, config);
   }
 
-  static async load(wasmPath?: string): Promise<Ghostty> {
-    // If explicit path provided, use it
+  /**
+   * Load the WASM module. Without a path, resolves `ghostty-vt.wasm` next to
+   * the package root. Unreadable/uncompilable candidate paths fall through to
+   * the next candidate (all reasons are reported if none works); a module that
+   * compiles but fails engine detection throws immediately.
+   */
+  static async load(wasmPath?: string, options?: GhosttyLoadOptions): Promise<Ghostty> {
     if (wasmPath) {
-      return Ghostty.loadFromPath(wasmPath);
+      return Ghostty.fromModule(await Ghostty.compileFromPath(wasmPath), options);
     }
 
     // Resolve path relative to this module
@@ -85,19 +144,23 @@ export class Ghostty {
     // Also try other common paths
     defaultPaths.push(moduleUrl.href, './ghostty-vt.wasm', '/ghostty-vt.wasm');
 
-    let lastError: Error | null = null;
+    const failures: string[] = [];
     for (const path of defaultPaths) {
+      let module: WebAssembly.Module;
       try {
-        return await Ghostty.loadFromPath(path);
+        module = await Ghostty.compileFromPath(path);
       } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
+        failures.push(`${path}: ${e instanceof Error ? e.message : String(e)}`);
+        continue;
       }
+      return Ghostty.fromModule(module, options);
     }
-    throw lastError || new Error('Failed to load Ghostty WASM');
+    throw new Error(`Failed to load Ghostty WASM:\n  ${failures.join('\n  ')}`);
   }
 
-  private static async loadFromPath(path: string): Promise<Ghostty> {
+  private static async compileFromPath(path: string): Promise<WebAssembly.Module> {
     let wasmBytes: ArrayBuffer | undefined;
+    const attempts: string[] = [];
 
     // Try Bun.file first (for Bun environments)
     if (typeof Bun !== 'undefined' && typeof Bun.file === 'function') {
@@ -106,8 +169,8 @@ export class Ghostty {
         if (await file.exists()) {
           wasmBytes = await file.arrayBuffer();
         }
-      } catch {
-        // Bun.file failed, try next method
+      } catch (e) {
+        attempts.push(`Bun.file: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -117,14 +180,20 @@ export class Ghostty {
         const fs = await import('fs/promises');
         const buffer = await fs.readFile(path);
         wasmBytes = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-      } catch {
-        // fs failed, try fetch
+      } catch (e) {
+        attempts.push(`fs: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
     // Fall back to fetch (for browser environments)
     if (!wasmBytes) {
-      const response = await fetch(path);
+      let response: Response;
+      try {
+        response = await fetch(path);
+      } catch (e) {
+        attempts.push(`fetch: ${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`Could not load WASM from path: ${path} (${attempts.join('; ')})`);
+      }
       if (!response.ok) {
         throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
       }
@@ -134,11 +203,14 @@ export class Ghostty {
       }
     }
 
-    if (!wasmBytes) {
-      throw new Error(`Could not load WASM from path: ${path}`);
-    }
+    return WebAssembly.compile(wasmBytes);
+  }
 
-    const wasmModule = await WebAssembly.compile(wasmBytes);
+  private static async fromModule(
+    wasmModule: WebAssembly.Module,
+    options?: GhosttyLoadOptions
+  ): Promise<Ghostty> {
+    // Legacy builds import env.log; libghostty-vt builds are import-free.
     const wasmInstance = await WebAssembly.instantiate(wasmModule, {
       env: {
         log: (ptr: number, len: number) => {
@@ -151,7 +223,7 @@ export class Ghostty {
         },
       },
     });
-    return new Ghostty(wasmInstance);
+    return new Ghostty(wasmInstance, options);
   }
 }
 
@@ -159,25 +231,24 @@ export class Ghostty {
  * Key Encoder - converts keyboard events into terminal escape sequences
  */
 export class KeyEncoder {
-  private exports: GhosttyWasmExports;
-  private encoder: number = 0;
+  private readonly impl: KeyEncoderBackend;
+  private readonly kind: BackendKind;
+  private disposed = false;
 
-  constructor(exports: GhosttyWasmExports) {
-    this.exports = exports;
-    const encoderPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
-    const result = this.exports.ghostty_key_encoder_new(0, encoderPtrPtr);
-    if (result !== 0) throw new Error(`Failed to create key encoder: ${result}`);
-    const view = new DataView(this.exports.memory.buffer);
-    this.encoder = view.getUint32(encoderPtrPtr, true);
-    this.exports.ghostty_wasm_free_opaque(encoderPtrPtr);
+  constructor(exports: BridgeExports) {
+    const backend = backendFor(exports as RawExports);
+    this.kind = backend.kind;
+    this.impl = backend.createKeyEncoder();
+  }
+
+  /** Which engine encodes keys. */
+  get backend(): BackendKind {
+    return this.kind;
   }
 
   setOption(option: KeyEncoderOption, value: boolean | number): void {
-    const valuePtr = this.exports.ghostty_wasm_alloc_u8();
-    const view = new DataView(this.exports.memory.buffer);
-    view.setUint8(valuePtr, typeof value === 'boolean' ? (value ? 1 : 0) : value);
-    this.exports.ghostty_key_encoder_setopt(this.encoder, option, valuePtr);
-    this.exports.ghostty_wasm_free_u8(valuePtr);
+    this.assertLive();
+    this.impl.setOption(option, value);
   }
 
   setKittyFlags(flags: KittyKeyFlags): void {
@@ -185,147 +256,84 @@ export class KeyEncoder {
   }
 
   encode(event: KeyEvent): Uint8Array {
-    const eventPtrPtr = this.exports.ghostty_wasm_alloc_opaque();
-    const createResult = this.exports.ghostty_key_event_new(0, eventPtrPtr);
-    if (createResult !== 0) throw new Error(`Failed to create key event: ${createResult}`);
+    this.assertLive();
+    return this.impl.encode(event);
+  }
 
-    const view = new DataView(this.exports.memory.buffer);
-    const eventPtr = view.getUint32(eventPtrPtr, true);
-    this.exports.ghostty_wasm_free_opaque(eventPtrPtr);
-
-    this.exports.ghostty_key_event_set_action(eventPtr, event.action);
-    this.exports.ghostty_key_event_set_key(eventPtr, event.key);
-    this.exports.ghostty_key_event_set_mods(eventPtr, event.mods);
-
-    if (event.utf8) {
-      const encoder = new TextEncoder();
-      const utf8Bytes = encoder.encode(event.utf8);
-      const utf8Ptr = this.exports.ghostty_wasm_alloc_u8_array(utf8Bytes.length);
-      new Uint8Array(this.exports.memory.buffer).set(utf8Bytes, utf8Ptr);
-      this.exports.ghostty_key_event_set_utf8(eventPtr, utf8Ptr, utf8Bytes.length);
-      this.exports.ghostty_wasm_free_u8_array(utf8Ptr, utf8Bytes.length);
-    }
-
-    const bufferSize = 32;
-    const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufferSize);
-    const writtenPtr = this.exports.ghostty_wasm_alloc_usize();
-
-    const encodeResult = this.exports.ghostty_key_encoder_encode(
-      this.encoder,
-      eventPtr,
-      bufPtr,
-      bufferSize,
-      writtenPtr
-    );
-
-    if (encodeResult !== 0) {
-      this.exports.ghostty_wasm_free_u8_array(bufPtr, bufferSize);
-      this.exports.ghostty_wasm_free_usize(writtenPtr);
-      this.exports.ghostty_key_event_free(eventPtr);
-      throw new Error(`Failed to encode key: ${encodeResult}`);
-    }
-
-    const bytesWritten = view.getUint32(writtenPtr, true);
-    const encoded = new Uint8Array(this.exports.memory.buffer, bufPtr, bytesWritten).slice();
-
-    this.exports.ghostty_wasm_free_u8_array(bufPtr, bufferSize);
-    this.exports.ghostty_wasm_free_usize(writtenPtr);
-    this.exports.ghostty_key_event_free(eventPtr);
-
-    return encoded;
+  /**
+   * libghostty-vt only: copy the terminal's key-encoding state (cursor-key and
+   * keypad modes, alt-escape prefix, modifyOtherKeys, Kitty flags) into this
+   * encoder. Also resets the encoder's macOS option-as-alt setting to false.
+   * The terminal must come from the same `Ghostty` instance.
+   */
+  syncFromTerminal(terminal: GhosttyTerminal): void {
+    this.assertLive();
+    const impl = terminalImpls.get(terminal);
+    if (!impl) throw new Error('GhosttyTerminal has been freed');
+    if (!this.impl.syncFromTerminal) throw nativeOnly(this.kind, 'KeyEncoder.syncFromTerminal');
+    this.impl.syncFromTerminal(impl);
   }
 
   dispose(): void {
-    if (this.encoder) {
-      this.exports.ghostty_key_encoder_free(this.encoder);
-      this.encoder = 0;
-    }
+    if (this.disposed) return;
+    this.disposed = true;
+    this.impl.dispose();
+  }
+
+  private assertLive(): void {
+    if (this.disposed) throw new Error('KeyEncoder has been disposed');
   }
 }
 
 /**
- * GhosttyTerminal - High-performance terminal emulator
+ * GhosttyTerminal - one terminal emulator instance.
  *
- * Uses Ghostty's native RenderState for optimal performance:
- * - ONE call to update all state (renderStateUpdate)
- * - ONE call to get all cells (getViewport)
- * - No per-row WASM boundary crossings!
+ * Render reads follow the RenderState model: `update()` refreshes the render
+ * snapshot (dirty state persists until `markClean()`), `getViewport()` returns
+ * all active-screen cells at once.
+ *
+ * libghostty-vt: the native viewport is the one authority for which rows are
+ * visible (`getScrollState`, `scrollViewport`); `getRenderView()` reads those
+ * rows. `getLine`, `getViewport`, `getCursor`, `getGrapheme*`,
+ * `getHyperlinkUri` and `isRowWrapped` keep their active-screen meaning
+ * however the viewport is scrolled, and no read moves it.
  */
 export class GhosttyTerminal {
-  private exports: GhosttyWasmExports;
-  private memory: WebAssembly.Memory;
-  private handle: TerminalHandle;
+  private readonly impl: TerminalBackend;
+  private readonly kind: BackendKind;
   private _cols: number;
   private _rows: number;
-
-  /** Size of GhosttyCell in WASM (16 bytes) */
-  private static readonly CELL_SIZE = 16;
-
-  /** Reusable buffer for viewport operations */
-  private viewportBufferPtr: number = 0;
-  private viewportBufferSize: number = 0;
-
-  /** Cell pool for zero-allocation rendering */
-  private cellPool: GhosttyCell[] = [];
+  private freed = false;
+  private pendingHighSurrogate = '';
+  /** Use-after-free-checked wrapper of the backend's render view (created on first use). */
+  private renderView: (IRenderable & NativeRenderView) | null = null;
+  /** Active render hold seen last (0: none) and when it was first seen (see `getPresentation`). */
+  private holdId = 0;
+  private holdSince = 0;
+  /** Monotonic milliseconds for the hold timeout; replaceable in tests. */
+  private clock: () => number = () => performance.now();
 
   constructor(
-    exports: GhosttyWasmExports,
+    exports: BridgeExports,
     memory: WebAssembly.Memory,
     cols: number = 80,
     rows: number = 24,
     config?: GhosttyTerminalConfig
   ) {
-    this.exports = exports;
-    this.memory = memory;
+    const backend = backendFor(exports as RawExports);
+    if (memory !== backend.memory) {
+      throw new Error('GhosttyTerminal: memory does not belong to the given WASM exports');
+    }
+    this.kind = backend.kind;
     this._cols = cols;
     this._rows = rows;
+    this.impl = backend.createTerminal(cols, rows, config);
+    terminalImpls.set(this, this.impl);
+  }
 
-    if (config) {
-      // Allocate config struct in WASM memory
-      const configPtr = this.exports.ghostty_wasm_alloc_u8_array(GHOSTTY_CONFIG_SIZE);
-      if (configPtr === 0) {
-        throw new Error('Failed to allocate config (out of memory)');
-      }
-
-      try {
-        // Write config to WASM memory
-        const view = new DataView(this.memory.buffer);
-        let offset = configPtr;
-
-        // scrollback_limit (u32)
-        view.setUint32(offset, config.scrollbackLimit ?? 10000, true);
-        offset += 4;
-
-        // fg_color (u32)
-        view.setUint32(offset, config.fgColor ?? 0, true);
-        offset += 4;
-
-        // bg_color (u32)
-        view.setUint32(offset, config.bgColor ?? 0, true);
-        offset += 4;
-
-        // cursor_color (u32)
-        view.setUint32(offset, config.cursorColor ?? 0, true);
-        offset += 4;
-
-        // palette[16] (u32 * 16)
-        for (let i = 0; i < 16; i++) {
-          view.setUint32(offset, config.palette?.[i] ?? 0, true);
-          offset += 4;
-        }
-
-        this.handle = this.exports.ghostty_terminal_new_with_config(cols, rows, configPtr);
-      } finally {
-        // Free the config memory
-        this.exports.ghostty_wasm_free_u8_array(configPtr, GHOSTTY_CONFIG_SIZE);
-      }
-    } else {
-      this.handle = this.exports.ghostty_terminal_new(cols, rows);
-    }
-
-    if (!this.handle) throw new Error('Failed to create terminal');
-
-    this.initCellPool();
+  /** Which engine runs this terminal. */
+  get backend(): BackendKind {
+    return this.kind;
   }
 
   get cols(): number {
@@ -339,154 +347,393 @@ export class GhosttyTerminal {
   // Lifecycle
   // ==========================================================================
 
+  /** Feed VT data. An empty write is a no-op. */
   write(data: string | Uint8Array): void {
-    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    const ptr = this.exports.ghostty_wasm_alloc_u8_array(bytes.length);
-    new Uint8Array(this.memory.buffer).set(bytes, ptr);
-    this.exports.ghostty_terminal_write(this.handle, ptr, bytes.length);
-    this.exports.ghostty_wasm_free_u8_array(ptr, bytes.length);
+    this.assertLive();
+    if (data.length === 0) return;
+    let bytes: Uint8Array;
+    if (typeof data === 'string') {
+      // TextEncoder is stateless; retain only an incomplete UTF-16 pair across
+      // string chunks before handing complete UTF-8 to Ghostty's VT parser.
+      let text = this.pendingHighSurrogate + data;
+      this.pendingHighSurrogate = '';
+      const last = text.charCodeAt(text.length - 1);
+      if (last >= 0xd800 && last <= 0xdbff) {
+        this.pendingHighSurrogate = text.slice(-1);
+        text = text.slice(0, -1);
+      }
+      bytes = new TextEncoder().encode(text);
+    } else if (this.pendingHighSurrogate) {
+      // A nonempty byte write is an encoding boundary. Flush the unmatched
+      // surrogate as U+FFFD before the bytes; never reorder it past raw input.
+      this.pendingHighSurrogate = '';
+      bytes = new Uint8Array(data.length + 3);
+      bytes.set([0xef, 0xbf, 0xbd]);
+      bytes.set(data, 3);
+    } else {
+      bytes = data;
+    }
+    if (bytes.length === 0) return;
+    this.impl.write(bytes);
+    // A hold that began in this write starts its timeout now.
+    this.noteRenderHold();
+  }
+
+  // ==========================================================================
+  // Native viewport (libghostty-vt only)
+  // ==========================================================================
+
+  /**
+   * @internal libghostty-vt only: the active screen's native viewport, read
+   * now (upstream `PageList.scrollbar()` plus screen and following state).
+   * Poll once per frame or write batch and diff; there is no notification.
+   */
+  getScrollState(): NativeScrollState {
+    this.assertLive();
+    if (!this.impl.getScrollState) throw nativeOnly(this.kind, 'getScrollState');
+    return this.impl.getScrollState();
+  }
+
+  /**
+   * @internal libghostty-vt only: move the active screen's native viewport
+   * (upstream `Terminal.scrollViewport`). It then stays where native state
+   * puts it: output keeps a scrolled viewport on its content, pruning/ED3/RIS
+   * and reflow move it natively, and following resumes only when a command
+   * (or native clamping) returns it to the active area.
+   */
+  scrollViewport(command: NativeScrollCommand): void {
+    this.assertLive();
+    if (!this.impl.scrollViewport) throw nativeOnly(this.kind, 'scrollViewport');
+    this.impl.scrollViewport(command);
+  }
+
+  /**
+   * @internal libghostty-vt only: the stable live renderer view of the
+   * visible native viewport (rows, viewport-relative cursor, graphemes,
+   * hyperlinks, dirty tracking and the matching `getScrollState()`). Holds are
+   * not applied: choose `getPresentation()` first when following without a
+   * selection. Every method throws once the terminal is freed.
+   */
+  getRenderView(): IRenderable & NativeRenderView {
+    this.assertLive();
+    if (!this.impl.getRenderView) throw nativeOnly(this.kind, 'getRenderView');
+    if (!this.renderView) {
+      const view = this.impl.getRenderView();
+      const live = <A extends unknown[], R>(f: (...args: A) => R) => {
+        return (...args: A): R => {
+          this.assertLive();
+          return f(...args);
+        };
+      };
+      this.renderView = {
+        backend: 'libghostty-vt',
+        getDimensions: live(() => view.getDimensions()),
+        getScrollState: live(() => view.getScrollState()),
+        getScrollbackLength: live(() => view.getScrollbackLength()),
+        getLine: live((y: number) => view.getLine(y)),
+        getCursor: live(() => view.getCursor()),
+        getGraphemeString: live((row: number, col: number) => view.getGraphemeString(row, col)),
+        getHyperlinkUri: live((row: number, col: number) => view.getHyperlinkUri(row, col)),
+        isRowDirty: live((y: number) => view.isRowDirty(y)),
+        needsFullRedraw: live(() => view.needsFullRedraw()),
+        clearDirty: live(() => view.clearDirty()),
+      };
+    }
+    return this.renderView;
   }
 
   resize(cols: number, rows: number): void {
+    this.assertLive();
     if (cols === this._cols && rows === this._rows) return;
+    this.impl.resize(cols, rows);
     this._cols = cols;
     this._rows = rows;
-    this.exports.ghostty_terminal_resize(this.handle, cols, rows);
-    this.invalidateBuffers();
-    this.initCellPool();
   }
 
+  /** Release the terminal. Idempotent; every other method throws afterwards. */
   free(): void {
-    if (this.viewportBufferPtr) {
-      this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      this.viewportBufferPtr = 0;
+    if (this.freed) return;
+    this.freed = true;
+    this.pendingHighSurrogate = '';
+    terminalImpls.delete(this);
+    this.impl.free();
+  }
+
+  /**
+   * libghostty-vt only: the real cell size in pixels (rounded to integers).
+   * Size reports (XTWINOPS 14/16/18 t, mode 2048) are declined until it is set,
+   * instead of reporting invented pixel values. A change re-applies the size
+   * natively, which ends a synchronized-output hold and sends a mode 2048
+   * report if enabled.
+   */
+  setCellPixelSize(widthPx: number, heightPx: number): void {
+    this.assertLive();
+    if (!this.impl.setCellPixelSize) throw nativeOnly(this.kind, 'setCellPixelSize');
+    this.impl.setCellPixelSize(widthPx, heightPx);
+  }
+
+  /** libghostty-vt only: the active screen's Kitty keyboard protocol flags. */
+  getKittyKeyboardFlags(): number {
+    this.assertLive();
+    if (!this.impl.getKittyKeyboardFlags) throw nativeOnly(this.kind, 'getKittyKeyboardFlags');
+    return this.impl.getKittyKeyboardFlags();
+  }
+
+  /**
+   * libghostty-vt only: the default cursor. Applied immediately while the
+   * program hasn't selected a cursor (DECSCUSR); otherwise kept for the next
+   * RIS or DECSCUSR 0.
+   */
+  setDefaultCursorStyle(style: 'block' | 'underline' | 'bar', blink: boolean): void {
+    this.assertLive();
+    if (!this.impl.setDefaultCursorStyle) throw nativeOnly(this.kind, 'setDefaultCursorStyle');
+    this.impl.setDefaultCursorStyle(style, blink);
+  }
+
+  /**
+   * @internal libghostty-vt only: replace the default colors and palette in
+   * place from the colour fields of `config` (scrollback is ignored), with the
+   * same policy as `createTerminal`. Buffer, history, selection, parser state
+   * and the active SGR style are untouched; the program's OSC color overrides
+   * and explicit RGB cell colors stay, palette/default-colored cells change.
+   */
+  setColors(config: GhosttyTerminalConfig | undefined): void {
+    this.assertLive();
+    if (!this.impl.setColors) throw nativeOnly(this.kind, 'setColors');
+    this.impl.setColors(config);
+  }
+
+  /**
+   * @internal libghostty-vt only: encode a pointer event for the terminal's
+   * current mouse modes with the native encoder (tracking mode, format, motion
+   * dedup, out-of-view handling). Returns an owned copy of the raw bytes, which
+   * may not be valid UTF-8 (X10 coordinates >= 95); empty when not reported.
+   */
+  encodeMouseEvent(event: NativeMouseEvent): Uint8Array {
+    this.assertLive();
+    if (!this.impl.encodeMouseEvent) throw nativeOnly(this.kind, 'encodeMouseEvent');
+    return this.impl.encodeMouseEvent(event);
+  }
+
+  /**
+   * @internal libghostty-vt only: forget the last reported motion cell, so the
+   * next motion is reported even within the same cell.
+   */
+  resetMouseEncoder(): void {
+    this.assertLive();
+    if (!this.impl.resetMouseEncoder) throw nativeOnly(this.kind, 'resetMouseEncoder');
+    this.impl.resetMouseEncoder();
+  }
+
+  /**
+   * @internal libghostty-vt only: the bytes to send to the pty for pasted
+   * text, per the terminal's live state (upstream `ghostty_terminal_paste`).
+   * Unsafe control bytes become spaces; the text is framed with CSI 200~/201~
+   * when bracketed paste (2004) is on, or has LF converted to CR when off.
+   * Multiline/unsafe text is allowed without a prompt, as ghostty-web always
+   * pasted it. Returns an owned copy; empty for empty text. Pending
+   * `readResponse()` replies are neither consumed nor included.
+   */
+  encodePaste(text: string): Uint8Array {
+    this.assertLive();
+    if (!this.impl.encodePaste) throw nativeOnly(this.kind, 'encodePaste');
+    return this.impl.encodePaste(new TextEncoder().encode(text));
+  }
+
+  /** @internal Encode a focus change for live mode 1004 (libghostty-vt only). */
+  encodeFocus(focused: boolean): Uint8Array {
+    this.assertLive();
+    if (!this.impl.encodeFocus) throw nativeOnly(this.kind, 'encodeFocus');
+    return this.impl.encodeFocus(focused);
+  }
+
+  /**
+   * @internal libghostty-vt only: from now on, queue every bell (BEL executed
+   * by the parser) and title change (OSC 0/2) for `takeHostEvents()`.
+   * Idempotent. Without it nothing is queued and `readResponse()` is unchanged.
+   */
+  enableHostEvents(): void {
+    this.assertLive();
+    if (!this.impl.enableHostEvents) throw nativeOnly(this.kind, 'enableHostEvents');
+    this.impl.enableHostEvents();
+  }
+
+  /**
+   * @internal libghostty-vt only: remove and return all pending replies and
+   * queued bells/titles in the order the parser produced them. Reply chunks
+   * are what `readResponse()` would return, split where an event occurred.
+   * Nothing here calls back into host code; the caller dispatches.
+   */
+  takeHostEvents(): NativeHostEvent[] {
+    this.assertLive();
+    if (!this.impl.takeHostEvents) throw nativeOnly(this.kind, 'takeHostEvents');
+    return this.impl.takeHostEvents();
+  }
+
+  /**
+   * @internal libghostty-vt only: present synchronized output (mode 2026). From
+   * now on each render hold captures the frame it began with, inside the native
+   * RENDER_HOLD callback, and `getPresentation()` returns it until the hold
+   * ends. Everything else (getLine, the public buffer, selection, replies)
+   * keeps reading the live terminal. Idempotent.
+   */
+  enableRenderHold(): void {
+    this.assertLive();
+    if (!this.impl.enableRenderHold) throw nativeOnly(this.kind, 'enableRenderHold');
+    this.impl.enableRenderHold();
+  }
+
+  /**
+   * @internal libghostty-vt only: end the active render hold now (mode 2026 is
+   * reset without a callback, like upstream's timeout). No-op without a hold.
+   */
+  releaseRenderHold(): void {
+    this.assertLive();
+    if (!this.impl.releaseRenderHold) throw nativeOnly(this.kind, 'releaseRenderHold');
+    this.impl.releaseRenderHold();
+    this.holdId = 0;
+  }
+
+  /**
+   * @internal Renderer hook (`IRenderable.getPresentation`): what to draw now.
+   * This terminal itself, or during a render hold the frame captured when it
+   * began. A hold presented for RENDER_HOLD_TIMEOUT_MS since the write that
+   * began it is released here, at draw time as in upstream's example, so no
+   * timer exists. Re-enabling 2026 during a hold does not start a new hold
+   * (no callback), so it never extends the deadline.
+   */
+  getPresentation(): IRenderable {
+    this.assertLive();
+    if (!this.impl.getHeldFrame || this.noteRenderHold() === 0) return this;
+    if (this.clock() - this.holdSince >= RENDER_HOLD_TIMEOUT_MS) {
+      this.releaseRenderHold();
+      return this;
     }
-    this.exports.ghostty_terminal_free(this.handle);
+    return this.impl.getHeldFrame() ?? this;
+  }
+
+  /** Track the active hold; a new hold id restarts the timeout. Returns the id. */
+  private noteRenderHold(): number {
+    const id = this.impl.getRenderHold?.() ?? 0;
+    if (id !== this.holdId) {
+      this.holdId = id;
+      if (id) this.holdSince = this.clock();
+    }
+    return id;
   }
 
   // ==========================================================================
-  // RenderState API - The key performance optimization
+  // Selection (libghostty-vt only: terminal-owned, follows its content)
   // ==========================================================================
 
   /**
-   * Update render state from terminal.
-   *
-   * This syncs the RenderState with the current Terminal state.
-   * The dirty state (full/partial/none) is stored in the WASM RenderState
-   * and can be queried via isRowDirty(). When dirty==full, isRowDirty()
-   * returns true for ALL rows.
-   *
-   * The WASM layer automatically detects screen switches (normal <-> alternate)
-   * and returns FULL dirty state when switching screens (e.g., vim exit).
-   *
-   * Safe to call multiple times - dirty state persists until markClean().
+   * libghostty-vt only: select from `start` (the anchor) to `end`, both in the
+   * active screen's SCREEN space (`y` = absolute buffer row: history first,
+   * then the active area). The terminal tracks the endpoints, so the selection
+   * moves with its content through output, history pruning, ED3 and reflow;
+   * endpoints whose rows are pruned are remapped to the oldest retained row.
+   * Switching between primary and alternate screen, or a full reset, clears
+   * it. Throws RangeError for points outside the active screen.
+   */
+  setSelectionRange(start: ScreenPoint, end: ScreenPoint): void {
+    this.assertLive();
+    if (!this.impl.setSelectionRange) throw nativeOnly(this.kind, 'setSelectionRange');
+    this.impl.setSelectionRange(start, end);
+  }
+
+  /**
+   * libghostty-vt only: the active screen's selection endpoints as they are
+   * now (read on every call; never cache them across writes or resizes).
+   */
+  getSelectionRange(): ScreenSelection | null {
+    this.assertLive();
+    if (!this.impl.getSelectionRange) throw nativeOnly(this.kind, 'getSelectionRange');
+    return this.impl.getSelectionRange();
+  }
+
+  /** libghostty-vt only: remove the active screen's selection. */
+  clearSelection(): void {
+    this.assertLive();
+    if (!this.impl.clearSelection) throw nativeOnly(this.kind, 'clearSelection');
+    this.impl.clearSelection();
+  }
+
+  /**
+   * libghostty-vt only: the selection as copy text, formatted like Ghostty's
+   * own copy (plain, soft wraps unwrapped, trailing blanks trimmed, spacers of
+   * wide characters omitted, full graphemes). '' when there is no selection.
+   */
+  getSelectionText(): string {
+    this.assertLive();
+    if (!this.impl.getSelectionText) throw nativeOnly(this.kind, 'getSelectionText');
+    return this.impl.getSelectionText();
+  }
+
+  // ==========================================================================
+  // RenderState API
+  // ==========================================================================
+
+  /**
+   * Update render state from terminal. Safe to call repeatedly; the dirty
+   * state (full/partial/none) persists until markClean(), and a primary <->
+   * alternate screen switch reports FULL.
    */
   update(): DirtyState {
-    return this.exports.ghostty_render_state_update(this.handle) as DirtyState;
+    this.assertLive();
+    return this.impl.update();
   }
 
   /**
-   * Get cursor state from render state.
-   * Ensures render state is fresh by calling update().
+   * Active-screen cursor (refreshes the render state first): active-area
+   * position and logical visibility, also while the native viewport is
+   * scrolled (the render view has the viewport-relative cursor).
    */
   getCursor(): RenderStateCursor {
-    // Call update() to ensure render state is fresh.
-    // This is safe to call multiple times - dirty state persists until markClean().
-    this.update();
-    return {
-      x: this.exports.ghostty_render_state_get_cursor_x(this.handle),
-      y: this.exports.ghostty_render_state_get_cursor_y(this.handle),
-      viewportX: this.exports.ghostty_render_state_get_cursor_x(this.handle),
-      viewportY: this.exports.ghostty_render_state_get_cursor_y(this.handle),
-      visible: this.exports.ghostty_render_state_get_cursor_visible(this.handle),
-      blinking: false, // TODO: Add blinking support
-      style: 'block', // TODO: Add style support
-    };
+    this.assertLive();
+    return this.impl.getCursor();
   }
 
-  /**
-   * Get default colors from render state
-   */
+  /** Default colors from render state */
   getColors(): RenderStateColors {
-    const bg = this.exports.ghostty_render_state_get_bg_color(this.handle);
-    const fg = this.exports.ghostty_render_state_get_fg_color(this.handle);
-    return {
-      background: {
-        r: (bg >> 16) & 0xff,
-        g: (bg >> 8) & 0xff,
-        b: bg & 0xff,
-      },
-      foreground: {
-        r: (fg >> 16) & 0xff,
-        g: (fg >> 8) & 0xff,
-        b: fg & 0xff,
-      },
-      cursor: null, // TODO: Add cursor color support
-    };
+    this.assertLive();
+    return this.impl.getColors();
   }
 
-  /**
-   * Check if a specific row is dirty
-   */
+  /** Check if a specific row is dirty */
   isRowDirty(y: number): boolean {
-    return this.exports.ghostty_render_state_is_row_dirty(this.handle, y);
+    this.assertLive();
+    return this.impl.isRowDirty(y);
   }
 
-  /**
-   * Mark render state as clean (call after rendering)
-   */
+  /** Mark render state as clean (call after rendering) */
   markClean(): void {
-    this.exports.ghostty_render_state_mark_clean(this.handle);
+    this.assertLive();
+    this.impl.markClean();
   }
 
   /**
-   * Get ALL viewport cells in ONE WASM call - the key performance optimization!
-   * Returns a reusable cell array (zero allocation after warmup).
+   * All active-screen cells, row-major. Returns a reusable pool: do not retain
+   * it across calls.
    */
   getViewport(): GhosttyCell[] {
-    const totalCells = this._cols * this._rows;
-    const neededSize = totalCells * GhosttyTerminal.CELL_SIZE;
-
-    // Ensure buffer is allocated
-    if (!this.viewportBufferPtr || this.viewportBufferSize < neededSize) {
-      if (this.viewportBufferPtr) {
-        this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      }
-      this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(neededSize);
-      this.viewportBufferSize = neededSize;
-    }
-
-    // Get all cells in one call
-    const count = this.exports.ghostty_render_state_get_viewport(
-      this.handle,
-      this.viewportBufferPtr,
-      totalCells
-    );
-
-    if (count < 0) return this.cellPool;
-
-    // Parse cells into pool (reuses existing objects)
-    this.parseCellsIntoPool(this.viewportBufferPtr, totalCells);
-    return this.cellPool;
+    this.assertLive();
+    return this.impl.getViewport();
   }
 
   // ==========================================================================
   // Compatibility methods (delegate to render state)
   // ==========================================================================
 
-  /**
-   * Get line - for compatibility, extracts from viewport.
-   * Ensures render state is fresh by calling update().
-   * Returns a COPY of the cells to avoid pool reference issues.
-   */
+  /** One active-screen row as deep copies (safe to retain), or null if out of range. */
   getLine(y: number): GhosttyCell[] | null {
+    this.assertLive();
     if (y < 0 || y >= this._rows) return null;
-    // Call update() to ensure render state is fresh.
-    // This is safe to call multiple times - dirty state persists until markClean().
+    // Native: the active row itself, whatever the viewport shows. Other values
+    // keep the historical slice behavior below.
+    if (this.impl.getLine && Number.isInteger(y)) return this.impl.getLine(y);
     this.update();
     const viewport = this.getViewport();
     const start = y * this._cols;
-    // Return deep copies to avoid cell pool reference issues
     return viewport.slice(start, start + this._cols).map((cell) => ({ ...cell }));
   }
 
@@ -495,10 +742,7 @@ export class GhosttyTerminal {
     return this.update() !== DirtyState.NONE;
   }
 
-  /**
-   * Check if a full redraw is needed (screen change, resize, etc.)
-   * Note: This calls update() to ensure fresh state. Safe to call multiple times.
-   */
+  /** Check if a full redraw is needed (screen change, resize, etc.) */
   needsFullRedraw(): boolean {
     return this.update() === DirtyState.FULL;
   }
@@ -513,7 +757,8 @@ export class GhosttyTerminal {
   // ==========================================================================
 
   isAlternateScreen(): boolean {
-    return !!this.exports.ghostty_terminal_is_alternate_screen(this.handle);
+    this.assertLive();
+    return this.impl.isAlternateScreen();
   }
 
   hasBracketedPaste(): boolean {
@@ -527,7 +772,8 @@ export class GhosttyTerminal {
   }
 
   hasMouseTracking(): boolean {
-    return this.exports.ghostty_terminal_has_mouse_tracking(this.handle) !== 0;
+    this.assertLive();
+    return this.impl.hasMouseTracking();
   }
 
   // ==========================================================================
@@ -541,68 +787,23 @@ export class GhosttyTerminal {
 
   /** Get number of scrollback lines (history, not including active screen) */
   getScrollbackLength(): number {
-    return this.exports.ghostty_terminal_get_scrollback_length(this.handle);
+    this.assertLive();
+    return this.impl.getScrollbackLength();
   }
 
   /**
-   * Get a line from the scrollback buffer.
-   * Ensures render state is fresh by calling update().
+   * Get a line from the scrollback buffer (fresh objects).
    * @param offset 0 = oldest line, (length-1) = most recent scrollback line
    */
   getScrollbackLine(offset: number): GhosttyCell[] | null {
-    const neededSize = this._cols * GhosttyTerminal.CELL_SIZE;
-
-    // Ensure buffer is allocated
-    if (!this.viewportBufferPtr || this.viewportBufferSize < neededSize) {
-      if (this.viewportBufferPtr) {
-        this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      }
-      this.viewportBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(neededSize);
-      this.viewportBufferSize = neededSize;
-    }
-
-    // Call update() to ensure render state is fresh (needed for colors).
-    // This is safe to call multiple times - dirty state persists until markClean().
-    this.update();
-
-    const count = this.exports.ghostty_terminal_get_scrollback_line(
-      this.handle,
-      offset,
-      this.viewportBufferPtr,
-      this._cols
-    );
-
-    if (count < 0) return null;
-
-    // Parse cells
-    const cells: GhosttyCell[] = [];
-    const buffer = this.memory.buffer;
-    const u8 = new Uint8Array(buffer, this.viewportBufferPtr, count * GhosttyTerminal.CELL_SIZE);
-    const view = new DataView(buffer, this.viewportBufferPtr, count * GhosttyTerminal.CELL_SIZE);
-
-    for (let i = 0; i < count; i++) {
-      const cellOffset = i * GhosttyTerminal.CELL_SIZE;
-      cells.push({
-        codepoint: view.getUint32(cellOffset, true),
-        fg_r: u8[cellOffset + 4],
-        fg_g: u8[cellOffset + 5],
-        fg_b: u8[cellOffset + 6],
-        bg_r: u8[cellOffset + 7],
-        bg_g: u8[cellOffset + 8],
-        bg_b: u8[cellOffset + 9],
-        flags: u8[cellOffset + 10],
-        width: u8[cellOffset + 11],
-        hyperlink_id: view.getUint16(cellOffset + 12, true),
-        grapheme_len: u8[cellOffset + 14],
-      });
-    }
-
-    return cells;
+    this.assertLive();
+    return this.impl.getScrollbackLine(offset);
   }
 
-  /** Check if a row in the active screen is wrapped (soft-wrapped to next line) */
+  /** Whether an active-screen row continues the previous row (soft wrap). */
   isRowWrapped(row: number): boolean {
-    return this.exports.ghostty_terminal_is_row_wrapped(this.handle, row) !== 0;
+    this.assertLive();
+    return this.impl.isRowWrapped(row);
   }
 
   /**
@@ -612,91 +813,18 @@ export class GhosttyTerminal {
    * @returns The URI string, or null if no hyperlink at that position
    */
   getHyperlinkUri(row: number, col: number): string | null {
-    // Check if WASM has this function (requires rebuilt WASM with hyperlink support)
-    if (!this.exports.ghostty_terminal_get_hyperlink_uri) {
-      return null;
-    }
-
-    // Try with initial buffer, retry with larger if needed (for very long URLs)
-    const bufferSizes = [2048, 8192, 32768];
-
-    for (const bufSize of bufferSizes) {
-      const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
-
-      try {
-        const bytesWritten = this.exports.ghostty_terminal_get_hyperlink_uri(
-          this.handle,
-          row,
-          col,
-          bufPtr,
-          bufSize
-        );
-
-        // 0 means no hyperlink at this position
-        if (bytesWritten === 0) return null;
-
-        // -1 means buffer too small, try next size
-        if (bytesWritten === -1) continue;
-
-        // Negative values other than -1 are errors
-        if (bytesWritten < 0) return null;
-
-        const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesWritten);
-        return new TextDecoder().decode(bytes.slice());
-      } finally {
-        this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
-      }
-    }
-
-    // URI too long even for largest buffer
-    return null;
+    this.assertLive();
+    return this.impl.getHyperlinkUri(row, col);
   }
 
   /**
    * Get the hyperlink URI for a cell in the scrollback buffer.
    * @param offset Scrollback line offset (0 = oldest, scrollback_len-1 = newest)
    * @param col Column index (0-based)
-   * @returns The URI string, or null if no hyperlink at that position
    */
   getScrollbackHyperlinkUri(offset: number, col: number): string | null {
-    // Check if WASM has this function
-    if (!this.exports.ghostty_terminal_get_scrollback_hyperlink_uri) {
-      return null;
-    }
-
-    // Try with initial buffer, retry with larger if needed (for very long URLs)
-    const bufferSizes = [2048, 8192, 32768];
-
-    for (const bufSize of bufferSizes) {
-      const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
-
-      try {
-        const bytesWritten = this.exports.ghostty_terminal_get_scrollback_hyperlink_uri(
-          this.handle,
-          offset,
-          col,
-          bufPtr,
-          bufSize
-        );
-
-        // 0 means no hyperlink at this position
-        if (bytesWritten === 0) return null;
-
-        // -1 means buffer too small, try next size
-        if (bytesWritten === -1) continue;
-
-        // Negative values other than -1 are errors
-        if (bytesWritten < 0) return null;
-
-        const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesWritten);
-        return new TextDecoder().decode(bytes.slice());
-      } finally {
-        this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
-      }
-    }
-
-    // URI too long even for largest buffer
-    return null;
+    this.assertLive();
+    return this.impl.getScrollbackHyperlinkUri(offset, col);
   }
 
   /**
@@ -704,127 +832,39 @@ export class GhosttyTerminal {
    * Responses are generated by escape sequences like DSR (Device Status Report).
    */
   hasResponse(): boolean {
-    return this.exports.ghostty_terminal_has_response(this.handle);
+    this.assertLive();
+    return this.impl.hasResponse();
   }
 
   /**
-   * Read pending responses from the terminal.
-   * Returns the response string, or null if no responses pending.
-   *
-   * Responses are generated by escape sequences that require replies:
-   * - DSR 6 (cursor position): Returns \x1b[row;colR
-   * - DSR 5 (operating status): Returns \x1b[0n
+   * Read pending responses (in order, at most 256 bytes per call), or null if
+   * none are pending. Loop until null to drain.
    */
   readResponse(): string | null {
-    if (!this.hasResponse()) return null;
-
-    const bufSize = 256; // Most responses are small
-    const bufPtr = this.exports.ghostty_wasm_alloc_u8_array(bufSize);
-
-    try {
-      const bytesRead = this.exports.ghostty_terminal_read_response(this.handle, bufPtr, bufSize);
-
-      if (bytesRead <= 0) return null;
-
-      const bytes = new Uint8Array(this.memory.buffer, bufPtr, bytesRead);
-      return new TextDecoder().decode(bytes.slice());
-    } finally {
-      this.exports.ghostty_wasm_free_u8_array(bufPtr, bufSize);
-    }
+    this.assertLive();
+    return this.impl.readResponse();
   }
 
   /**
-   * Query arbitrary terminal mode by number
+   * Query arbitrary terminal mode by number (unknown modes report false).
    * @param mode Mode number (e.g., 25 for cursor visibility, 2004 for bracketed paste)
    * @param isAnsi True for ANSI modes, false for DEC modes (default: false)
    */
   getMode(mode: number, isAnsi: boolean = false): boolean {
-    return this.exports.ghostty_terminal_get_mode(this.handle, mode, isAnsi) !== 0;
+    this.assertLive();
+    return this.impl.getMode(mode, isAnsi);
   }
-
-  // ==========================================================================
-  // Private helpers
-  // ==========================================================================
-
-  private initCellPool(): void {
-    const total = this._cols * this._rows;
-    if (this.cellPool.length < total) {
-      for (let i = this.cellPool.length; i < total; i++) {
-        this.cellPool.push({
-          codepoint: 0,
-          fg_r: 204,
-          fg_g: 204,
-          fg_b: 204,
-          bg_r: 0,
-          bg_g: 0,
-          bg_b: 0,
-          flags: 0,
-          width: 1,
-          hyperlink_id: 0,
-          grapheme_len: 0,
-        });
-      }
-    }
-  }
-
-  private parseCellsIntoPool(ptr: number, count: number): void {
-    const buffer = this.memory.buffer;
-    const u8 = new Uint8Array(buffer, ptr, count * GhosttyTerminal.CELL_SIZE);
-    const view = new DataView(buffer, ptr, count * GhosttyTerminal.CELL_SIZE);
-
-    for (let i = 0; i < count; i++) {
-      const offset = i * GhosttyTerminal.CELL_SIZE;
-      const cell = this.cellPool[i];
-      cell.codepoint = view.getUint32(offset, true);
-      cell.fg_r = u8[offset + 4];
-      cell.fg_g = u8[offset + 5];
-      cell.fg_b = u8[offset + 6];
-      cell.bg_r = u8[offset + 7];
-      cell.bg_g = u8[offset + 8];
-      cell.bg_b = u8[offset + 9];
-      cell.flags = u8[offset + 10];
-      cell.width = u8[offset + 11];
-      cell.hyperlink_id = view.getUint16(offset + 12, true);
-      cell.grapheme_len = u8[offset + 14]; // grapheme_len is at byte 14
-    }
-  }
-
-  /** Small buffer for grapheme lookups (reused to avoid allocation) */
-  private graphemeBuffer: Uint32Array | null = null;
-  private graphemeBufferPtr: number = 0;
 
   /**
    * Get all codepoints for a grapheme cluster at the given position.
-   * For most cells this returns a single codepoint, but for complex scripts
-   * (Hindi, emoji with ZWJ, etc.) it returns multiple codepoints.
-   * @returns Array of codepoints, or null on error
+   * @returns Array of codepoints, or null for invalid coordinates
    */
   getGrapheme(row: number, col: number): number[] | null {
-    // Allocate buffer on first use (16 codepoints should be enough for any grapheme)
-    if (!this.graphemeBuffer) {
-      this.graphemeBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(16 * 4);
-      this.graphemeBuffer = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, 16);
-    }
-
-    const count = this.exports.ghostty_render_state_get_grapheme(
-      this.handle,
-      row,
-      col,
-      this.graphemeBufferPtr,
-      16
-    );
-
-    if (count < 0) return null;
-
-    // Re-create view in case memory grew
-    const view = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, count);
-    return Array.from(view);
+    this.assertLive();
+    return this.impl.getGrapheme(row, col);
   }
 
-  /**
-   * Get a string representation of the grapheme at the given position.
-   * This properly handles complex scripts like Hindi, emoji with ZWJ, etc.
-   */
+  /** The grapheme cluster at the given position as a string (' ' when empty). */
   getGraphemeString(row: number, col: number): string {
     const codepoints = this.getGrapheme(row, col);
     if (!codepoints || codepoints.length === 0) return ' ';
@@ -834,50 +874,20 @@ export class GhosttyTerminal {
   /**
    * Get all codepoints for a grapheme cluster in the scrollback buffer.
    * @param offset Scrollback line offset (0 = oldest)
-   * @param col Column index
-   * @returns Array of codepoints, or null on error
    */
   getScrollbackGrapheme(offset: number, col: number): number[] | null {
-    // Reuse the same buffer as getGrapheme
-    if (!this.graphemeBuffer) {
-      this.graphemeBufferPtr = this.exports.ghostty_wasm_alloc_u8_array(16 * 4);
-      this.graphemeBuffer = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, 16);
-    }
-
-    const count = this.exports.ghostty_terminal_get_scrollback_grapheme(
-      this.handle,
-      offset,
-      col,
-      this.graphemeBufferPtr,
-      16
-    );
-
-    if (count < 0) return null;
-
-    // Re-create view in case memory grew
-    const view = new Uint32Array(this.memory.buffer, this.graphemeBufferPtr, count);
-    return Array.from(view);
+    this.assertLive();
+    return this.impl.getScrollbackGrapheme(offset, col);
   }
 
-  /**
-   * Get a string representation of a grapheme in the scrollback buffer.
-   */
+  /** A scrollback grapheme cluster as a string (' ' when empty). */
   getScrollbackGraphemeString(offset: number, col: number): string {
     const codepoints = this.getScrollbackGrapheme(offset, col);
     if (!codepoints || codepoints.length === 0) return ' ';
     return String.fromCodePoint(...codepoints);
   }
 
-  private invalidateBuffers(): void {
-    if (this.viewportBufferPtr) {
-      this.exports.ghostty_wasm_free_u8_array(this.viewportBufferPtr, this.viewportBufferSize);
-      this.viewportBufferPtr = 0;
-      this.viewportBufferSize = 0;
-    }
-    if (this.graphemeBufferPtr) {
-      this.exports.ghostty_wasm_free_u8_array(this.graphemeBufferPtr, 16 * 4);
-      this.graphemeBufferPtr = 0;
-    }
-    this.graphemeBuffer = null;
+  private assertLive(): void {
+    if (this.freed) throw new Error('GhosttyTerminal has been freed');
   }
 }

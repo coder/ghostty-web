@@ -81,12 +81,12 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -100,6 +100,9 @@ jobs:
       - name: Check types
         run: bun run typecheck
 
+      - name: Build manifest-pinned native WASM before tests
+        run: bun run build:wasm
+
       - name: Run tests
         run: bun test
 
@@ -110,8 +113,8 @@ jobs:
         run: |
           SIZE=$(stat -c%s ghostty-vt.wasm)
           echo "WASM size: $SIZE bytes"
-          if [ "$SIZE" -gt 524288 ]; then
-            echo "❌ Error: WASM exceeds 512 KiB limit"
+          if [ "$SIZE" -gt 1048576 ]; then
+            echo "❌ Error: native libghostty-vt WASM exceeds the reviewed 1 MiB limit"
             exit 1
           fi
 
@@ -200,13 +203,13 @@ jobs:
         if: steps.release-commit.outputs.skip != 'true'
         uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.15
 
       - name: Setup Zig
         if: steps.release-commit.outputs.skip != 'true'
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Install dependencies
         if: steps.release-commit.outputs.skip != 'true'

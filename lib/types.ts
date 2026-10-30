@@ -354,7 +354,8 @@ export interface KeyEvent {
 // ============================================================================
 
 /**
- * Interface for libghostty-vt WASM exports
+ * Legacy ghostty-web patch ABI, retained for the rollback backend.
+ * Current libghostty-vt uses its own manifest-validated internal export types.
  */
 export interface GhosttyWasmExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
@@ -528,19 +529,29 @@ export const CURSOR_STRUCT_SIZE = 8;
 export const COLORS_STRUCT_SIZE = 12;
 
 /**
- * Terminal configuration (passed to ghostty_terminal_new_with_config)
- * All color values use 0xRRGGBB format. A value of 0 means "use default".
+ * Backend-neutral terminal configuration.
+ * RGB values use 0xRRGGBB. Without colorPresence, 0 retains legacy "use default"
+ * semantics; explicit presence lets the native backend distinguish pure black.
  */
 export interface GhosttyTerminalConfig {
+  /** Native page-granular physical-line budget; zero disables history. */
   scrollbackLimit?: number;
   fgColor?: number;
   bgColor?: number;
   cursorColor?: number;
   palette?: number[];
+  /** Explicit presence for native color configuration; absent keeps legacy 0=default semantics. */
+  colorPresence?: {
+    foreground?: boolean;
+    background?: boolean;
+    cursor?: boolean;
+    /** Bit i marks palette[i] as explicitly set, including pure black. */
+    palette?: number;
+  };
 }
 
 /**
- * Size of GhosttyTerminalConfig struct in WASM memory (bytes).
+ * Size of the legacy backend's packed configuration in WASM memory (bytes).
  * Layout: scrollback_limit(u32) + fg_color(u32) + bg_color(u32) + cursor_color(u32) + palette[16](u32*16)
  * Total: 4 + 4 + 4 + 4 + 64 = 80 bytes
  */
@@ -552,7 +563,8 @@ export const GHOSTTY_CONFIG_SIZE = 80;
 export type TerminalHandle = number;
 
 /**
- * Cell structure matching ghostty_cell_t in C (16 bytes)
+ * Public renderer cell DTO. It matches the legacy patch's 16-byte cell shape;
+ * the native backend translates upstream render cells into this stable shape.
  */
 export interface GhosttyCell {
   codepoint: number; // u32 (Unicode codepoint - first codepoint of grapheme)
@@ -564,8 +576,11 @@ export interface GhosttyCell {
   bg_b: number; // u8 (background blue)
   flags: number; // u8 (style flags bitfield)
   width: number; // u8 (character width: 1=normal, 2=wide, etc.)
-  hyperlink_id: number; // u16 (0 = no link, >0 = hyperlink ID in set)
+  hyperlink_id: number; // 0 = no link; >0 = link id, equal on cells of the same link (legacy: page-local u16; libghostty-vt: opaque, per URI)
   grapheme_len: number; // u8 (number of extra codepoints beyond first)
+  /** Native color presence; absent on the legacy packed-cell ABI. */
+  fg_default?: boolean;
+  bg_default?: boolean;
 }
 
 /**

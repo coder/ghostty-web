@@ -13,6 +13,60 @@
 import type { IBufferRange, ILink, ILinkProvider } from '../types';
 
 /**
+ * Built-in activation policy for OSC 8 URIs.
+ *
+ * An OSC 8 URI is chosen by whatever program writes to the terminal, so it is
+ * untrusted input. The built-in provider only opens URIs with the protocols the
+ * built-in UrlRegexProvider already recognises in plain text (its URL_REGEX:
+ * https://, http://, mailto:, ftp://, ssh://, git://, tel:, magnet:, gemini://,
+ * gopher://, news:), written in that exact form. Keep this list in sync with
+ * URL_REGEX in ./url-regex-provider.ts; it is deliberately not configurable.
+ * Everything else fails closed and is never passed to window.open, including
+ * javascript:, data:, vbscript:, file:, blob:, relative and protocol-relative
+ * references, unknown or custom schemes, unparsable URLs, and URIs containing
+ * whitespace or control characters (which URL parsing would silently strip,
+ * e.g. "java\tscript:" or a leading "\x01"). Custom providers registered with
+ * registerLinkProvider() keep their own activation logic.
+ */
+const ALLOWED_URI_PREFIXES = [
+  'https://',
+  'http://',
+  'mailto:',
+  'ftp://',
+  'ssh://',
+  'git://',
+  'tel:',
+  'magnet:',
+  'gemini://',
+  'gopher://',
+  'news:',
+] as const;
+
+/** C0 controls, space, DEL and C1 controls: never part of a URI we open. */
+const CONTROL_OR_SPACE = /[\u0000-\u0020\u007f-\u009f]/;
+
+/**
+ * The URL to open for an OSC 8 URI, or null when the built-in policy refuses it.
+ * Returns the parsed, normalised href that was validated.
+ */
+function openableOsc8Url(uri: string): string | null {
+  if (CONTROL_OR_SPACE.test(uri)) return null;
+  const lower = uri.toLowerCase();
+  const prefix = ALLOWED_URI_PREFIXES.find((allowed) => lower.startsWith(allowed));
+  if (!prefix) return null;
+  let url: URL;
+  try {
+    // No base URL: relative and protocol-relative references throw.
+    url = new URL(uri);
+  } catch {
+    return null;
+  }
+  // The parser must agree with the scheme we matched (no normalisation surprises).
+  if (url.protocol !== prefix.slice(0, prefix.indexOf(':') + 1)) return null;
+  return url.href;
+}
+
+/**
  * OSC 8 Hyperlink Provider
  *
  * Detects OSC 8 hyperlinks by scanning for hyperlink_id in cells.
@@ -96,13 +150,16 @@ export class OSC8LinkProvider implements ILinkProvider {
           end: { x: endX, y },
         };
 
+        // A refused URI still yields its link (so the explicit OSC 8 hyperlink keeps
+        // precedence over regex detection of the visible text), but never opens.
+        const openable = openableOsc8Url(uri);
         links.push({
           text: uri,
           range,
           activate: (event) => {
             // Open link if Ctrl/Cmd is pressed
-            if (event.ctrlKey || event.metaKey) {
-              window.open(uri, '_blank', 'noopener,noreferrer');
+            if (openable !== null && (event.ctrlKey || event.metaKey)) {
+              window.open(openable, '_blank', 'noopener,noreferrer');
             }
           },
         });

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ghostty-web browser regression harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #111111;
+      }
+      #hosts {
+        position: absolute;
+        left: 8px;
+        top: 48px;
+      }
+      .host {
+        position: relative;
+        display: inline-block;
+        vertical-align: top;
+        margin: 0 8px 8px 0;
+        outline: none;
+      }
+      #outside {
+        position: absolute;
+        left: 8px;
+        top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Focus target outside every terminal, for blur/focus tests. -->
+    <button id="outside" type="button">outside</button>
+    <div id="hosts"></div>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>
