@@ -1,5 +1,6 @@
+/** End-to-end Terminal behavior through its public API and DOM input. */
 import { expect, test } from 'bun:test';
-import { screenLines, withTerminal } from './session';
+import { screenLines, withTerminal } from './test-helpers';
 
 const key = (target: HTMLElement, key: string, code: string, ctrlKey = false) =>
   target.dispatchEvent(

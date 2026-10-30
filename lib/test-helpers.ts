@@ -35,3 +35,34 @@ export async function createIsolatedTerminal(
   const ghostty = await Ghostty.load();
   return new Terminal({ ...options, ghostty });
 }
+
+/**
+ * Opens an isolated terminal in a fresh DOM container for the duration of
+ * `body`, then disposes the terminal and removes the container.
+ */
+export async function withTerminal(
+  options: Omit<ITerminalOptions, 'ghostty'>,
+  body: (terminal: Terminal, container: HTMLElement) => void
+): Promise<void> {
+  const terminal = await createIsolatedTerminal(options);
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  try {
+    terminal.open(container);
+    body(terminal, container);
+  } finally {
+    terminal.dispose();
+    container.remove();
+  }
+}
+
+/** Text of each active-screen row; blank cells keep their columns, trailing blanks are trimmed. */
+export function screenLines(terminal: Terminal): string[] {
+  return Array.from({ length: terminal.rows }, (_, row) =>
+    terminal
+      .wasmTerm!.getLine(row)!
+      .map((cell) => String.fromCodePoint(cell.codepoint || 32))
+      .join('')
+      .replace(/ +$/, '')
+  );
+}

@@ -54,14 +54,13 @@
     "clean": "rm -rf dist",
     "preview": "vite preview",
     "test": "bun test",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.regression.json",
+    "typecheck": "tsc --noEmit",
     "fmt": "prettier --check .",
     "fmt:fix": "prettier --write --cache .",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "prepublishOnly": "bun run build",
-    "release-please": "tsx scripts/release-please-runner.ts",
-    "test:regression": "bun test tests/behavior"
+    "release-please": "tsx scripts/release-please-runner.ts"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.0",

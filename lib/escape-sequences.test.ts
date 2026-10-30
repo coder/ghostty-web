@@ -1,7 +1,11 @@
-/** Feed real terminal input and assert the resulting screen and cursor. */
+/**
+ * Data-driven escape-sequence tests: each fixture in
+ * tests/fixtures/escape-sequences.json is written to a real Terminal, whole and
+ * fragmented, and must produce the expected screen text and cursor position.
+ */
 import { describe, expect, test } from 'bun:test';
-import fixtures from '../regression/fixtures/vt.json';
-import { screenLines, withTerminal } from './session';
+import fixtures from '../tests/fixtures/escape-sequences.json';
+import { screenLines, withTerminal } from './test-helpers';
 
 for (const fixture of fixtures) {
   describe(fixture.description, () => {
