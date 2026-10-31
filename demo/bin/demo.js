@@ -721,6 +721,15 @@ if (DEV_MODE) {
               return;
             }
 
+            // Vite resolves a slash-less /demo as the demo/ npm package (it has a
+            // package.json) and fails. Forwarded URLs often open at / or drop the
+            // trailing slash, so send both to the demo page.
+            if (url.pathname === '/' || url.pathname === '/demo') {
+              res.writeHead(302, { Location: `/demo/${url.search}` });
+              res.end();
+              return;
+            }
+
             next();
           });
         },
