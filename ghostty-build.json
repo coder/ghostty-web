@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for the Ghostty WASM build (scripts/build-wasm.sh). Moving a pin: change ghosttyCommit, set wasmSha256 to null, build once with --allow-unverified (pin discovery only, never into the repo root, not for release), review, then record the printed sha256. A null wasmSha256 means unverified: normal builds refuse it.",
+  "$comment": "Single source of truth for the Ghostty WASM build (scripts/build-wasm.sh). Moving a pin: change ghosttyCommit, set wasmSha256 to null, build once with --allow-unverified (pin discovery only, never into the repo root, not for release), review, then record the printed sha256. A null wasmSha256 means unverified: normal builds refuse it. zigVersion is the reference compiler that produced wasmSha256; builds accept it or newer, and only byte-identical output counts as verified.",
   "schema": 1,
   "gitUrl": "https://github.com/ghostty-org/ghostty",
   "targets": {

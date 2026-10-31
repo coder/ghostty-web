@@ -19,6 +19,10 @@ permissions:
   contents: read
   id-token: write
 
+# A newer local Zig may publish an unverified WASM; CI and releases must not.
+env:
+  GHOSTTY_WASM_REQUIRE_VERIFIED: '1'
+
 jobs:
   publish-stable:
     name: publish stable packages

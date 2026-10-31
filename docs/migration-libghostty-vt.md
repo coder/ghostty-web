@@ -200,14 +200,17 @@ link provider for other protocols.
 
 - [`ghostty-build.json`](../ghostty-build.json) is the single source of truth: the
   upstream commit (`246f702876b924a1cb7cade1e99274d1470302fc`; the latest stable tag
-  checked, `v1.3.1`, lacks the terminal C API), the exact Zig version (0.16.0), the
+  checked, `v1.3.1`, lacks the terminal C API), the reference Zig version (0.16.0), the
   build arguments (`-Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall`),
   the expected sha256 and the size budget. No patches are applied.
 - `bun run build:wasm` runs [`scripts/build-wasm.sh`](../scripts/build-wasm.sh). It
   fetches only the pinned commit (by SHA) into an owned work directory, builds with
-  the exact Zig version (`ZIG_0_16_BIN` or `zig` on `PATH`), checks the WebAssembly
-  magic, size budget and sha256, and only then publishes `ghostty-vt.wasm`
-  atomically. It never touches the `ghostty/` submodule, global Git configuration or
+  Zig 0.16.0 or newer (`ZIG_0_16_BIN` or `zig` on `PATH`; the pinned source itself
+  requires 0.16.x), checks the WebAssembly magic, size budget and sha256, and only
+  then publishes `ghostty-vt.wasm` atomically. Output matching the pinned sha256 is
+  verified. With Zig 0.16.0 a mismatch is an error; with a newer compiler it is
+  published as an unverified local build unless `GHOSTTY_WASM_REQUIRE_VERIFIED=1`
+  (set in CI and release workflows) or `--require-verified` makes it an error. It never touches the `ghostty/` submodule, global Git configuration or
   global Zig caches. See `scripts/build-wasm.sh --help` for options.
 - Moving the pin: change `ghosttyCommit`, set `wasmSha256` to `null`, build once with
   `--allow-unverified` into a `--bundle` or a non-root `--out-dir`, review, then record

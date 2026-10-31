@@ -167,7 +167,10 @@ link provider with their own validation and activation policy.
 
 ghostty-web builds the upstream **libghostty-vt C/WASM API**, unpatched. The exact
 source revision, compiler version, hash and size budget live in
-[`ghostty-build.json`](./ghostty-build.json). The build requires **Zig 0.16.0** and Bun.
+[`ghostty-build.json`](./ghostty-build.json). The build needs Bun and **Zig 0.16.0 or newer**
+(the pinned Ghostty source itself requires a 0.16.x release). Only output that matches the
+pinned hash counts as verified: Zig 0.16.0 reproduces it, and a newer compiler that produces
+different bytes publishes a local build marked unverified, which is not for release.
 Builds use isolated owned directories and never modify the submodule checkout.
 
 ```bash

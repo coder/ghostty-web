@@ -4,6 +4,7 @@
 # Usage:
 #   scripts/build-wasm.sh [libghostty-vt] [--work-dir DIR] [--out-dir DIR]
 #                         [--bundle DIR] [--expect-sha256 HEX] [--allow-unverified]
+#                         [--require-verified]
 #
 # libghostty-vt is the only target (the manifest's single entry); naming it is optional.
 #
@@ -24,16 +25,23 @@
 #                    wasmSha256 is null. Needs --bundle or an explicit --out-dir that
 #                    is not the repo root. Marked unverified in build-info.json
 #                    ("verified": false) and <PREFIX>_WASM_VERIFIED=0.
+#   --require-verified
+#                    Fail unless the artifact matches the manifest wasmSha256 (also
+#                    enabled by GHOSTTY_WASM_REQUIRE_VERIFIED=1; CI and releases set it).
 #
-# Compiler: the manifest "zigEnv" variable (ZIG_0_16_BIN) or `zig` on PATH; the
-# version must equal the manifest "zigVersion" exactly.
+# Compiler: the manifest "zigEnv" variable (ZIG_0_16_BIN) or `zig` on PATH, at
+# least the manifest "zigVersion" (the reference compiler that produced
+# wasmSha256). The pinned Ghostty source itself only builds with the same
+# major.minor Zig and checks that on its own.
 # GHOSTTY_GIT_URL overrides the manifest gitUrl (it must serve the pinned SHA).
 #
 # Never touches the ghostty/ submodule, global Git config or global Zig caches.
 # Only the pinned commit is fetched (by SHA, depth 1); there is no "latest" mode.
-# The manifest wasmSha256 must match the build exactly. A null wasmSha256 (an
-# unverified pin) is refused unless --allow-unverified is given explicitly; the
-# reference lane always refuses it.
+# A build is verified when its sha256 equals the manifest wasmSha256, whatever the
+# compiler. With the reference Zig a mismatch is an error. With a newer Zig a
+# mismatching artifact is still published, marked unverified (fine for local
+# development, NOT FOR RELEASE), unless --require-verified is in effect. A null
+# wasmSha256 (an unverified pin) is refused unless --allow-unverified is given.
 set -euo pipefail
 
 die() {
@@ -63,6 +71,23 @@ json_string() {
   printf '"%s"' "$s"
 }
 
+# Succeeds when Zig version $1 is at least $2 (X.Y.Z). $1 may carry a pre-release
+# suffix (0.17.0-dev.12+abc); a pre-release sorts before its own X.Y.Z release.
+zig_at_least() {
+  local have=$1 want=$2 core rest i
+  local -a h w
+  core=${have%%[-+]*}
+  rest=${have#"$core"}
+  [[ "$core" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$want" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a h <<<"$core"
+  IFS=. read -r -a w <<<"$want"
+  for i in 0 1 2; do
+    if ((10#${h[i]} > 10#${w[i]})); then return 0; fi
+    if ((10#${h[i]} < 10#${w[i]})); then return 1; fi
+  done
+  [[ "$rest" != -* ]]
+}
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 manifest="$repo_root/ghostty-build.json"
@@ -82,6 +107,8 @@ out_arg=""
 bundle_arg=""
 expect_sha=""
 allow_unverified=0
+require_verified=0
+[[ "${GHOSTTY_WASM_REQUIRE_VERIFIED:-0}" != 1 ]] || require_verified=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --work-dir | --out-dir | --bundle | --expect-sha256)
@@ -95,8 +122,9 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --allow-unverified) allow_unverified=1 && shift ;;
+    --require-verified) require_verified=1 && shift ;;
     -h | --help)
-      sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,/^set -euo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     libghostty-vt) shift ;;
@@ -106,6 +134,8 @@ done
 [[ -z "$bundle_arg" || -z "$out_arg" ]] || die "--bundle and --out-dir are exclusive"
 [[ -z "$expect_sha" || "$expect_sha" =~ ^[0-9a-f]{64}$ ]] || die "--expect-sha256 must be 64 lowercase hex digits"
 if [[ "$allow_unverified" -eq 1 ]]; then
+  [[ "$require_verified" -eq 0 ]] ||
+    die "--allow-unverified conflicts with --require-verified / GHOSTTY_WASM_REQUIRE_VERIFIED=1"
   [[ -n "$bundle_arg" || -n "$out_arg" ]] ||
     die "--allow-unverified needs --bundle or an explicit --out-dir (never the default repo root)"
 fi
@@ -262,12 +292,17 @@ resolve_zig() {
     t_zig_bin=$requested
   else
     command -v "$requested" >/dev/null 2>&1 ||
-      die "Zig not found for $t_name; set $t_zig_env to a Zig $t_zig_version binary"
+      die "Zig not found for $t_name; set $t_zig_env to a Zig $t_zig_version (or newer) binary"
     t_zig_bin="$(command -v "$requested")"
   fi
   version="$("$t_zig_bin" version)" || die "'$t_zig_bin version' failed"
-  [[ "$version" == "$t_zig_version" ]] ||
-    die "$t_name needs Zig $t_zig_version (set $t_zig_env), but '$t_zig_bin' is $version"
+  [[ "$version" =~ ^[0-9A-Za-z.+-]+$ ]] || die "'$t_zig_bin version' printed an unexpected '$version'"
+  zig_at_least "$version" "$t_zig_version" ||
+    die "$t_name needs Zig $t_zig_version or newer (set $t_zig_env), but '$t_zig_bin' is $version"
+  t_zig_actual=$version
+  if [[ "$version" != "$t_zig_version" ]]; then
+    log "$t_name: using Zig $version; the pinned wasmSha256 comes from Zig $t_zig_version, so different output is published as unverified"
+  fi
 }
 
 # Fetch (by SHA) or verify the pinned source; it must be pristine.
@@ -318,10 +353,10 @@ build_target() {
   fi
 
   t_stage="$work_dir/stage/$t_name"
-  local cache="$work_dir/zig-cache/$t_zig_version" logf="$work_dir/logs/$t_name.log" start_s
+  local cache="$work_dir/zig-cache/$t_zig_actual" logf="$work_dir/logs/$t_name.log" start_s
   mkdir -p "$work_dir/stage" "$work_dir/logs" "$cache/global" "$cache/local" "$work_dir/meta"
   rm -rf "$t_stage"
-  log "$t_name: zig $t_zig_version build ${t_build_args[*]} (log: $logf)"
+  log "$t_name: zig $t_zig_actual build ${t_build_args[*]} (log: $logf)"
   start_s="$(date +%s)"
   if ! (
     cd "$t_src" &&
@@ -330,7 +365,10 @@ build_target() {
         --prefix "$t_stage" --cache-dir "$cache/local" --global-cache-dir "$cache/global"
   ) >"$logf" 2>&1; then
     tail -n 40 "$logf" >&2 || true
-    die "$t_name: zig build failed (full log: $logf)"
+    local hint=""
+    [[ "${t_zig_actual%%[-+]*}" == "${t_zig_version%.*}".* ]] ||
+      hint="; the pinned Ghostty source needs Zig ${t_zig_version%.*}.x, so use Zig $t_zig_version"
+    die "$t_name: zig build failed (full log: $logf)$hint"
   fi
   t_seconds="$(($(date +%s) - start_s))"
 
@@ -346,16 +384,20 @@ build_target() {
   [[ "$t_bytes" -le "$t_max_bytes" ]] ||
     die "$t_name: WASM is $t_bytes bytes, over the reviewed budget maxWasmBytes=$t_max_bytes"
   t_sha="$(sha256_of "$t_wasm")"
-  if [[ -n "$t_wasm_sha" && "$t_sha" != "$t_wasm_sha" ]]; then
-    die "$t_name: WASM sha256 $t_sha != ghostty-build.json wasmSha256 $t_wasm_sha (non-reproducible build or unreviewed change)"
-  fi
   if [[ -n "$expect_sha" && "$t_sha" != "$expect_sha" ]]; then
     die "$t_name: WASM sha256 $t_sha != expected $expect_sha"
   fi
-  t_verified=true
+  t_verified=false
   if [[ -z "$t_wasm_sha" ]]; then
-    t_verified=false
     log "$t_name: WARNING: UNVERIFIED pin build (--allow-unverified), NOT FOR RELEASE; built $t_sha"
+  elif [[ "$t_sha" == "$t_wasm_sha" ]]; then
+    t_verified=true
+  elif [[ "$t_zig_actual" == "$t_zig_version" ]]; then
+    die "$t_name: WASM sha256 $t_sha != ghostty-build.json wasmSha256 $t_wasm_sha (non-reproducible build or unreviewed change)"
+  elif [[ "$require_verified" -eq 1 ]]; then
+    die "$t_name: Zig $t_zig_actual built sha256 $t_sha, not the pinned $t_wasm_sha from Zig $t_zig_version; a verified build (--require-verified / GHOSTTY_WASM_REQUIRE_VERIFIED=1) needs Zig $t_zig_version"
+  else
+    log "$t_name: WARNING: Zig $t_zig_actual built sha256 $t_sha, not the pinned $t_wasm_sha from Zig $t_zig_version; publishing an UNVERIFIED build (fine for local development, NOT FOR RELEASE; use Zig $t_zig_version to reproduce the pin)"
   fi
 
   t_info="$work_dir/meta/$t_name.build-info.json"
@@ -367,7 +409,8 @@ build_target() {
   "ghosttyCommit": "$t_commit",
   "ghosttyTree": "$t_tree",
   "gitUrl": $(json_string "$t_git_url"),
-  "zigVersion": "$t_zig_version",
+  "zigVersion": $(json_string "$t_zig_actual"),
+  "referenceZigVersion": "$t_zig_version",
   "buildArgs": [$build_args_json],
   "artifact": $(json_string "$t_artifact"),
   "wasmSha256": "$t_sha",
@@ -412,5 +455,5 @@ else
 fi
 echo "${prefix}_WASM_BYTES=$t_bytes"
 echo "${prefix}_BUILD_INFO=$t_info"
-log "$t_name: published $published ($t_bytes bytes, sha256 $t_sha, Zig $t_zig_version)"
+log "$t_name: published $published ($t_bytes bytes, sha256 $t_sha, Zig $t_zig_actual, verified=$t_verified)"
 rm -rf "$work_dir/stage"

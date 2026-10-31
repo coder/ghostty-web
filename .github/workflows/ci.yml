@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+# A newer local Zig may publish an unverified WASM; CI and releases must not.
+env:
+  GHOSTTY_WASM_REQUIRE_VERIFIED: '1'
+
 jobs:
   fmt:
     name: fmt
