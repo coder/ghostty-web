@@ -241,6 +241,41 @@ describe('Terminal', () => {
 
       term.dispose();
     });
+
+    test('onBell fires on a bell character in bytes', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      let bellFired = false;
+      term.onBell(() => {
+        bellFired = true;
+      });
+
+      term.write(new Uint8Array([0x61, 0x07]));
+
+      expect(bellFired).toBe(true);
+
+      term.dispose();
+    });
+
+    test('onBell does not fire on the BEL that ends an OSC sequence', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      let bells = 0;
+      term.onBell(() => {
+        bells++;
+      });
+
+      term.write('\x1b]2;title\x07');
+      term.write(new TextEncoder().encode('\x1b]8;;https://example.com\x07link\x1b]8;;\x07'));
+      expect(bells).toBe(0);
+
+      term.write('\x1b]2;title\x07\x07');
+      expect(bells).toBe(1);
+
+      term.dispose();
+    });
   });
 
   describe('Writing', () => {
@@ -1019,6 +1054,23 @@ describe('onTitleChange event', () => {
       term.write('\x1b]2;Title with ST\x1b\\');
 
       expect(receivedTitle).toBe('Title with ST');
+      term.dispose();
+    });
+
+    test('should fire when the sequence is written as bytes', async () => {
+      const term = await createIsolatedTerminal({ cols: 80, rows: 24 });
+      // Using shared container from beforeEach
+      if (!container) return;
+      term.open(container!);
+
+      let receivedTitle = '';
+      term.onTitleChange((title) => {
+        receivedTitle = title;
+      });
+
+      term.write(new TextEncoder().encode('\x1b]2;Bytes · Title\x07'));
+
+      expect(receivedTitle).toBe('Bytes · Title');
       term.dispose();
     });
   });
