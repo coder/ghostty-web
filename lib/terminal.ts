@@ -38,6 +38,11 @@ import { CanvasRenderer } from './renderer';
 import { SelectionManager } from './selection-manager';
 import type { ILink, ILinkProvider } from './types';
 
+/** An OSC sequence with its BEL or ST terminator. */
+const OSC_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+const utf8Decoder = new TextDecoder();
+
 // ============================================================================
 // Terminal Class
 // ============================================================================
@@ -566,11 +571,18 @@ export class Terminal implements ITerminalCore {
     // These need to be sent back to the PTY via onData
     this.processTerminalResponses();
 
-    // Check for bell character (BEL, \x07)
-    // WASM doesn't expose bell events, so we detect it in the data stream
-    if (typeof data === 'string' && data.includes('\x07')) {
-      this.bellEmitter.fire();
-    } else if (data instanceof Uint8Array && data.includes(0x07)) {
+    // WASM doesn't expose bell or title events, so we detect them in the data
+    // stream. Bytes are only decoded when they hold a BEL or an OSC sequence.
+    const text =
+      typeof data === 'string'
+        ? data
+        : data.includes(0x07) || hasOscStart(data)
+          ? utf8Decoder.decode(data)
+          : '';
+
+    // Check for bell character (BEL, \x07), skipping the BEL that ends an OSC
+    // sequence (titles, hyperlinks, clipboard)
+    if (text.includes('\x07') && text.replace(OSC_SEQUENCE, '').includes('\x07')) {
       this.bellEmitter.fire();
     }
 
@@ -584,8 +596,8 @@ export class Terminal implements ITerminalCore {
 
     // Check for title changes (OSC 0, 1, 2 sequences)
     // This is a simplified implementation - Ghostty WASM may provide this
-    if (typeof data === 'string' && data.includes('\x1b]')) {
-      this.checkForTitleChange(data);
+    if (text.includes('\x1b]')) {
+      this.checkForTitleChange(text);
     }
 
     // Call callback if provided
@@ -1913,4 +1925,12 @@ export class Terminal implements ITerminalCore {
     this.assertOpen();
     return this.wasmTerm!.hasMouseTracking();
   }
+}
+
+/** Whether bytes contain ESC ] (the start of an OSC sequence). */
+function hasOscStart(data: Uint8Array): boolean {
+  for (let i = data.indexOf(0x1b); i !== -1; i = data.indexOf(0x1b, i + 1)) {
+    if (data[i + 1] === 0x5d) return true;
+  }
+  return false;
 }
