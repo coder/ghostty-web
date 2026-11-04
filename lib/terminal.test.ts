@@ -9,7 +9,8 @@
  * Uses createIsolatedTerminal() to ensure each test gets its own WASM instance.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { CanvasRenderer } from './renderer';
 import type { Terminal } from './terminal';
 import { createIsolatedTerminal } from './test-helpers';
 
@@ -445,6 +446,93 @@ describe('Terminal', () => {
   });
 
   describe('Disposal', () => {
+    test('removes host input listeners without removing unrelated listeners', async () => {
+      const term = await createIsolatedTerminal();
+      let wheelEvents = 0;
+      let inputEvents = 0;
+      const onWheel = () => wheelEvents++;
+      const onInput = () => inputEvents++;
+      container.addEventListener('wheel', onWheel, { capture: true });
+      container.addEventListener('beforeinput', onInput);
+
+      try {
+        term.open(container);
+        const child = document.createElement('input');
+        container.appendChild(child);
+        const hostInput = new InputEvent('beforeinput', { bubbles: true, cancelable: true });
+        const childInput = new InputEvent('beforeinput', { bubbles: true, cancelable: true });
+        const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+        container.dispatchEvent(hostInput);
+        child.dispatchEvent(childInput);
+        container.dispatchEvent(wheel);
+        expect(hostInput.defaultPrevented).toBe(true);
+        expect(childInput.defaultPrevented).toBe(false);
+        expect(wheel.defaultPrevented).toBe(true);
+
+        term.dispose();
+        const disposedInput = new InputEvent('beforeinput', { bubbles: true, cancelable: true });
+        const disposedWheel = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+        container.dispatchEvent(disposedInput);
+        container.dispatchEvent(disposedWheel);
+        expect(disposedInput.defaultPrevented).toBe(false);
+        expect(disposedWheel.defaultPrevented).toBe(false);
+        expect(inputEvents).toBe(3);
+        expect(wheelEvents).toBe(2);
+      } finally {
+        term.dispose();
+        container.removeEventListener('wheel', onWheel, { capture: true });
+        container.removeEventListener('beforeinput', onInput);
+      }
+    });
+
+    test('reusing a host only invokes the current terminal wheel handler', async () => {
+      const calls = [0, 0, 0];
+      for (let index = 0; index < calls.length; index++) {
+        const term = await createIsolatedTerminal();
+        term.attachCustomWheelEventHandler(() => {
+          calls[index]++;
+          return true;
+        });
+        try {
+          term.open(container);
+          container.dispatchEvent(new WheelEvent('wheel', { cancelable: true }));
+          expect(calls).toEqual(calls.map((_, slot) => (slot <= index ? 1 : 0)));
+        } finally {
+          term.dispose();
+        }
+        const wheel = new WheelEvent('wheel', { cancelable: true });
+        container.dispatchEvent(wheel);
+        expect(wheel.defaultPrevented).toBe(false);
+        expect(calls).toEqual(calls.map((_, slot) => (slot <= index ? 1 : 0)));
+      }
+    });
+
+    test('failed open removes host listeners registered before the renderer throws', async () => {
+      const term = await createIsolatedTerminal();
+      let wheelCalls = 0;
+      term.attachCustomWheelEventHandler(() => {
+        wheelCalls++;
+        return true;
+      });
+      const render = spyOn(CanvasRenderer.prototype, 'render').mockImplementation(() => {
+        throw new Error('renderer failed');
+      });
+      try {
+        expect(() => term.open(container)).toThrow('renderer failed');
+        const input = new InputEvent('beforeinput', { bubbles: true, cancelable: true });
+        const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+        container.dispatchEvent(input);
+        container.dispatchEvent(wheel);
+        expect(input.defaultPrevented).toBe(false);
+        expect(wheel.defaultPrevented).toBe(false);
+        expect(wheelCalls).toBe(0);
+        expect(container.children).toHaveLength(0);
+      } finally {
+        render.mockRestore();
+        term.dispose();
+      }
+    });
+
     test('dispose() can be called multiple times', async () => {
       const term = await createIsolatedTerminal();
       term.open(container!);
