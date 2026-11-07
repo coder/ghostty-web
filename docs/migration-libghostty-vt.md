@@ -199,8 +199,9 @@ link provider for other protocols.
 ## How the WASM is built and pinned
 
 - [`ghostty-build.json`](../ghostty-build.json) is the single source of truth: the
-  upstream commit (`246f702876b924a1cb7cade1e99274d1470302fc`; the latest stable tag
-  checked, `v1.3.1`, lacks the terminal C API), the reference Zig version (0.16.0), the
+  upstream commit (`246f702876b924a1cb7cade1e99274d1470302fc`, a `main` commit chosen
+  before the stable v1.4.0 tag with the terminal C API was released on 2026-10-27;
+  moving to v1.4.0 needs Zig 0.17), the reference Zig version (0.16.0), the
   build arguments (`-Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall`),
   the expected sha256 and the size budget. No patches are applied.
 - `bun run build:wasm` runs [`scripts/build-wasm.sh`](../scripts/build-wasm.sh). It
@@ -210,10 +211,13 @@ link provider for other protocols.
   then publishes `ghostty-vt.wasm` atomically. Output matching the pinned sha256 is
   verified. With Zig 0.16.0 a mismatch is an error; with a newer compiler it is
   published as an unverified local build unless `GHOSTTY_WASM_REQUIRE_VERIFIED=1`
-  (set in CI and release workflows) or `--require-verified` makes it an error. It never touches the `ghostty/` submodule, global Git configuration or
-  global Zig caches. See `scripts/build-wasm.sh --help` for options.
+  (set in CI and release workflows) or `--require-verified` makes it an error. It
+  never touches the `ghostty/` submodule, global Git configuration or global Zig
+  caches. See `scripts/build-wasm.sh --help` for options.
 - Moving the pin: change `ghosttyCommit`, set `wasmSha256` to `null`, build once with
-  `--allow-unverified` into a `--bundle` or a non-root `--out-dir`, review, then record
+  `--allow-unverified` into an `--out-dir` other than the repo root, review, then record
   the printed sha256. Normal builds refuse an unverified pin.
-- The npm package ships `ghostty-vt.wasm`; `init()` and `Ghostty.load()` resolve it
-  next to the package, or load an explicit path.
+- The bundled library inlines `ghostty-vt.wasm` as a `data:` URL, which `init()` and
+  `Ghostty.load()` use by default; a strict `connect-src` Content-Security-Policy
+  blocks that. The npm package also ships the file: serve it yourself and pass its URL
+  to `Ghostty.load(url)`, then `new Terminal({ ghostty })`. `init()` takes no path.

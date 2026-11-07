@@ -11,9 +11,7 @@
       "buildArgs": ["-Demit-lib-vt", "-Dtarget=wasm32-freestanding", "-Doptimize=ReleaseSmall"],
       "artifact": "ghostty-vt.wasm",
       "wasmSha256": "8b218c0c750fc74e63f3ebf4005fb6967c7b1fba2f2a84d19a08bd4ca5812f49",
-      "maxWasmBytes": 1048576,
-      "envPrefix": "GHOSTTY_REFERENCE",
-      "envFile": "reference.env"
+      "maxWasmBytes": 1048576
     }
   }
 }
