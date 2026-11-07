@@ -881,6 +881,81 @@ describe('cursor', () => {
   });
 });
 
+describe('bad cells', () => {
+  const cell = (codepoint: number, grapheme_len = 0): GhosttyCell => ({
+    ...BLANK,
+    codepoint,
+    grapheme_len,
+  });
+
+  /** A renderer whose retained 2D context records drawn text and save/restore depth. */
+  function recordingRenderer() {
+    const renderer = new CanvasRenderer(document.createElement('canvas'));
+    const ctx = (renderer as unknown as { ctx: CanvasRenderingContext2D }).ctx;
+    const drawn: string[] = [];
+    const depth = { value: 0 };
+    ctx.fillText = (text: string) => {
+      drawn.push(text);
+    };
+    const save = ctx.save.bind(ctx);
+    const restore = ctx.restore.bind(ctx);
+    ctx.save = () => {
+      depth.value++;
+      save();
+    };
+    ctx.restore = () => {
+      depth.value--;
+      restore();
+    };
+    return { renderer, drawn, depth };
+  }
+
+  function screenOf(rows: GhosttyCell[][], extra: Partial<IRenderable> = {}): IRenderable {
+    return {
+      ...cleanScreen(rows[0].length, rows.length),
+      getLine: (y: number) => rows[y],
+      ...extra,
+    };
+  }
+
+  test('an out-of-range codepoint draws U+FFFD instead of aborting the frame', () => {
+    const { renderer, drawn, depth } = recordingRenderer();
+    try {
+      const screen = screenOf([[cell(0x41), cell(0x110000), cell(-1), cell(0x42)], [cell(0x43)]]);
+      expect(() => renderer.render(screen, true, 0, undefined, 0)).not.toThrow();
+      // Row 0 completes after the bad cells, and row 1 still paints (its text is
+      // also drawn into row 0's band in the overflow pass).
+      expect(drawn.slice(0, 4)).toEqual(['A', '\ufffd', '\ufffd', 'B']);
+      expect(drawn).toContain('C');
+      expect(depth.value).toBe(0);
+    } finally {
+      renderer.dispose();
+    }
+  });
+
+  test('a throw while drawing a row restores the canvas state for later frames', () => {
+    const { renderer, drawn, depth } = recordingRenderer();
+    try {
+      let fail = true;
+      const screen = screenOf([[cell(0x41, 1)], [cell(0x42)]], {
+        getGraphemeString: () => {
+          if (fail) throw new Error('bad cluster');
+          return 'A';
+        },
+      });
+      expect(() => renderer.render(screen, true, 0, undefined, 0)).toThrow('bad cluster');
+      // Row 0's clip and transform would otherwise confine every later frame to its band.
+      expect(depth.value).toBe(0);
+      fail = false;
+      drawn.length = 0;
+      renderer.render(screen, true, 0, undefined, 0);
+      expect(new Set(drawn)).toEqual(new Set(['A', 'B']));
+    } finally {
+      renderer.dispose();
+    }
+  });
+});
+
 describe('selection repaint', () => {
   /** An open 8x6 Terminal with a hidden cursor; `frame()` renders incrementally and returns the repainted rows. */
   async function withSelection(

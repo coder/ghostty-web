@@ -671,6 +671,22 @@ export class CanvasRenderer {
     // they tile exactly at any devicePixelRatio: no anti-aliased seams between
     // cells and no bleed into a neighbouring row's band.
     this.ctx.save();
+    // A throw while drawing must not leave this row's transform and clip on the
+    // context: every later frame would only paint inside this band.
+    try {
+      this.renderLineBand(line, y, top, bottom, right);
+    } finally {
+      this.ctx.restore();
+    }
+  }
+
+  private renderLineBand(
+    line: GhosttyCell[],
+    y: number,
+    top: number,
+    bottom: number,
+    right: number
+  ): void {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     // Clear line background then fill with theme color.
@@ -716,7 +732,6 @@ export class CanvasRenderer {
         this.renderCellText(cell, x, y + 1);
       }
     }
-    this.ctx.restore();
   }
 
   /** Draw a line's text and decorations (pass 2), in CSS pixels. */
@@ -763,8 +778,13 @@ export class CanvasRenderer {
           : this.currentBuffer?.getGraphemeString?.(y - this.currentRowOffset, x);
       if (cluster !== undefined) return cluster;
     }
-    // Simple cell - single codepoint
-    return String.fromCodePoint(cell.codepoint || 32); // Default to space if null
+    // Simple cell - single codepoint. A renderable may report any number; an
+    // invalid one draws U+FFFD instead of throwing out of the frame.
+    const codepoint = cell.codepoint;
+    if (!codepoint) return ' ';
+    return Number.isInteger(codepoint) && codepoint > 0 && codepoint <= 0x10ffff
+      ? String.fromCodePoint(codepoint)
+      : '\ufffd';
   }
 
   /**
@@ -980,9 +1000,25 @@ export class CanvasRenderer {
     const bottom = this.deviceY(y + 1);
 
     this.ctx.save();
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.fillStyle = this.theme.cursor;
+    try {
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.fillStyle = this.theme.cursor;
+      this.drawCursorShape(style, x, y, left, right, top, bottom, dpr);
+    } finally {
+      this.ctx.restore();
+    }
+  }
 
+  private drawCursorShape(
+    style: 'block' | 'underline' | 'bar',
+    x: number,
+    y: number,
+    left: number,
+    right: number,
+    top: number,
+    bottom: number,
+    dpr: number
+  ): void {
     switch (style) {
       case 'block':
         // Full cell block
@@ -1016,7 +1052,6 @@ export class CanvasRenderer {
         break;
       }
     }
-    this.ctx.restore();
   }
 
   // ==========================================================================
