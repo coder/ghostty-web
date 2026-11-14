@@ -272,6 +272,40 @@ describe('Terminal', () => {
       term.dispose();
     });
 
+    test('write() with an empty string is a no-op', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      expect(() => term.write('')).not.toThrow();
+      term.write('after');
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe('after');
+
+      term.dispose();
+    });
+
+    test('write() with an empty Uint8Array is a no-op', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      expect(() => term.write(new Uint8Array(0))).not.toThrow();
+
+      term.dispose();
+    });
+
+    test('write() with empty data still calls the callback', async () => {
+      const term = await createIsolatedTerminal();
+      term.open(container!);
+
+      let called = false;
+      term.write('', () => {
+        called = true;
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(called).toBe(true);
+
+      term.dispose();
+    });
+
     test('writeln() adds newline', async () => {
       const term = await createIsolatedTerminal();
       term.open(container!);
