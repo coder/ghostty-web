@@ -647,7 +647,11 @@ export class CanvasRenderer {
       // Simple cell - single codepoint
       char = String.fromCodePoint(cell.codepoint || 32); // Default to space if null
     }
-    this.ctx.fillText(char, textX, textY);
+    // Font glyphs can leave gaps between adjacent block elements. Draw their
+    // geometry directly, but preserve the font path for grapheme clusters.
+    if (cell.grapheme_len > 0 || !this.renderBlockElement(cell, x, y)) {
+      this.ctx.fillText(char, textX, textY);
+    }
 
     // Reset alpha
     if (cell.flags & CellFlags.FAINT) {
@@ -711,6 +715,50 @@ export class CanvasRenderer {
         this.ctx.stroke();
       }
     }
+  }
+
+  /** Render solid Unicode block elements on shared physical-pixel edges. */
+  private renderBlockElement(cell: GhosttyCell, x: number, y: number): boolean {
+    const code = cell.codepoint;
+    // Coordinates are expressed in eighths of a terminal cell.
+    let rectangles: number[][];
+    if (code === 0x2580) {
+      rectangles = [[0, 0, 8, 4]]; // Upper half
+    } else if (code >= 0x2581 && code <= 0x2588) {
+      rectangles = [[0, 8 - (code - 0x2580), 8, 8]]; // Lower eighths through full block
+    } else if (code >= 0x2589 && code <= 0x258f) {
+      rectangles = [[0, 0, 0x2590 - code, 8]]; // Left seven eighths through one eighth
+    } else if (code === 0x2590) {
+      rectangles = [[4, 0, 8, 8]]; // Right half
+    } else if (code === 0x2594) {
+      rectangles = [[0, 0, 8, 1]]; // Upper eighth
+    } else if (code === 0x2595) {
+      rectangles = [[7, 0, 8, 8]]; // Right eighth
+    } else if (code >= 0x2596 && code <= 0x259f) {
+      // Bits represent upper-left, upper-right, lower-left, lower-right.
+      const mask = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14][code - 0x2596];
+      rectangles = [];
+      for (let quadrant = 0; quadrant < 4; quadrant++) {
+        if (mask & (1 << quadrant)) {
+          const left = (quadrant % 2) * 4;
+          const top = Math.floor(quadrant / 2) * 4;
+          rectangles.push([left, top, left + 4, top + 4]);
+        }
+      }
+    } else {
+      // Shades, box drawing, and ordinary text retain font rendering.
+      return false;
+    }
+
+    const scale = this.devicePixelRatio;
+    for (const [left, top, right, bottom] of rectangles) {
+      const x1 = Math.round((x + (left / 8) * cell.width) * this.metrics.width * scale);
+      const x2 = Math.round((x + (right / 8) * cell.width) * this.metrics.width * scale);
+      const y1 = Math.round((y + top / 8) * this.metrics.height * scale);
+      const y2 = Math.round((y + bottom / 8) * this.metrics.height * scale);
+      this.ctx.fillRect(x1 / scale, y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale);
+    }
+    return true;
   }
 
   /**
