@@ -440,7 +440,7 @@ new file mode 100644
 index 000000000..73ae2e6fa
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1130 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -471,6 +471,8 @@ index 000000000..73ae2e6fa
 +const point = @import("../point.zig");
 +const Style = @import("../style.zig").Style;
 +const device_status = @import("../device_status.zig");
++const pagepkg = @import("../page.zig");
++const Page = pagepkg.Page;
 +
 +const log = std.log.scoped(.terminal_c);
 +
@@ -822,10 +824,22 @@ index 000000000..73ae2e6fa
 +    const wrapper = alloc.create(TerminalWrapper) catch return null;
 +
 +    // Parse config or use defaults
-+    const scrollback_limit: usize = if (config_) |cfg|
++    // scrollback_limit comes from JS as a line count; convert to bytes
++    // because Terminal.init expects max_scrollback in bytes.
++    const scrollback_lines: usize = if (config_) |cfg|
 +        if (cfg.scrollback_limit == 0) std.math.maxInt(usize) else cfg.scrollback_limit
 +    else
 +        10_000;
++    const scrollback_limit: usize = if (scrollback_lines == std.math.maxInt(usize))
++        std.math.maxInt(usize)
++    else blk: {
++        // Convert lines to bytes: each page holds cap.rows rows in total_size bytes
++        const cap = pagepkg.std_capacity.adjust(.{ .cols = @intCast(cols) }) catch
++            break :blk scrollback_lines * 1024; // fallback: ~1KB/line
++        const page_size = Page.layout(cap).total_size;
++        const bytes_per_line = page_size / cap.rows;
++        break :blk scrollback_lines * bytes_per_line;
++    };
 +
 +    // Setup terminal colors
 +    var colors = Terminal.Colors.default;
@@ -1023,7 +1037,9 @@ index 000000000..73ae2e6fa
 +}
 +
 +/// Get ALL viewport cells in one call - reads directly from terminal screen buffer.
-+/// This bypasses the RenderState cache to ensure fresh data for all rows.
++/// Uses the cached row pins from RenderState (built during update()) to read
++/// cell data. This matches the native renderer which uses the same cached pins
++/// rather than re-iterating the page list.
 +/// Returns total cells written (rows * cols), or -1 on error.
 +pub fn renderStateGetViewport(
 +    ptr: ?*anyopaque,
@@ -1032,63 +1048,54 @@ index 000000000..73ae2e6fa
 +) callconv(.c) c_int {
 +    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
 +    const rs = &wrapper.render_state;
-+    const t = &wrapper.terminal;
 +    const rows = rs.rows;
 +    const cols = rs.cols;
 +    const total: usize = @as(usize, rows) * cols;
 +
 +    if (buf_size < total) return -1;
 +
-+    // Read directly from terminal's active screen, bypassing RenderState cache.
-+    // This ensures we always get fresh data for ALL rows, not just dirty ones.
-+    const pages = &t.screens.active.pages;
++    const default_cell: GhosttyCell = .{
++        .codepoint = 0,
++        .fg_r = rs.colors.foreground.r,
++        .fg_g = rs.colors.foreground.g,
++        .fg_b = rs.colors.foreground.b,
++        .bg_r = rs.colors.background.r,
++        .bg_g = rs.colors.background.g,
++        .bg_b = rs.colors.background.b,
++        .flags = 0,
++        .width = 1,
++        .hyperlink_id = 0,
++    };
++
++    // Use the cached row pins from RenderState, built during update().
++    // The native renderer also reads from these cached pins rather than
++    // re-iterating the page list, which avoids any inconsistency from
++    // independent top-left resolution across page boundaries.
++    const row_pins = rs.row_data.items(.pin);
 +
 +    var idx: usize = 0;
 +    for (0..rows) |y| {
-+        // Get the row from the active viewport
-+        const pin = pages.pin(.{ .active = .{ .y = @intCast(y) } }) orelse {
-+            // Row doesn't exist, fill with defaults
++        if (y >= row_pins.len) {
++            // Row not in cache — fill with defaults
 +            for (0..cols) |_| {
-+                out[idx] = .{
-+                    .codepoint = 0,
-+                    .fg_r = rs.colors.foreground.r,
-+                    .fg_g = rs.colors.foreground.g,
-+                    .fg_b = rs.colors.foreground.b,
-+                    .bg_r = rs.colors.background.r,
-+                    .bg_g = rs.colors.background.g,
-+                    .bg_b = rs.colors.background.b,
-+                    .flags = 0,
-+                    .width = 1,
-+                    .hyperlink_id = 0,
-+                };
++                out[idx] = default_cell;
 +                idx += 1;
 +            }
 +            continue;
-+        };
++        }
 +
-+        const cells = pin.cells(.all);
-+        const page = pin.node.data;
++        const row_pin = row_pins[y];
++        const row_cells = row_pin.cells(.all);
++        const page = &row_pin.node.data;
 +
 +        for (0..cols) |x| {
-+            if (x >= cells.len) {
-+                // Past end of row, fill with default
-+                out[idx] = .{
-+                    .codepoint = 0,
-+                    .fg_r = rs.colors.foreground.r,
-+                    .fg_g = rs.colors.foreground.g,
-+                    .fg_b = rs.colors.foreground.b,
-+                    .bg_r = rs.colors.background.r,
-+                    .bg_g = rs.colors.background.g,
-+                    .bg_b = rs.colors.background.b,
-+                    .flags = 0,
-+                    .width = 1,
-+                    .hyperlink_id = 0,
-+                };
++            if (x >= row_cells.len) {
++                out[idx] = default_cell;
 +                idx += 1;
 +                continue;
 +            }
 +
-+            const cell = &cells[x];
++            const cell = &row_cells[x];
 +
 +            // Get style from page styles (cell has style_id)
 +            const sty: Style = if (cell.style_id > 0)
