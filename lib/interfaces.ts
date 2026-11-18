@@ -19,6 +19,9 @@ export interface ITerminalOptions {
   convertEol?: boolean; // Convert \n to \r\n (default: false)
   disableStdin?: boolean; // Disable keyboard input (default: false)
 
+  // Focus options
+  focusOnOpen?: boolean; // Auto-focus terminal on open (default: true)
+
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
 
