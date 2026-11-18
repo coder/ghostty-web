@@ -7,11 +7,11 @@
 3. After changes land on `main`, `.github/workflows/release-please.yml` opens or updates one Release Please PR.
 4. Merging the Release Please PR creates one `vX.Y.Z-rc.N` tag and a GitHub prerelease while this RC configuration is enabled. The first expected release candidate is `v0.5.0-rc.0`.
 5. The Release Please workflow explicitly dispatches `.github/workflows/publish.yml` for the tag because workflows created with `GITHUB_TOKEN` do not reliably trigger follow-up workflows automatically.
-6. `publish.yml` validates the tag and source versions, runs the release quality gates, publishes `ghostty-web`, then publishes `@ghostty-web/demo` with its `ghostty-web` dependency pinned to the exact release version.
+6. `publish.yml` waits for a maintainer to approve the run in the `npm-release` environment, then validates the tag and source versions, runs the release quality gates, publishes `ghostty-web`, then publishes `@ghostty-web/demo` with its `ghostty-web` dependency pinned to the exact release version.
 
 ## Next publishes
 
-`.github/workflows/publish.yml` also publishes `ghostty-web@next` and `@ghostty-web/demo@next` after successful CI on `main`. Release-only squash commits whose subject matches `chore(release): ...` are skipped so version/changelog-only release PR merges do not create noisy prereleases.
+`.github/workflows/publish.yml` also publishes `ghostty-web@next` and `@ghostty-web/demo@next` after successful CI on `main`, from the `npm-next` environment. Release-only squash commits whose subject matches `chore(release): ...` are skipped so version/changelog-only release PR merges do not create noisy prereleases.
 
 Stable, release-candidate, and `next` publishing intentionally live in this single workflow file because npm trusted publishing is configured against a workflow identity.
 
@@ -28,13 +28,13 @@ When the pipeline has been test-driven successfully and maintainers are ready fo
 ## Manual recovery
 
 - Rerun `Release Please` on `main` to recreate or update a release PR.
-- Dispatch `publish.yml` manually with an existing `vX.Y.Z-rc.N` or `vX.Y.Z` tag to retry npm publishing.
+- Dispatch `publish.yml` manually with an existing `vX.Y.Z-rc.N` or `vX.Y.Z` tag to retry npm publishing. The run needs the same approval.
 - Publish jobs are idempotent: if a package version already exists on npm, the workflow skips publishing and attempts to repair the matching dist-tag (`rc` for `0.5.0-rc.0`, `latest` for stable versions).
 
 ## Required admin setup
 
 Before the first automated stable release:
 
-- Configure npm trusted publishers for both `ghostty-web` and `@ghostty-web/demo` for `.github/workflows/publish.yml`.
+- Configure npm trusted publishers for both `ghostty-web` and `@ghostty-web/demo` for `.github/workflows/publish.yml`, one for each of the `npm-release` and `npm-next` environments.
 - Enable squash merging, disable merge commits and rebase merging, and set squash commit titles to use the pull request title.
 - Require the `pr-title`, `fmt`, `lint`, `type check`, `test`, and `build` checks before merge; require merge-group variants too if merge queue is enabled.
