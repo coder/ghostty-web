@@ -79,6 +79,45 @@ function expectEchoRender(
   expect(renderArgs[0][1]).toBe(false);
 }
 
+const ISSUE_139_ESC = '\x1b';
+
+function cellsToTrimmedText(cells: Array<{ codepoint: number; width?: number }>): string {
+  let text = '';
+  for (const cell of cells) {
+    if (cell.width === 0) continue;
+    text += String.fromCodePoint(cell.codepoint || 32);
+  }
+  return text.trimEnd();
+}
+
+function viewportRowsToText(term: Terminal): string[] {
+  const viewport = term.wasmTerm!.getViewport();
+  const rows: string[] = [];
+  for (let row = 0; row < term.rows; row++) {
+    const start = row * term.cols;
+    rows.push(cellsToTrimmedText(viewport.slice(start, start + term.cols)));
+  }
+  return rows;
+}
+
+function buildIssue139MarkerBatch(rep: number, firstLine: number, markers: string[]): string {
+  const parts: string[] = [];
+  for (let line = 1; line <= 68; line++) {
+    const index = firstLine + line - 1;
+    const marker = `rep=${String(rep).padStart(2, '0')} line=${String(line).padStart(
+      3,
+      '0'
+    )} marker=${String(index).padStart(4, '0')} ${'#'.repeat(52)}`;
+    parts.push(
+      `${markers.length === 0 ? '' : '\r\n'}${ISSUE_139_ESC}[1;3;38;5;${
+        (rep * 17 + line) % 256
+      }m${marker}${ISSUE_139_ESC}[0m`
+    );
+    markers.push(marker);
+  }
+  return parts.join('');
+}
+
 describe('Terminal', () => {
   let container: HTMLElement;
 
@@ -1433,6 +1472,49 @@ describe('Buffer Access API', () => {
 });
 
 describe('Terminal Config', () => {
+  test('keeps viewport coherent and treats scrollback as a line budget across page-boundary output', async () => {
+    if (typeof document === 'undefined') return;
+
+    const term = await createIsolatedTerminal({ cols: 130, rows: 39, scrollback: 10000 });
+    const container = document.createElement('div');
+    term.open(container);
+
+    try {
+      const markers: string[] = [];
+      let previousScrollbackLength = 0;
+      let scrollbackDrop: { rep: number; before: number; after: number } | undefined;
+
+      for (let rep = 1; rep <= 14; rep++) {
+        term.write(buildIssue139MarkerBatch(rep, markers.length, markers));
+        term.wasmTerm!.update();
+
+        const scrollbackLength = term.wasmTerm!.getScrollbackLength();
+        if (scrollbackLength < previousScrollbackLength) {
+          scrollbackDrop ??= {
+            rep,
+            before: previousScrollbackLength,
+            after: scrollbackLength,
+          };
+        }
+        previousScrollbackLength = scrollbackLength;
+      }
+
+      const expectedRows = markers.slice(-term.rows);
+      expect(viewportRowsToText(term)).toEqual(expectedRows);
+
+      for (const row of [0, Math.floor(term.rows / 2), term.rows - 1]) {
+        const line = term.wasmTerm!.getLine(row);
+        expect(line).not.toBeNull();
+        expect(cellsToTrimmedText(line!)).toBe(expectedRows[row]);
+      }
+
+      expect(scrollbackDrop).toBeUndefined();
+      expect(previousScrollbackLength).toBeGreaterThanOrEqual(markers.length - term.rows);
+    } finally {
+      term.dispose();
+    }
+  });
+
   test('should pass scrollback option to WASM terminal', async () => {
     if (typeof document === 'undefined') return;
 
@@ -2834,6 +2916,7 @@ describe('Grapheme Cluster Support', () => {
     term.open(container!);
     term.write('Hello');
 
+    term.wasmTerm!.update();
     // Get the viewport and check the first cell
     const viewport = term.wasmTerm!.getViewport();
     expect(viewport[0].codepoint).toBe(0x48); // 'H'
