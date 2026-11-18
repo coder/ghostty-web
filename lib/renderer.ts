@@ -242,8 +242,8 @@ export class CanvasRenderer {
     this.canvas.style.height = `${cssHeight}px`;
 
     // Set actual canvas size (scaled for DPI)
-    this.canvas.width = cssWidth * this.devicePixelRatio;
-    this.canvas.height = cssHeight * this.devicePixelRatio;
+    this.canvas.width = Math.round(cssWidth * this.devicePixelRatio);
+    this.canvas.height = Math.round(cssHeight * this.devicePixelRatio);
 
     // Scale context to match DPI (setting canvas.width/height resets the context)
     this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio);
@@ -287,8 +287,8 @@ export class CanvasRenderer {
 
     // Resize canvas if dimensions changed
     const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+      this.canvas.width !== Math.round(dims.cols * this.metrics.width * this.devicePixelRatio) ||
+      this.canvas.height !== Math.round(dims.rows * this.metrics.height * this.devicePixelRatio);
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);
@@ -514,17 +514,16 @@ export class CanvasRenderer {
    * cover any left-extending portions of graphemes from cell N-1.
    */
   private renderLine(line: GhosttyCell[], y: number, cols: number): void {
-    const lineY = y * this.metrics.height;
-    const lineWidth = cols * this.metrics.width;
+    const bounds = this.getCellBounds(0, y, cols);
 
     // Clear line background then fill with theme color.
     // We clear just the cell area - glyph overflow is handled by also
     // redrawing adjacent rows (see render() method).
     // clearRect is needed because fillRect composites rather than replaces,
     // so transparent/translucent backgrounds wouldn't clear previous content.
-    this.ctx.clearRect(0, lineY, lineWidth, this.metrics.height);
+    this.ctx.clearRect(bounds.x, bounds.y, bounds.width, bounds.height);
     this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, lineY, lineWidth, this.metrics.height);
+    this.ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
     // PASS 1: Draw all cell backgrounds first
     // This ensures all backgrounds are painted before any text, allowing text
@@ -544,15 +543,28 @@ export class CanvasRenderer {
     }
   }
 
+  /** Snap shared cell edges to physical pixels to avoid antialiased background seams. */
+  private getCellBounds(x: number, y: number, width: number) {
+    const scale = this.devicePixelRatio;
+    const left = Math.round(x * this.metrics.width * scale);
+    const right = Math.round((x + width) * this.metrics.width * scale);
+    const top = Math.round(y * this.metrics.height * scale);
+    const bottom = Math.round((y + 1) * this.metrics.height * scale);
+    return {
+      x: left / scale,
+      y: top / scale,
+      width: (right - left) / scale,
+      height: (bottom - top) / scale,
+    };
+  }
+
   /**
    * Render a cell's background only (Pass 1 of two-pass rendering)
    * Selection highlighting is integrated here to avoid z-order issues with
    * complex glyphs (like Devanagari) that extend outside their cell bounds.
    */
   private renderCellBackground(cell: GhosttyCell, x: number, y: number): void {
-    const cellX = x * this.metrics.width;
-    const cellY = y * this.metrics.height;
-    const cellWidth = this.metrics.width * cell.width;
+    const bounds = this.getCellBounds(x, y, cell.width);
 
     // Check if this cell is selected
     const isSelected = this.isInSelection(x, y);
@@ -560,7 +572,7 @@ export class CanvasRenderer {
     if (isSelected) {
       // Draw selection background (solid color, not overlay)
       this.ctx.fillStyle = this.theme.selectionBackground;
-      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+      this.ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
       return; // Selection background replaces cell background
     }
 
@@ -581,7 +593,7 @@ export class CanvasRenderer {
     const isDefaultBg = bg_r === 0 && bg_g === 0 && bg_b === 0;
     if (!isDefaultBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
-      this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
+      this.ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
     }
   }
 
