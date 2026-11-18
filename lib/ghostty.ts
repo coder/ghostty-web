@@ -37,6 +37,25 @@ export {
 };
 
 /**
+ * Decode a base64 `data:` URL into bytes, or return undefined for any other
+ * path. Library builds inline the WASM as a data: URL. Fetching it would need
+ * `data:` in the page's Content-Security-Policy connect-src, and a blocked
+ * fetch falls through to probing other paths, so decode it in memory instead.
+ */
+function decodeDataUrl(path: string): ArrayBuffer | undefined {
+  const match = /^data:[^,]*;base64,/.exec(path);
+  if (!match) {
+    return undefined;
+  }
+  const binary = atob(path.slice(match[0].length));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+/**
  * Main Ghostty WASM wrapper class
  */
 export class Ghostty {
@@ -97,10 +116,11 @@ export class Ghostty {
   }
 
   private static async loadFromPath(path: string): Promise<Ghostty> {
-    let wasmBytes: ArrayBuffer | undefined;
+    // An inlined WASM (library builds) is decoded in memory, never fetched
+    let wasmBytes: ArrayBuffer | undefined = decodeDataUrl(path);
 
     // Try Bun.file first (for Bun environments)
-    if (typeof Bun !== 'undefined' && typeof Bun.file === 'function') {
+    if (!wasmBytes && typeof Bun !== 'undefined' && typeof Bun.file === 'function') {
       try {
         const file = Bun.file(path);
         if (await file.exists()) {
