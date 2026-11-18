@@ -5,23 +5,29 @@ inputs:
     description: 'Zig version to install'
     required: true
     default: '0.15.2'
+  cache:
+    description: 'Reuse a cached Zig installation'
+    required: false
+    default: 'true'
 runs:
   using: 'composite'
   steps:
     - name: Cache Zig
-      uses: actions/cache@v4
+      if: inputs.cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: cache-zig
       with:
         path: |
           ~/zig
-        key: zig-${{ runner.os }}-${{ inputs.version }}
+        key: zig-v2-${{ runner.os }}-${{ inputs.version }}
 
     - name: Download and install Zig
       if: steps.cache-zig.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
       run: |
-        set -e
-        VERSION="${{ inputs.version }}"
+        set -euo pipefail
 
         # Determine platform
         if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -44,8 +50,26 @@ runs:
         TARBALL="zig-${ARCH}-${PLATFORM}-${VERSION}.tar.xz"
         URL="https://ziglang.org/download/${VERSION}/${TARBALL}"
 
+        # SHA-256 of each supported tarball, from https://ziglang.org/download/
+        case "${TARBALL}" in
+          zig-x86_64-linux-0.15.2.tar.xz)
+            SHA256="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
+            ;;
+          zig-aarch64-macos-0.15.2.tar.xz)
+            SHA256="3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
+            ;;
+          zig-x86_64-macos-0.15.2.tar.xz)
+            SHA256="375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f"
+            ;;
+          *)
+            echo "No checksum recorded for ${TARBALL}; add it to .github/actions/setup-zig/action.yml"
+            exit 1
+            ;;
+        esac
+
         echo "Downloading Zig ${VERSION} for ${PLATFORM}-${ARCH}..."
-        curl --retry 3 --retry-delay 5 -L -o "/tmp/${TARBALL}" "${URL}"
+        curl --fail --retry 3 --retry-delay 5 -L -o "/tmp/${TARBALL}" "${URL}"
+        echo "${SHA256}  /tmp/${TARBALL}" | shasum -a 256 -c -
 
         # Extract to home directory
         mkdir -p ~/zig
