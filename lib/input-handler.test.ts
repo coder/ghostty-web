@@ -742,6 +742,38 @@ describe('InputHandler', () => {
       expect(dataReceived[2]).toBe('\x1bOD');
       expect(dataReceived[3]).toBe('\x1bOC');
     });
+
+    // The per-keystroke encoder-option sync caches the last value and
+    // short-circuits when unchanged. This test makes sure mode *changes*
+    // do propagate — if the cache fails to invalidate, the second
+    // keystroke would emit the wrong sequence.
+    test('picks up DECCKM changes mid-session', () => {
+      let cursorApp = false;
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode: number) => mode === 1 && cursorApp
+      );
+
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1b[A');
+      dataReceived.length = 0;
+
+      cursorApp = true;
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1bOA');
+      dataReceived.length = 0;
+
+      cursorApp = false;
+      simulateKey(container, createKeyEvent('ArrowUp', 'ArrowUp'));
+      expect(dataReceived[0]).toBe('\x1b[A');
+    });
   });
 
   describe('Function Keys', () => {
@@ -1190,6 +1222,49 @@ describe('InputHandler', () => {
       simulateKey(container, createKeyEvent('KeyV', 'v', { meta: true }));
 
       expect(dataReceived.length).toBe(0);
+    });
+  });
+
+  // Regression tests for the encoder-bypass removal. Two representative
+  // cases cover the two distinct code paths the old fast paths poisoned:
+  //
+  //   1. Shift+Enter — modifiers reach the encoder (the original bug class
+  //      that caught Shift+Home, Shift+F1, etc.; one test is enough).
+  //   2. Surrogate-pair emoji — multi-code-unit utf8 passes through
+  //      (covers both non-ASCII and non-BMP in one shot).
+  describe('Regression: encoder bypass removal', () => {
+    test('Shift+Enter differs from plain Enter', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('Enter', 'Enter'));
+      expect(dataReceived[0]).toBe('\r');
+
+      dataReceived.length = 0;
+      simulateKey(container, createKeyEvent('Enter', 'Enter', { shift: true }));
+      expect(dataReceived.length).toBe(1);
+      // Ghostty emits the modifyOtherKeys sequence for Shift+Enter by default.
+      expect(dataReceived[0]).toBe('\x1b[27;2;13~');
+    });
+
+    test('surrogate-pair emoji is emitted as UTF-8', () => {
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        }
+      );
+
+      simulateKey(container, createKeyEvent('KeyA', '😀'));
+      expect(dataReceived).toEqual(['😀']);
     });
   });
 });
