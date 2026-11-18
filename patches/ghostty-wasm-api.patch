@@ -29,10 +29,10 @@ index 4f8fef88e..ca9fb1d4d 100644
  #include <ghostty/vt/key.h>
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
 new file mode 100644
-index 000000000..c467102c3
+index 000000000..c0a9c6604
 --- /dev/null
 +++ b/include/ghostty/vt/terminal.h
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,292 @@
 +/**
 + * @file terminal.h
 + *
@@ -141,6 +141,13 @@ index 000000000..c467102c3
 +
 +/** Write data to terminal (parses VT sequences) */
 +void ghostty_terminal_write(GhosttyTerminal term, const uint8_t* data, size_t len);
++
++/**
++ * Update terminal colors at runtime.
++ * All color values in the config are applied directly (no sentinel).
++ * Forces a full redraw on the next render cycle.
++ */
++void ghostty_terminal_set_colors(GhosttyTerminal term, const GhosttyTerminalConfig* config);
 +
 +/* ============================================================================
 + * RenderState API - High-performance rendering
@@ -319,10 +326,10 @@ index 000000000..c467102c3
 +
 +#endif /* GHOSTTY_VT_TERMINAL_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 03a883e20..1336676d7 100644
+index 03a883e20..9d74a46dc 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -140,6 +140,45 @@ comptime {
+@@ -140,6 +140,46 @@ comptime {
          @export(&c.sgr_unknown_partial, .{ .name = "ghostty_sgr_unknown_partial" });
          @export(&c.sgr_attribute_tag, .{ .name = "ghostty_sgr_attribute_tag" });
          @export(&c.sgr_attribute_value, .{ .name = "ghostty_sgr_attribute_value" });
@@ -332,6 +339,7 @@ index 03a883e20..1336676d7 100644
 +        @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
 +        @export(&c.terminal_resize, .{ .name = "ghostty_terminal_resize" });
 +        @export(&c.terminal_write, .{ .name = "ghostty_terminal_write" });
++        @export(&c.terminal_set_colors, .{ .name = "ghostty_terminal_set_colors" });
 +
 +        // RenderState API - high-performance rendering
 +        @export(&c.render_state_update, .{ .name = "ghostty_render_state_update" });
@@ -369,7 +377,7 @@ index 03a883e20..1336676d7 100644
          // On Wasm we need to export our allocator convenience functions.
          if (builtin.target.cpu.arch.isWasm()) {
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index bc92597f5..d0ee49c1b 100644
+index bc92597f5..5814a0559 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
 @@ -4,6 +4,7 @@ pub const key_event = @import("key_event.zig");
@@ -380,7 +388,7 @@ index bc92597f5..d0ee49c1b 100644
  
  // The full C API, unexported.
  pub const osc_new = osc.new;
-@@ -52,6 +53,46 @@ pub const key_encoder_encode = key_encode.encode;
+@@ -52,6 +53,47 @@ pub const key_encoder_encode = key_encode.encode;
  
  pub const paste_is_safe = paste.is_safe;
  
@@ -390,6 +398,7 @@ index bc92597f5..d0ee49c1b 100644
 +pub const terminal_free = terminal.free;
 +pub const terminal_resize = terminal.resize;
 +pub const terminal_write = terminal.write;
++pub const terminal_set_colors = terminal.setColors;
 +
 +// RenderState API - high-performance rendering
 +pub const render_state_update = terminal.renderStateUpdate;
@@ -427,7 +436,7 @@ index bc92597f5..d0ee49c1b 100644
  test {
      _ = color;
      _ = osc;
-@@ -59,6 +100,7 @@ test {
+@@ -59,6 +101,7 @@ test {
      _ = key_encode;
      _ = paste;
      _ = sgr;
@@ -437,10 +446,10 @@ index bc92597f5..d0ee49c1b 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 000000000..73ae2e6fa
+index 000000000..1ce4f1919
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1168 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -767,6 +776,8 @@ index 000000000..73ae2e6fa
 +    response_buffer: std.ArrayList(u8),
 +    /// Track alternate screen state to detect screen switches
 +    last_screen_is_alternate: bool = false,
++    /// Force a full redraw on next render (e.g., after color change)
++    force_full_redraw: bool = false,
 +};
 +
 +/// C-compatible cell structure (16 bytes)
@@ -927,6 +938,47 @@ index 000000000..73ae2e6fa
 +    wrapper.stream.nextSlice(data[0..len]) catch return;
 +}
 +
++/// Update terminal colors at runtime. All color values in the config are
++/// applied directly (no sentinel — 0x000000 is treated as valid black).
++/// Forces a full redraw on the next render cycle.
++pub fn setColors(ptr: ?*anyopaque, config_ptr: ?*const GhosttyTerminalConfig) callconv(.c) void {
++    const wrapper: *TerminalWrapper = @ptrCast(@alignCast(ptr orelse return));
++    const cfg = config_ptr orelse return;
++
++    // Update foreground
++    wrapper.terminal.colors.foreground = color.DynamicRGB.init(.{
++        .r = @truncate((cfg.fg_color >> 16) & 0xFF),
++        .g = @truncate((cfg.fg_color >> 8) & 0xFF),
++        .b = @truncate(cfg.fg_color & 0xFF),
++    });
++
++    // Update background
++    wrapper.terminal.colors.background = color.DynamicRGB.init(.{
++        .r = @truncate((cfg.bg_color >> 16) & 0xFF),
++        .g = @truncate((cfg.bg_color >> 8) & 0xFF),
++        .b = @truncate(cfg.bg_color & 0xFF),
++    });
++
++    // Update cursor
++    wrapper.terminal.colors.cursor = color.DynamicRGB.init(.{
++        .r = @truncate((cfg.cursor_color >> 16) & 0xFF),
++        .g = @truncate((cfg.cursor_color >> 8) & 0xFF),
++        .b = @truncate(cfg.cursor_color & 0xFF),
++    });
++
++    // Update palette (all 16 colors, no sentinel)
++    for (cfg.palette, 0..) |palette_color, i| {
++        wrapper.terminal.colors.palette.set(@intCast(i), .{
++            .r = @truncate((palette_color >> 16) & 0xFF),
++            .g = @truncate((palette_color >> 8) & 0xFF),
++            .b = @truncate(palette_color & 0xFF),
++        });
++    }
++
++    // Force full redraw on next render
++    wrapper.force_full_redraw = true;
++}
++
 +// ============================================================================
 +// RenderState API - High-performance rendering
 +// ============================================================================
@@ -941,17 +993,19 @@ index 000000000..73ae2e6fa
 +    const screen_switched = current_is_alternate != wrapper.last_screen_is_alternate;
 +    wrapper.last_screen_is_alternate = current_is_alternate;
 +    
-+    // When screen switches, we must fully reset the render state to avoid
-+    // stale cached cell data from the previous screen buffer.
-+    if (screen_switched) {
++    // When screen switches or colors change, we must fully reset the render
++    // state to avoid stale cached cell data.
++    const needs_full_reset = screen_switched or wrapper.force_full_redraw;
++    if (needs_full_reset) {
 +        wrapper.render_state.deinit(wrapper.alloc);
 +        wrapper.render_state = RenderState.empty;
++        wrapper.force_full_redraw = false;
 +    }
-+    
++
 +    wrapper.render_state.update(wrapper.alloc, &wrapper.terminal) catch return .full;
-+    
-+    // If screen switched, always return full dirty to force complete redraw
-+    if (screen_switched) {
++
++    // If we did a full reset, always return full dirty to force complete redraw
++    if (needs_full_reset) {
 +        return .full;
 +    }
 +    
