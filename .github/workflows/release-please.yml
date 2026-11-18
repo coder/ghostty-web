@@ -37,15 +37,13 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Test release tooling
-        run: bun test scripts/release-please-ai scripts/release-please-runner.test.ts
+        run: bun test scripts/release-please-runner.test.ts
 
       - name: Run Release Please
         id: release-please
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL || secrets.RELEASE_NOTES_MODEL }}
         run: bun run release-please
 
       - name: Dispatch publish workflow for stable release

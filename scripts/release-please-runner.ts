@@ -1,7 +1,6 @@
 import { appendFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { BaseStrategyOptions } from 'release-please/build/src/strategies/base';
-import { registerAiChangelogNotes } from './release-please-ai/changelog-notes';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -61,7 +60,6 @@ async function registerReleasePleaseExtensions(): Promise<void> {
     }
   }
 
-  registerAiChangelogNotes();
   registerReleaseType(
     'node',
     (options: BaseStrategyOptions) => new GhosttyWebNodeStrategy(options)
