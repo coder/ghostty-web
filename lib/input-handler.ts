@@ -13,8 +13,7 @@
  * - Captures all keyboard input (preventDefault on everything)
  */
 
-import type { Ghostty } from './ghostty';
-import type { KeyEncoder } from './ghostty';
+import type { Ghostty, KeyEncoder } from './ghostty';
 import type { IKeyEvent } from './interfaces';
 import { Key, KeyAction, KeyEncoderOption, Mods } from './types';
 
@@ -231,7 +230,7 @@ export class InputHandler {
     getMode?: (mode: number) => boolean,
     onCopy?: () => boolean,
     inputElement?: HTMLElement,
-    mouseConfig?: MouseTrackingConfig
+    mouseConfig?: MouseTrackingConfig,
   ) {
     this.encoder = ghostty.createKeyEncoder();
     this.container = container;
@@ -384,9 +383,18 @@ export class InputHandler {
       }
     }
 
-    // Allow Ctrl+V and Cmd+V to trigger paste event (don't preventDefault)
+    // Ctrl+V / Cmd+V: emit \x16 to the PTY so apps that read it natively
+    // (e.g. opencode image paste via osascript) receive the signal, then let
+    // the browser paste event fire so handlePaste covers text content.
     if ((event.ctrlKey || event.metaKey) && event.code === 'KeyV') {
-      // Let the browser's native paste event fire
+      const encoded = this.encoder.encode({
+        key: Key.V,
+        mods: event.ctrlKey ? Mods.CTRL : Mods.SUPER,
+        action: KeyAction.PRESS,
+      });
+      if (encoded.length > 0) {
+        this.onDataCallback(new TextDecoder().decode(encoded));
+      }
       return;
     }
 
@@ -765,7 +773,7 @@ export class InputHandler {
     col: number,
     row: number,
     isRelease: boolean,
-    modifiers: number
+    modifiers: number,
   ): string {
     const btn = button + modifiers;
     const suffix = isRelease ? 'm' : 'M';
@@ -793,7 +801,7 @@ export class InputHandler {
     col: number,
     row: number,
     isRelease: boolean,
-    event: MouseEvent
+    event: MouseEvent,
   ): void {
     const modifiers = this.getMouseModifiers(event);
 

@@ -31,9 +31,9 @@ export {
   type GhosttyCell,
   type GhosttyTerminalConfig,
   KeyEncoderOption,
-  type RGB,
   type RenderStateColors,
   type RenderStateCursor,
+  type RGB,
 };
 
 /**
@@ -55,7 +55,7 @@ export class Ghostty {
   createTerminal(
     cols: number = 80,
     rows: number = 24,
-    config?: GhosttyTerminalConfig
+    config?: GhosttyTerminalConfig,
   ): GhosttyTerminal {
     return new GhosttyTerminal(this.exports, this.memory, cols, rows, config);
   }
@@ -145,7 +145,7 @@ export class Ghostty {
           const bytes = new Uint8Array(
             (wasmInstance.exports as GhosttyWasmExports).memory.buffer,
             ptr,
-            len
+            len,
           );
           console.log('[ghostty-vt]', new TextDecoder().decode(bytes));
         },
@@ -215,7 +215,7 @@ export class KeyEncoder {
       eventPtr,
       bufPtr,
       bufferSize,
-      writtenPtr
+      writtenPtr,
     );
 
     if (encodeResult !== 0) {
@@ -273,7 +273,7 @@ export class GhosttyTerminal {
     memory: WebAssembly.Memory,
     cols: number = 80,
     rows: number = 24,
-    config?: GhosttyTerminalConfig
+    config?: GhosttyTerminalConfig,
   ) {
     this.exports = exports;
     this.memory = memory;
@@ -399,8 +399,11 @@ export class GhosttyTerminal {
       viewportX: this.exports.ghostty_render_state_get_cursor_x(this.handle),
       viewportY: this.exports.ghostty_render_state_get_cursor_y(this.handle),
       visible: this.exports.ghostty_render_state_get_cursor_visible(this.handle),
-      blinking: false, // TODO: Add blinking support
-      style: 'block', // TODO: Add style support
+      blinking: this.exports.ghostty_render_state_get_cursor_blinking(this.handle),
+      style:
+        (['block', 'bar', 'underline'] as const)[
+          this.exports.ghostty_render_state_get_cursor_style(this.handle)
+        ] ?? 'block',
     };
   }
 
@@ -460,7 +463,7 @@ export class GhosttyTerminal {
     const count = this.exports.ghostty_render_state_get_viewport(
       this.handle,
       this.viewportBufferPtr,
-      totalCells
+      totalCells,
     );
 
     if (count < 0) return this.cellPool;
@@ -569,7 +572,7 @@ export class GhosttyTerminal {
       this.handle,
       offset,
       this.viewportBufferPtr,
-      this._cols
+      this._cols,
     );
 
     if (count < 0) return null;
@@ -629,7 +632,7 @@ export class GhosttyTerminal {
           row,
           col,
           bufPtr,
-          bufSize
+          bufSize,
         );
 
         // 0 means no hyperlink at this position
@@ -676,7 +679,7 @@ export class GhosttyTerminal {
           offset,
           col,
           bufPtr,
-          bufSize
+          bufSize,
         );
 
         // 0 means no hyperlink at this position
@@ -811,7 +814,7 @@ export class GhosttyTerminal {
       row,
       col,
       this.graphemeBufferPtr,
-      16
+      16,
     );
 
     if (count < 0) return null;
@@ -849,7 +852,7 @@ export class GhosttyTerminal {
       offset,
       col,
       this.graphemeBufferPtr,
-      16
+      16,
     );
 
     if (count < 0) return null;
