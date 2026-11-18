@@ -62,6 +62,7 @@ export type {
   ITerminalOptions,
   ITheme,
   ITerminalAddon,
+  CustomWriteHandler,
   ITerminalCore,
   IDisposable,
   IEvent,
@@ -93,6 +94,8 @@ export type { SelectionCoordinates } from './selection-manager';
 // Addons
 export { FitAddon } from './addons/fit';
 export type { ITerminalDimensions } from './addons/fit';
+export { KittyGraphicsAddon } from './addons/kitty-graphics';
+export type { KittyGraphicsLimits, KittyGraphicsOptions } from './addons/kitty-graphics';
 
 // Link providers
 export { OSC8LinkProvider } from './providers/osc8-link-provider';
