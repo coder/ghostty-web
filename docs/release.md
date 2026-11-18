@@ -9,16 +9,6 @@
 5. The Release Please workflow explicitly dispatches `.github/workflows/publish.yml` for the tag because workflows created with `GITHUB_TOKEN` do not reliably trigger follow-up workflows automatically.
 6. `publish.yml` validates the tag and source versions, runs the release quality gates, publishes `ghostty-web`, then publishes `@ghostty-web/demo` with its `ghostty-web` dependency pinned to the exact release version.
 
-## AI release notes
-
-Release Please owns the canonical changelog structure, commit sections, headings, and links. The custom `changelog-type: "ai"` generator only inserts a concise editorial summary and optional highlights below the version heading.
-
-The AI path uses an AI SDK `ToolLoopAgent` with scoped tools. It can list the release commits and inspect GitHub commit diffs for those SHAs before producing the structured editorial summary. The tools reject SHAs outside the current release scope.
-
-- Configure `ANTHROPIC_API_KEY` as a repository secret to enable AI editorial notes.
-- Configure `RELEASE_NOTES_MODEL` as a repository variable or secret to choose the model. The workflow reads the variable first and falls back to the secret for compatibility with secret-only setups.
-- If either setting is missing or model generation fails, the runner logs the reason and falls back to default Release Please notes.
-
 ## Next publishes
 
 `.github/workflows/publish.yml` also publishes `ghostty-web@next` and `@ghostty-web/demo@next` after successful CI on `main`. Release-only squash commits whose subject matches `chore(release): ...` are skipped so version/changelog-only release PR merges do not create noisy prereleases.
@@ -46,7 +36,5 @@ When the pipeline has been test-driven successfully and maintainers are ready fo
 Before the first automated stable release:
 
 - Configure npm trusted publishers for both `ghostty-web` and `@ghostty-web/demo` for `.github/workflows/publish.yml`.
-- Add the `ANTHROPIC_API_KEY` repository secret if AI editorial notes should be enabled.
-- Add the `RELEASE_NOTES_MODEL` repository variable when using AI notes.
 - Enable squash merging, disable merge commits and rebase merging, and set squash commit titles to use the pull request title.
 - Require the `pr-title`, `fmt`, `lint`, `type check`, `test`, and `build` checks before merge; require merge-group variants too if merge queue is enabled.
