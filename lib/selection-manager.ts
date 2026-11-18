@@ -61,6 +61,7 @@ export class SelectionManager {
   private boundContextMenuHandler: ((e: MouseEvent) => void) | null = null;
   private boundClickHandler: ((e: MouseEvent) => void) | null = null;
   private boundDocumentMouseMoveHandler: ((e: MouseEvent) => void) | null = null;
+  private boundDocumentMouseDownHandler: ((e: MouseEvent) => void) | null = null;
 
   // Auto-scroll state for drag selection
   private autoScrollInterval: ReturnType<typeof setInterval> | null = null;
@@ -405,6 +406,12 @@ export class SelectionManager {
       this.boundDocumentMouseMoveHandler = null;
     }
 
+    // Clean up document mousedown listener
+    if (this.boundDocumentMouseDownHandler) {
+      document.removeEventListener('mousedown', this.boundDocumentMouseDownHandler);
+      this.boundDocumentMouseDownHandler = null;
+    }
+
     // Clean up context menu event listener
     if (this.boundContextMenuHandler) {
       const canvas = this.renderer.getCanvas();
@@ -566,9 +573,10 @@ export class SelectionManager {
     document.addEventListener('mousemove', this.boundDocumentMouseMoveHandler);
 
     // Track mousedown on document to know if a click started inside the canvas
-    document.addEventListener('mousedown', (e: MouseEvent) => {
+    this.boundDocumentMouseDownHandler = (e: MouseEvent) => {
       this.mouseDownTarget = e.target;
-    });
+    };
+    document.addEventListener('mousedown', this.boundDocumentMouseDownHandler);
 
     // CRITICAL FIX: Listen for mouseup on DOCUMENT, not just canvas
     // This catches mouseup events that happen outside the canvas (common during drag)
