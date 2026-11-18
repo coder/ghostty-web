@@ -18,6 +18,7 @@
 import { BufferNamespace } from './buffer';
 import { EventEmitter } from './event-emitter';
 import type { Ghostty, GhosttyCell, GhosttyTerminal, GhosttyTerminalConfig } from './ghostty';
+import { ImeOverlay } from './ime';
 import { getGhostty } from './index';
 import { InputHandler, type MouseTrackingConfig } from './input-handler';
 import type {
@@ -48,6 +49,10 @@ export class Terminal implements ITerminalCore {
   public rows: number;
   public element?: HTMLElement;
   public textarea?: HTMLTextAreaElement;
+  /** Keeps the IME target and the composition view on the cursor cell. */
+  private ime?: ImeOverlay;
+  /** Kept so dispose() can take it off the caller's element again. */
+  private parentFocusListener?: () => void;
 
   // Buffer API (xterm.js compatibility)
   public readonly buffer: IBufferNamespace;
@@ -355,9 +360,35 @@ export class Terminal implements ITerminalCore {
         parent.setAttribute('tabindex', '0');
       }
 
+      // The canvas and the helper textarea are positioned against this
+      // element, so it has to be a containing block. Left static, they anchor
+      // to whatever ancestor happens to be positioned — measured in a host app
+      // whose panel was `relative`, which put the textarea (and with it the
+      // IME's preedit and candidate window) above the terminal entirely.
+      if (parent.style) {
+        const position =
+          parent.style.position ||
+          (typeof getComputedStyle === 'function' ? getComputedStyle(parent).position : '');
+        if (!position || position === 'static') {
+          parent.style.position = 'relative';
+        }
+      }
+
       // Mark as contenteditable so browser extensions (Vimium, etc.) recognize
       // this as an input element and don't intercept keyboard events.
+      //
+      // It must never hold focus: a focused contenteditable is where the
+      // browser puts an IME's preedit, and this one's content origin is the
+      // top-left corner of the terminal. Focus belongs to the textarea, which
+      // is tracked to the cursor cell. focus() and the handler below enforce
+      // that; the attribute stays for the extensions that look for it.
       parent.setAttribute('contenteditable', 'true');
+      this.parentFocusListener = () => {
+        if (this.textarea && document.activeElement !== this.textarea) {
+          this.textarea.focus();
+        }
+      };
+      parent.addEventListener('focus', this.parentFocusListener);
       // Prevent actual content editing - we handle input ourselves
       parent.addEventListener('beforeinput', (e) => {
         if (e.target === parent) {
@@ -388,7 +419,12 @@ export class Terminal implements ITerminalCore {
       this.textarea.setAttribute('spellcheck', 'false');
       this.textarea.setAttribute('tabindex', '0'); // Allow focus for mobile keyboard
       this.textarea.setAttribute('aria-label', 'Terminal input');
-      // Use clip-path to completely hide the textarea and its caret
+      // Invisible, but not clipped away: the platform anchors the IME's
+      // candidate window to this element's box, so it has to keep a real one.
+      // (clip-path: inset(50%) collapsed it, which is part of why the preedit
+      // and the candidate window turned up in the corner.) Transparent caret
+      // and text instead — the caret drawn here is the "ghost cursor at 0,0"
+      // reported against the canvas cursor.
       this.textarea.style.position = 'absolute';
       this.textarea.style.left = '0';
       this.textarea.style.top = '0';
@@ -398,7 +434,10 @@ export class Terminal implements ITerminalCore {
       this.textarea.style.border = 'none';
       this.textarea.style.margin = '0';
       this.textarea.style.opacity = '0';
-      this.textarea.style.clipPath = 'inset(50%)'; // Clip everything including caret
+      this.textarea.style.caretColor = 'transparent';
+      this.textarea.style.color = 'transparent';
+      this.textarea.style.background = 'transparent';
+      this.textarea.style.outline = 'none';
       this.textarea.style.overflow = 'hidden';
       this.textarea.style.whiteSpace = 'nowrap';
       this.textarea.style.resize = 'none';
@@ -428,6 +467,23 @@ export class Terminal implements ITerminalCore {
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
+
+      // Keep the IME target on the cursor cell. Without this the preedit and
+      // the candidate window sit wherever the textarea was parked.
+      this.ime = new ImeOverlay({
+        parent,
+        textarea: this.textarea,
+        metrics: () => ({
+          width: this.renderer?.charWidth ?? 0,
+          height: this.renderer?.charHeight ?? 0,
+        }),
+        style: () => ({
+          fontFamily: this.options.fontFamily,
+          fontSize: this.options.fontSize,
+          foreground: this.options.theme?.foreground ?? '#ffffff',
+          background: this.options.theme?.background ?? '#000000',
+        }),
+      });
 
       // Create mouse tracking configuration
       const canvas = this.canvas;
@@ -481,6 +537,8 @@ export class Terminal implements ITerminalCore {
         this.textarea,
         mouseConfig
       );
+
+      this.inputHandler.setImeOverlay(this.ime ?? null);
 
       // Create selection manager (pass textarea for context menu positioning)
       this.selectionManager = new SelectionManager(
@@ -749,13 +807,18 @@ export class Terminal implements ITerminalCore {
    */
   focus(): void {
     if (this.isOpen && this.element) {
-      // Focus immediately for immediate keyboard/wheel event handling
-      this.element.focus();
+      // The textarea, not the element: focus decides where the browser draws
+      // an IME's preedit, and the element is a contenteditable whose content
+      // origin is the terminal's top-left corner. Keyboard, wheel and paste
+      // all still arrive — their listeners are on the element and the textarea
+      // is inside it, so the events bubble.
+      const target = this.textarea ?? this.element;
+      target.focus();
 
       // Also schedule a delayed focus as backup to ensure it sticks
       // (some browsers may need this if DOM isn't fully settled)
       setTimeout(() => {
-        this.element?.focus();
+        (this.textarea ?? this.element)?.focus();
       }, 0);
     }
   }
@@ -1178,6 +1241,12 @@ export class Terminal implements ITerminalCore {
         // Check for cursor movement (Phase 2: onCursorMove event)
         // Note: getCursor() reads from already-updated render state (from render() above)
         const cursor = this.wasmTerm!.getCursor();
+        // Keep the IME target on that cell. The renderer only draws the
+        // cursor when the viewport is at the bottom, so track it on the same
+        // condition rather than parking the preedit over scrollback.
+        if (this.viewportY === 0) {
+          this.ime?.moveTo(cursor.x, cursor.y);
+        }
         if (cursor.y !== this.lastCursorY) {
           this.lastCursorY = cursor.y;
           this.cursorMoveEmitter.fire();
@@ -1215,6 +1284,12 @@ export class Terminal implements ITerminalCore {
    * Clean up components (called on dispose or error)
    */
   private cleanupComponents(): void {
+    // Drop the IME overlay first: it owns an element inside the parent and a
+    // listener on the renderer, and both outlive a failed open() otherwise.
+    this.inputHandler?.setImeOverlay(null);
+    this.ime?.dispose();
+    this.ime = undefined;
+
     // Dispose selection manager
     if (this.selectionManager) {
       this.selectionManager.dispose();
@@ -1252,6 +1327,11 @@ export class Terminal implements ITerminalCore {
       this.element.removeEventListener('mousemove', this.handleMouseMove);
       this.element.removeEventListener('mouseleave', this.handleMouseLeave);
       this.element.removeEventListener('click', this.handleClick);
+
+      if (this.parentFocusListener) {
+        this.element.removeEventListener('focus', this.parentFocusListener);
+        this.parentFocusListener = undefined;
+      }
 
       // Remove contenteditable and accessibility attributes added in open()
       this.element.removeAttribute('contenteditable');
