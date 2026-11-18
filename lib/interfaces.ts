@@ -19,6 +19,9 @@ export interface ITerminalOptions {
   convertEol?: boolean; // Convert \n to \r\n (default: false)
   disableStdin?: boolean; // Disable keyboard input (default: false)
 
+  // Links
+  linkHandler?: ILinkHandler | null; // Handles OSC 8 hyperlink activation (default: null)
+
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
 
@@ -78,6 +81,30 @@ export interface ITerminalCore {
 export interface IBufferRange {
   start: { x: number; y: number };
   end: { x: number; y: number };
+}
+
+/**
+ * Handles activation of OSC 8 hyperlinks (xterm.js compatibility).
+ *
+ * Supports the `activate` and `allowNonHttpProtocols` members of xterm.js's
+ * ILinkHandler. Without a handler, Ctrl/Cmd-click opens the link in a new tab.
+ */
+export interface ILinkHandler {
+  /**
+   * Called when a hyperlink is clicked. Check the event's modifier keys here
+   * if activation should require one.
+   * @param event The mouse event triggering the callback
+   * @param text The link's URI
+   * @param range The buffer range of the link
+   */
+  activate(event: MouseEvent, text: string, range: IBufferRange): void;
+
+  /**
+   * Whether to accept hyperlinks whose URI is not http or https. When false
+   * (the default), such links are ignored. Enabling this without validating
+   * the URI in `activate` may cause security issues such as XSS.
+   */
+  allowNonHttpProtocols?: boolean;
 }
 
 /**

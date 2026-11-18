@@ -152,6 +152,7 @@ export class Terminal implements ITerminalCore {
       convertEol: options.convertEol ?? false,
       disableStdin: options.disableStdin ?? false,
       smoothScrollDuration: options.smoothScrollDuration ?? 100, // Default: 100ms smooth scroll
+      linkHandler: options.linkHandler ?? null,
     };
 
     // Wrap in Proxy to intercept runtime changes (xterm.js compatibility)
