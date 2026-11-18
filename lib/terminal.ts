@@ -359,11 +359,7 @@ export class Terminal implements ITerminalCore {
       // this as an input element and don't intercept keyboard events.
       parent.setAttribute('contenteditable', 'true');
       // Prevent actual content editing - we handle input ourselves
-      parent.addEventListener('beforeinput', (e) => {
-        if (e.target === parent) {
-          e.preventDefault();
-        }
-      });
+      parent.addEventListener('beforeinput', this.handleBeforeInput);
 
       // Add accessibility attributes for screen readers and extensions
       parent.setAttribute('role', 'textbox');
@@ -1247,7 +1243,8 @@ export class Terminal implements ITerminalCore {
 
     // Remove event listeners
     if (this.element) {
-      this.element.removeEventListener('wheel', this.handleWheel);
+      this.element.removeEventListener('beforeinput', this.handleBeforeInput);
+      this.element.removeEventListener('wheel', this.handleWheel, { capture: true });
       this.element.removeEventListener('mousedown', this.handleMouseDown, { capture: true });
       this.element.removeEventListener('mousemove', this.handleMouseMove);
       this.element.removeEventListener('mouseleave', this.handleMouseLeave);
@@ -1548,6 +1545,15 @@ export class Terminal implements ITerminalCore {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
       }
+    }
+  };
+
+  /**
+   * Prevent host editing without suppressing input in descendant elements.
+   */
+  private handleBeforeInput = (e: InputEvent): void => {
+    if (e.target === e.currentTarget) {
+      e.preventDefault();
     }
   };
 
