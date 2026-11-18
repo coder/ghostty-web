@@ -555,6 +555,13 @@ export class Terminal implements ITerminalCore {
    * Internal write implementation (extracted from write())
    */
   private writeInternal(data: string | Uint8Array, callback?: () => void): void {
+    // Nothing to write: the WASM side throws a RangeError on an empty buffer. Stay a no-op (as in
+    // xterm.js), but keep the callback contract.
+    if (data.length === 0) {
+      if (callback) requestAnimationFrame(callback);
+      return;
+    }
+
     // Note: We intentionally do NOT clear selection on write - most modern terminals
     // preserve selection when new data arrives. Selection is cleared by user actions
     // like clicking or typing, not by incoming data.
