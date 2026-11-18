@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ghostty-web: how many times a frame reads the grid</title>
+<style>
+  body { background: #16161a; color: #d4d4d4; font: 13px ui-monospace, monospace; margin: 16px; }
+  #terminal { display: inline-block; }
+  table { border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #444; padding: 4px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  #out { margin-top: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>How many times does one frame read the grid?</h1>
+<p>
+  CanvasRenderer.render() calls buffer.getLine(y) for every row it paints.
+  getLine() builds the whole viewport and returns one row of it. This page
+  counts the grid reads per frame and times render(), with and without a single
+  viewport read per frame.
+</p>
+<p>
+  Run it with <code>bun run dev</code> and open <code>/demo/viewport-repro.html</code>.
+  Add <code>?src=/path/to/ghostty-web.js</code> to point it at a built bundle instead.
+</p>
+<div id="terminal"></div>
+<div id="out">running...</div>
+
+<script type="module">
+const params = new URLSearchParams(location.search);
+const SRC = params.get('src') ?? '../lib/index.ts';
+const COLS = Number(params.get('cols') ?? 114);
+const ROWS = Number(params.get('rows') ?? 42);
+const SECONDS = Number(params.get('seconds') ?? 4);
+const out = document.getElementById('out');
+
+const { init, Terminal } = await import(SRC);
+await init();
+
+const term = new Terminal({
+  cols: COLS, rows: ROWS, fontSize: 14, cursorBlink: false,
+  fontFamily: 'ui-monospace, Menlo, monospace',
+  theme: { background: '#16161a', foreground: '#d4d4d4' },
+});
+term.open(document.getElementById('terminal'));
+
+const vt = term.wasmTerm;
+const vtProto = Object.getPrototypeOf(vt);
+const rendererProto = Object.getPrototypeOf(term.renderer);
+
+// Count grid reads. getViewport walks or parses every cell in the grid.
+let gridReads = 0;
+const realGetViewport = vtProto.getViewport;
+vtProto.getViewport = function (...a) { gridReads++; return realGetViewport.apply(this, a); };
+
+// The change under test, as a runtime wrapper so both arms run in one page.
+// This is the same lifetime the patch gives it: one render() call.
+const stockGetLine = vtProto.getLine;
+let inFrame = false;
+let frameViewport = null;
+const memoGetLine = function (y) {
+  if (!inFrame) return stockGetLine.call(this, y);
+  if (y < 0 || y >= this._rows) return null;
+  if (frameViewport === null) frameViewport = this.getViewport();
+  const start = y * this._cols;
+  return frameViewport.slice(start, start + this._cols).map((c) => ({ ...c }));
+};
+
+// Time render() and mark the frame.
+let renderMs = [];
+let readsPerFrame = [];
+let collecting = false;
+const realRender = rendererProto.render;
+rendererProto.render = function (...a) {
+  inFrame = true; frameViewport = null;
+  const r0 = gridReads;
+  const t0 = performance.now();
+  try { return realRender.apply(this, a); }
+  finally {
+    const dt = performance.now() - t0;
+    inFrame = false; frameViewport = null;
+    if (collecting) { renderMs.push(dt); readsPerFrame.push(gridReads - r0); }
+  }
+};
+
+// Steady full-screen churn, the load a terminal animation puts on the renderer.
+const CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789#*+=~';
+let seed = 1;
+const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+function paintScreen() {
+  let s = '\x1b[H';
+  for (let y = 0; y < ROWS; y++) {
+    let line = '';
+    for (let x = 0; x < COLS; x++) {
+      line += rnd() < 0.35 ? CHARS[(rnd() * CHARS.length) | 0] : ' ';
+    }
+    s += `\x1b[${y + 1};1H\x1b[38;2;${(rnd()*255)|0};200;120m` + line;
+  }
+  term.write(s);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const stats = (a) => {
+  const s = [...a].sort((x, y) => x - y);
+  return {
+    n: a.length,
+    mean: a.reduce((x, y) => x + y, 0) / a.length,
+    p95: s[Math.floor(s.length * 0.95)],
+  };
+};
+
+async function arm(name) {
+  let timer = setInterval(paintScreen, 16);
+  await sleep(700);                       // warm up, no measurement
+  renderMs = []; readsPerFrame = []; collecting = true;
+  await sleep(SECONDS * 1000);
+  collecting = false;
+  clearInterval(timer);
+  await sleep(200);
+  return { name, ms: stats(renderMs), reads: stats(readsPerFrame) };
+}
+
+const rows = [];
+vtProto.getLine = stockGetLine;
+rows.push(await arm('stock: getLine() per row'));
+vtProto.getLine = memoGetLine;
+rows.push(await arm('patched: one viewport read per frame'));
+
+const gl = document.createElement('canvas').getContext('webgl2');
+const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+
+out.innerHTML =
+  `<p>grid ${COLS}x${ROWS} &middot; ${SECONDS}s per arm &middot; GPU: ${gpu}</p>` +
+  '<table><tr><th>arm</th><th>grid reads / frame</th><th>render() mean ms</th><th>render() p95 ms</th><th>frames</th></tr>' +
+  rows.map((r) =>
+    `<tr><td>${r.name}</td><td>${r.reads.mean.toFixed(1)}</td>` +
+    `<td>${r.ms.mean.toFixed(2)}</td><td>${r.ms.p95.toFixed(2)}</td><td>${r.ms.n}</td></tr>`).join('') +
+  '</table>';
+window.__reproResult = { gpu, cols: COLS, rows: ROWS, arms: rows };
+window.__reproDone = true;
+</script>
+</body>
+</html>
