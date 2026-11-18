@@ -1,0 +1,11 @@
+/.github/ @coder/ghostty-web-maintainers
+/scripts/ @coder/ghostty-web-maintainers
+/patches/ @coder/ghostty-web-maintainers
+/ghostty @coder/ghostty-web-maintainers
+/.gitmodules @coder/ghostty-web-maintainers
+/package.json @coder/ghostty-web-maintainers
+/bun.lock @coder/ghostty-web-maintainers
+/demo/package.json @coder/ghostty-web-maintainers
+/demo/bun.lock @coder/ghostty-web-maintainers
+/vite.config.js @coder/ghostty-web-maintainers
+/release-please-config.json @coder/ghostty-web-maintainers
