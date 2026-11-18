@@ -21,6 +21,7 @@ export interface ITerminalOptions {
 
   // Scrolling options
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
+  preserveScrollOnWrite?: boolean; // Preserve scrolled-up viewport on write (default: false)
 
   // Internal: Ghostty WASM instance (optional, for test isolation)
   // If not provided, uses the module-level instance from init()
