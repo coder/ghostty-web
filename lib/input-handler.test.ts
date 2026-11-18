@@ -1053,6 +1053,31 @@ describe('InputHandler', () => {
       expect(dataReceived[0]).toBe(`\x1b[200~${pasteText}\x1b[201~`);
     });
 
+    test('neutralises control characters in a bracketed paste', () => {
+      const inputElement = createMockContainer();
+      const handler = new InputHandler(
+        ghostty,
+        container as any,
+        (data) => dataReceived.push(data),
+        () => {
+          bellCalled = true;
+        },
+        undefined,
+        undefined,
+        (mode) => mode === 2004,
+        undefined,
+        inputElement as any
+      );
+
+      // Clipboard content that tries to close the bracket early and inject `id`
+      const beforeInputEvent = createBeforeInputEvent('insertFromPaste', 'ls\x1b[201~id\r');
+
+      inputElement.dispatchEvent(beforeInputEvent);
+
+      expect(dataReceived.length).toBe(1);
+      expect(dataReceived[0]).toBe('\x1b[200~ls [201~id\r\x1b[201~');
+    });
+
     test('handles multi-line paste', () => {
       const handler = new InputHandler(
         ghostty,

@@ -16,6 +16,7 @@
 import type { Ghostty } from './ghostty';
 import type { KeyEncoder } from './ghostty';
 import type { IKeyEvent } from './interfaces';
+import { encodePaste } from './paste';
 import { Key, KeyAction, KeyEncoderOption, Mods } from './types';
 
 /**
@@ -911,12 +912,7 @@ export class InputHandler {
    */
   private emitPasteData(text: string): void {
     const hasBracketedPaste = this.getModeCallback?.(2004) ?? false;
-
-    if (hasBracketedPaste) {
-      this.onDataCallback('\x1b[200~' + text + '\x1b[201~');
-    } else {
-      this.onDataCallback(text);
-    }
+    this.onDataCallback(encodePaste(text, hasBracketedPaste));
   }
 
   /**
