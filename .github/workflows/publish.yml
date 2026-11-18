@@ -172,7 +172,12 @@ jobs:
   publish-next:
     name: publish next packages
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    # Only ci runs for a push to this repository publish next packages.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     steps:
       - name: Checkout CI head
         uses: actions/checkout@v4
