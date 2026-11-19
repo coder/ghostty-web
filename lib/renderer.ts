@@ -102,6 +102,8 @@ export class CanvasRenderer {
   private devicePixelRatio: number;
   private metrics: FontMetrics;
   private palette: string[];
+  private viewportSize?: { width: number; height: number };
+  private themeChanged = false;
 
   // Cursor blinking state
   private cursorVisible: boolean = true;
@@ -234,16 +236,16 @@ export class CanvasRenderer {
    * Resize canvas to fit terminal dimensions
    */
   public resize(cols: number, rows: number): void {
-    const cssWidth = cols * this.metrics.width;
-    const cssHeight = rows * this.metrics.height;
+    const cssWidth = this.viewportSize?.width ?? cols * this.metrics.width;
+    const cssHeight = this.viewportSize?.height ?? rows * this.metrics.height;
 
     // Set CSS size (what user sees)
     this.canvas.style.width = `${cssWidth}px`;
     this.canvas.style.height = `${cssHeight}px`;
 
     // Set actual canvas size (scaled for DPI)
-    this.canvas.width = cssWidth * this.devicePixelRatio;
-    this.canvas.height = cssHeight * this.devicePixelRatio;
+    this.canvas.width = Math.round(cssWidth * this.devicePixelRatio);
+    this.canvas.height = Math.round(cssHeight * this.devicePixelRatio);
 
     // Scale context to match DPI (setting canvas.width/height resets the context)
     this.ctx.scale(this.devicePixelRatio, this.devicePixelRatio);
@@ -280,6 +282,12 @@ export class CanvasRenderer {
     const dims = buffer.getDimensions();
     const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
 
+    if (this.themeChanged) {
+      this.clear();
+      forceAll = true;
+      this.themeChanged = false;
+    }
+
     // Check if buffer needs full redraw (e.g., screen change between normal/alternate)
     if (buffer.needsFullRedraw?.()) {
       forceAll = true;
@@ -287,8 +295,14 @@ export class CanvasRenderer {
 
     // Resize canvas if dimensions changed
     const needsResize =
-      this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
-      this.canvas.height !== dims.rows * this.metrics.height * this.devicePixelRatio;
+      this.canvas.width !==
+        Math.round(
+          (this.viewportSize?.width ?? dims.cols * this.metrics.width) * this.devicePixelRatio
+        ) ||
+      this.canvas.height !==
+        Math.round(
+          (this.viewportSize?.height ?? dims.rows * this.metrics.height) * this.devicePixelRatio
+        );
 
     if (needsResize) {
       this.resize(dims.cols, dims.rows);
@@ -515,7 +529,7 @@ export class CanvasRenderer {
    */
   private renderLine(line: GhosttyCell[], y: number, cols: number): void {
     const lineY = y * this.metrics.height;
-    const lineWidth = cols * this.metrics.width;
+    const lineWidth = this.viewportSize?.width ?? cols * this.metrics.width;
 
     // Clear line background then fill with theme color.
     // We clear just the cell area - glyph overflow is handled by also
@@ -788,6 +802,7 @@ export class CanvasRenderer {
    */
   public setTheme(theme: ITheme): void {
     this.theme = { ...DEFAULT_THEME, ...theme };
+    this.themeChanged = true;
 
     // Rebuild palette
     this.palette = [
@@ -808,6 +823,14 @@ export class CanvasRenderer {
       this.theme.brightCyan,
       this.theme.brightWhite,
     ];
+  }
+
+  public setViewportSize(width: number, height: number): boolean {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0)
+      return false;
+    if (this.viewportSize?.width === width && this.viewportSize?.height === height) return false;
+    this.viewportSize = { width, height };
+    return true;
   }
 
   /**
@@ -867,7 +890,7 @@ export class CanvasRenderer {
 
     // Scrollbar dimensions
     const scrollbarWidth = 8;
-    const scrollbarX = canvasWidth - scrollbarWidth - 4;
+    const scrollbarX = canvasWidth - scrollbarWidth;
     const scrollbarPadding = 4;
     const scrollbarTrackHeight = canvasHeight - scrollbarPadding * 2;
 

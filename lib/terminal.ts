@@ -244,13 +244,6 @@ export class Terminal implements ITerminalCore {
     // Resize canvas to match new font metrics
     this.renderer.resize(this.cols, this.rows);
 
-    // Update canvas element dimensions to match renderer
-    const metrics = this.renderer.getMetrics();
-    this.canvas.width = metrics.width * this.cols;
-    this.canvas.height = metrics.height * this.rows;
-    this.canvas.style.width = `${metrics.width * this.cols}px`;
-    this.canvas.style.height = `${metrics.height * this.rows}px`;
-
     // Force full re-render with new font
     this.renderer.render(this.wasmTerm, true, this.viewportY, this);
   }
@@ -694,13 +687,6 @@ export class Terminal implements ITerminalCore {
       // Resize renderer
       this.renderer!.resize(cols, rows);
 
-      // Update canvas dimensions
-      const metrics = this.renderer!.getMetrics();
-      this.canvas!.width = metrics.width * cols;
-      this.canvas!.height = metrics.height * rows;
-      this.canvas!.style.width = `${metrics.width * cols}px`;
-      this.canvas!.style.height = `${metrics.height * rows}px`;
-
       // Fire resize event
       this.resizeEmitter.fire({ cols, rows });
 
@@ -713,6 +699,16 @@ export class Terminal implements ITerminalCore {
     // Flush any writes that were queued during resize, then restart render loop
     this.flushWriteQueue();
     this.startRenderLoop();
+  }
+
+  /**
+   * Fill the available CSS viewport without stretching terminal cells.
+   */
+  resizeViewport(width: number, height: number): void {
+    this.assertOpen();
+    if (!this.renderer!.setViewportSize(width, height)) return;
+    this.renderer!.resize(this.cols, this.rows);
+    this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
   }
 
   /**
@@ -1631,7 +1627,7 @@ export class Terminal implements ITerminalCore {
     const canvasWidth = rect.width;
     const canvasHeight = rect.height;
     const scrollbarWidth = 8;
-    const scrollbarX = canvasWidth - scrollbarWidth - 4;
+    const scrollbarX = canvasWidth - scrollbarWidth;
     const scrollbarPadding = 4;
 
     // Check if click is in scrollbar area
