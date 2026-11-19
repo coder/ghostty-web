@@ -440,7 +440,7 @@ new file mode 100644
 index 000000000..73ae2e6fa
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1122 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -619,7 +619,7 @@ index 000000000..73ae2e6fa
 +            .end_of_input => self.terminal.markSemanticPrompt(.command),
 +            .end_of_command => self.terminal.screens.active.cursor.page_row.semantic_prompt = .input,
 +            .mouse_shape => self.terminal.mouse_shape = value,
-+            .color_operation => try self.colorOperation(value.op, &value.requests),
++            .color_operation => try self.colorOperation(value),
 +            .kitty_color_report => try self.kittyColorOperation(value),
 +
 +            // Actions that require no response and have no terminal effect
@@ -739,11 +739,10 @@ index 000000000..73ae2e6fa
 +        }
 +    }
 +
-+    fn colorOperation(self: *ResponseHandler, op: anytype, requests: anytype) !void {
-+        _ = self;
-+        _ = op;
-+        _ = requests;
-+        // Color operations are not supported in WASM context
++    fn colorOperation(self: *ResponseHandler, value: anytype) !void {
++        var handler = @import("../stream_readonly.zig").Handler.init(self.terminal);
++        try handler.vt(.color_operation, value);
++        self.terminal.flags.dirty.palette = true;
 +    }
 +
 +    fn kittyColorOperation(self: *ResponseHandler, value: anytype) !void {
@@ -884,7 +883,7 @@ index 000000000..73ae2e6fa
 +    wrapper.handler = ResponseHandler.init(alloc, &wrapper.terminal, &wrapper.response_buffer);
 +
 +    // Initialize stream with the handler
-+    wrapper.stream = ResponseStream.init(wrapper.handler);
++    wrapper.stream = ResponseStream.initAlloc(alloc, wrapper.handler);
 +
 +    wrapper.* = .{
 +        .alloc = alloc,
