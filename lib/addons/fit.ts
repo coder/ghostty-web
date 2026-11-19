@@ -21,7 +21,6 @@ import type { ITerminalAddon, ITerminalCore } from '../interfaces';
 
 const MINIMUM_COLS = 2;
 const MINIMUM_ROWS = 1;
-const DEFAULT_SCROLLBAR_WIDTH = 15; // Reserve space for future scrollback scrollbar
 const RESIZE_DEBOUNCE_MS = 100; // Debounce time for ResizeObserver
 
 // ============================================================================
@@ -103,6 +102,7 @@ export class FitAddon implements ITerminalAddon {
       (dims.cols === this._lastCols && dims.rows === this._lastRows) ||
       (dims.cols === currentCols && dims.rows === currentRows)
     ) {
+      this.fitViewport();
       return;
     }
 
@@ -118,6 +118,7 @@ export class FitAddon implements ITerminalAddon {
       if (terminal.resize && typeof terminal.resize === 'function') {
         terminal.resize(dims.cols, dims.rows);
       }
+      this.fitViewport();
     } finally {
       // Clear flag after a short delay to allow DOM to settle
       setTimeout(() => {
@@ -185,7 +186,7 @@ export class FitAddon implements ITerminalAddon {
     }
 
     // Calculate available space (subtract padding since clientWidth includes padding)
-    const availableWidth = containerWidth - paddingLeft - paddingRight - DEFAULT_SCROLLBAR_WIDTH;
+    const availableWidth = containerWidth - paddingLeft - paddingRight;
     const availableHeight = containerHeight - paddingTop - paddingBottom;
 
     // Calculate dimensions (enforce minimums)
@@ -193,6 +194,17 @@ export class FitAddon implements ITerminalAddon {
     const rows = Math.max(MINIMUM_ROWS, Math.floor(availableHeight / metrics.height));
 
     return { cols, rows };
+  }
+
+  private fitViewport(): void {
+    const terminal = this._terminal;
+    const element = terminal?.element;
+    if (!element || !terminal.resizeViewport) return;
+    const style = window.getComputedStyle(element);
+    const padding = (name: string) => Number.parseFloat(style.getPropertyValue(name)) || 0;
+    const width = element.clientWidth - padding('padding-left') - padding('padding-right');
+    const height = element.clientHeight - padding('padding-top') - padding('padding-bottom');
+    if (width > 0 && height > 0) terminal.resizeViewport(width, height);
   }
 
   /**

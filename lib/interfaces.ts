@@ -70,6 +70,7 @@ export interface ITerminalCore {
   rows: number;
   element?: HTMLElement;
   textarea?: HTMLTextAreaElement;
+  resizeViewport?(width: number, height: number): void;
 }
 
 /**
